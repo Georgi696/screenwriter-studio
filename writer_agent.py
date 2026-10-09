@@ -31,8 +31,10 @@ Fountain:
 - No interior description.
 
 Shot list, one row per clip:
-- One continuous action. No cuts inside a shot.
-- Duration 3-15 seconds. The durations add up to the locked runtime, within a couple of seconds.
+- Shot count is at most one shot per 8 seconds of the locked runtime. A 60-second piece is at most 7 shots. A 30-second piece is at most 3. The user message states the number. Do not exceed it.
+- If development locked more beats than that budget, collapse beats. Cover the want and the turn. Do not give every action its own shot.
+- One continuous action. No cuts inside a shot. If an action is compound, keep the one action that carries the beat and move the rest to audio or notes. Do not split the list to make the actions fit.
+- Each shot is about 8 seconds, inside 6-12. Durations add up to the locked runtime, within a couple of seconds. Do not fill the runtime with 3-4 second fragments.
 - Fragile business (hands exchanging objects, typing, pouring) happens off-screen; show the result.
 - One speaker per shot. American English unless development locked another language.
 - Notes carry continuity: which character, which wardrobe, what the next shot must match.

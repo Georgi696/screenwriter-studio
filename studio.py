@@ -28,12 +28,13 @@ from agents import Runner, set_tracing_disabled
 from dotenv import load_dotenv
 
 from art_agent import art_agent
+from budget import CLIP_SECONDS, sample_indexes, shot_budget
 from development_agent import development_agent
 from editor_agent import editor_agent
 from playbooks import PLAYBOOKS
 from models import load_kie_api_key
 from schemas import Development, Screenplay, ScriptVerdict, StillPackage
-from stills import render_stills
+from stills import limit_still_package, render_stills
 from writer_agent import writer_agent
 
 load_dotenv(override=True)
@@ -169,6 +170,17 @@ class ScreenwriterStudio:
             yield "**Screenwriter** is rewriting from the editor's notes.\n\n"
             screenplay = await self._write(development, previous=screenplay, issues=verdict.issues)
 
+        other_issues = [issue for issue in verdict.issues if not _is_shot_count_issue(issue)]
+        if _budget_issues(development, screenplay) and not other_issues:
+            screenplay, clipped = _clip_shots(development, screenplay)
+            verdict.issues = []
+            verdict.passed = True
+            yield (
+                f"Shot list was {clipped} shots. A {development.runtime_seconds}s clip "
+                f"holds {shot_budget(development.runtime_seconds)} keyframes "
+                f"(one per {CLIP_SECONDS}s). Extra shots were not sent to the image agent.\n\n"
+            )
+
         (folder / "01_script.fountain").write_text(screenplay.fountain.rstrip() + "\n", encoding="utf-8")
         (folder / "02_shots.md").write_text(_shots_markdown(screenplay), encoding="utf-8")
         (folder / "verdict.json").write_text(verdict.model_dump_json(indent=2) + "\n", encoding="utf-8")
@@ -184,6 +196,13 @@ class ScreenwriterStudio:
 
         yield "**Art director** is writing the still jobs.\n\n"
         package = await self._art(development, screenplay)
+        package, dropped = _cap_stills(development, package)
+        if dropped:
+            yield (
+                f"Image budget is {shot_budget(development.runtime_seconds)} keyframes "
+                f"for {development.runtime_seconds}s. Dropped {dropped} extra still "
+                f"{'job' if dropped == 1 else 'jobs'} before calling KIE.ai.\n\n"
+            )
         images = folder / "images"
         yield "**Stills** is calling KIE.ai.\n\n"
         async for line in _stream_stills(package, images, dry_run=dry_run):
@@ -204,9 +223,15 @@ class ScreenwriterStudio:
         issues: list[str] | None,
     ) -> Screenplay:
         playbook = PLAYBOOKS.get(development.job_type, PLAYBOOKS["narrative"])
+        budget = shot_budget(development.runtime_seconds)
         parts = [
             "Locked development. Do not renegotiate it.",
             development.model_dump_json(indent=2),
+            (
+                f"Shot budget: {budget} shots maximum for {development.runtime_seconds} seconds "
+                f"(one shot per {CLIP_SECONDS} seconds). Each shot becomes one generated image. "
+                f"Do not write more than {budget} shots."
+            ),
             "Playbook:\n" + playbook,
         ]
         if previous is not None and issues:
@@ -217,8 +242,10 @@ class ScreenwriterStudio:
         return result.final_output_as(Screenplay)
 
     async def _edit(self, development: Development, screenplay: Screenplay) -> ScriptVerdict:
+        budget = shot_budget(development.runtime_seconds)
         payload = {
             "runtime_seconds": development.runtime_seconds,
+            "shot_budget": budget,
             "logline": development.logline,
             "beats": [beat.model_dump() for beat in development.beats],
             "fountain": screenplay.fountain,
@@ -230,13 +257,21 @@ class ScreenwriterStudio:
             max_turns=3,
         )
         verdict = result.final_output_as(ScriptVerdict)
+        extra = _budget_issues(development, screenplay)
+        if extra:
+            verdict.issues = extra + [
+                issue for issue in verdict.issues if not _asks_for_another_shot(issue)
+            ]
         if verdict.issues:
             verdict.passed = False
         return verdict
 
     async def _art(self, development: Development, screenplay: Screenplay) -> StillPackage:
+        budget = shot_budget(development.runtime_seconds)
         payload = {
             "aspect_ratio": development.aspect_ratio,
+            "runtime_seconds": development.runtime_seconds,
+            "max_keyframes": budget,
             "look": development.look,
             "palette": development.palette,
             "lighting": development.lighting,
@@ -250,6 +285,61 @@ class ScreenwriterStudio:
             max_turns=4,
         )
         return result.final_output_as(StillPackage)
+
+
+def _budget_issues(development: Development, screenplay: Screenplay) -> list[str]:
+    budget = shot_budget(development.runtime_seconds)
+    count = len(screenplay.shots)
+    if count <= budget:
+        return []
+    return [
+        (
+            f"Shot list has {count} shots. A {development.runtime_seconds}s clip holds at most "
+            f"{budget} (one shot per {CLIP_SECONDS} seconds), because each shot becomes a generated image. "
+            f"Merge down to {budget} or fewer. Cut secondary actions into audio or notes. Do not add shots."
+        )
+    ]
+
+
+def _is_shot_count_issue(issue: str) -> bool:
+    """True when the note is about how many shots the runtime can hold."""
+    if issue.startswith("Shot list has "):
+        return True
+    text = issue.lower()
+    return "shot" in text and ("budget" in text or "8 second" in text or "too many" in text)
+
+
+def _asks_for_another_shot(issue: str) -> bool:
+    text = issue.lower()
+    return any(
+        phrase in text
+        for phrase in ("separate shot", "another shot", "new shot", "adjacent shot", "split")
+    )
+
+
+def _clip_shots(development: Development, screenplay: Screenplay) -> tuple[Screenplay, int]:
+    """Last resort after rewrites: thin an over-budget list before any image call."""
+    budget = shot_budget(development.runtime_seconds)
+    count = len(screenplay.shots)
+    if count <= budget:
+        return screenplay, 0
+    kept = [screenplay.shots[index] for index in sample_indexes(count, budget)]
+    note = (
+        f"Shot list clipped from {count} to {len(kept)} so a {development.runtime_seconds}s clip "
+        f"does not generate one still per fragment."
+    )
+    notes = [note, *[item for item in screenplay.notes if item != note]][:2]
+    return screenplay.model_copy(update={"shots": kept, "notes": notes}), count
+
+
+def _cap_stills(development: Development, package: StillPackage) -> tuple[StillPackage, int]:
+    limited = limit_still_package(
+        package,
+        runtime_seconds=development.runtime_seconds,
+        character_count=len(development.characters),
+        location_count=len(development.locations),
+    )
+    return limited, len(package.jobs) - len(limited.jobs)
 
 
 def _shots_markdown(screenplay: Screenplay) -> str:

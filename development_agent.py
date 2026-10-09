@@ -29,8 +29,9 @@ Logline shape: when [incident], a [specific flawed person] must [goal] before [s
 Beats follow the spine and carry timecodes that add up to the runtime:
 Hook (first 10%), Setup, Turn (near 25%), Escalation (two raises, each costlier), Crisis, Button.
 Ads and explainers add one CTA in the final 2-3 seconds.
-Each beat is one continuous camera action, 5-8 seconds when the piece will be generated as AI video.
-One character want. One obstacle. One turn.
+Each beat is one clip of about 8 seconds. Beat count is at most one beat per 8 seconds of runtime:
+a 60-second piece locks at most 7 beats, a 30-second piece at most 3. Do not lock a 3-second fragment
+as its own beat. One character want. One obstacle. One turn.
 
 Style bible:
 - look, palette, lighting: concrete, repeatable, no mood adjectives standing alone.
