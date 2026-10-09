@@ -7,8 +7,29 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from budget import select_stills
 from generate_stills import run_batch
 from schemas import StillPackage
+
+
+def limit_still_package(
+    package: StillPackage,
+    *,
+    runtime_seconds: int,
+    character_count: int,
+    location_count: int,
+) -> StillPackage:
+    """Drop stills a runtime did not budget, before any image call."""
+    chosen = select_stills(
+        [(job.id, job.kind) for job in package.jobs],
+        runtime_seconds=runtime_seconds,
+        character_count=character_count,
+        location_count=location_count,
+    )
+    if len(chosen) == len(package.jobs):
+        return package
+    by_id = {job.id: job for job in package.jobs}
+    return package.model_copy(update={"jobs": [by_id[job_id] for job_id, _kind in chosen]})
 
 
 def render_stills(

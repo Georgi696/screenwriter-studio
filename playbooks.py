@@ -37,7 +37,7 @@ PLAYBOOKS: dict[str, str] = {
 
 AI_VIDEO_RULES = """\
 AI video constraints:
-- One shot is one continuous action inside one clip. Kling clips are 3-15s, Seedance 4-30s. Most beats land at 5-8s.
+- One shot is one continuous action inside one clip. Budget one shot per 8 seconds: a 60s piece is at most 7 shots, a 30s spot at most 3. Do not fill the runtime with 3-second fragments.
 - One speaker per clip, at most about 20 words. Default the dialogue to American English.
 - Kling accepts only 16:9, 9:16, and 1:1. Seedance also accepts 4:3, 3:4, and 21:9.
 - No readable text in frame. No precise handwork (typing, pouring, handing objects over).
