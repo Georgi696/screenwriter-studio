@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from agents import Agent
 
+from image_model_card import art_director_card
 from models import art_chat
 from schemas import KieOutput, StillPackage
 
@@ -35,7 +36,10 @@ Put the aspect ratio in the prompt as well as in the aspect_ratio field.
 resolution is 1K unless the brief asked for a final.
 ids are short, lowercase, unique: the character's name, the location, s01, s02.
 No readable signage in a keyframe. Title type is its own poster job.
-"""
+
+Official model card for the stills you are writing. Follow it for prompt form, aspect ratio, resolution, and how many references a model accepts. The kind rules above still decide which jobs this pass emits.
+
+""" + art_director_card()
 
 art_agent = Agent(
     name="ArtDirector",

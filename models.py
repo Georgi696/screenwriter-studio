@@ -19,6 +19,8 @@ from agents import OpenAIResponsesModel
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
+from image_model_card import EDIT_MODEL, GPT_IMAGE_MODEL, NANO_BANANA_MODEL, SEEDREAM_MODEL
+
 KIE_API_ROOT = "https://api.kie.ai"
 KIE_RESPONSES_BASE = f"{KIE_API_ROOT}/codex/v1"
 
@@ -30,27 +32,8 @@ WRITER_MODEL = "gpt-6-astra"
 ART_MODEL = "gpt-6-astra"
 EDITOR_MODEL = "gpt-6-1-sol"
 
-# Stills. Kind -> model. generate_stills.choose applies ratio and reference exceptions.
-# nano-banana-2-1: current Google stills model, up to 10 reference images.
-# gpt-image-2-5-sunburst-*: precision GPT Image 2.5 variant (text and single-image edit).
-# seedream/5-pro-text-to-image: Seedream 5.0 Pro photoreal text-to-image.
-NANO_BANANA_MODEL = "nano-banana-2-1"
-GPT_IMAGE_MODEL = "gpt-image-2-5-sunburst-text-to-image"
-SEEDREAM_MODEL = "seedream/5-pro-text-to-image"
-EDIT_MODEL = "gpt-image-2-5-sunburst-image-to-image"
-
-NANO_RATIOS = {
-    "1:1", "2:3", "3:2", "1:4", "4:1", "3:4", "4:3", "4:5", "5:4",
-    "1:8", "8:1", "9:16", "16:9", "21:9", "auto",
-}
-SUNBURST_RATIOS = {
-    "auto", "1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9",
-    "27:16", "16:27", "9:8", "8:9",
-}
-SUNBURST_1K_ONLY = {"27:16", "16:27", "9:8", "8:9"}
-SEEDREAM_RATIOS = {"1:1", "4:3", "3:4", "16:9", "9:16", "2:3", "3:2", "21:9"}
-NANO_MAX_REFS = 10
-
+# Stills. Kind -> model. Ratios, reference limits, and request fields are in
+# image_model_card.py, checked against the KIE and vendor docs on 2026-10-09.
 IMAGE_MODEL_BY_KIND = {
     "character": NANO_BANANA_MODEL,
     "location": NANO_BANANA_MODEL,
