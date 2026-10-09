@@ -37,19 +37,16 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from models import (
+from image_model_card import (
     EDIT_MODEL as EDIT,
     GPT_IMAGE_MODEL as GPT_IMAGE,
-    IMAGE_MODEL_BY_KIND,
     NANO_BANANA_MODEL as NANO,
-    NANO_MAX_REFS,
-    NANO_RATIOS,
     SEEDREAM_MODEL as SEEDREAM,
-    SEEDREAM_RATIOS,
-    SUNBURST_1K_ONLY,
-    SUNBURST_RATIOS,
-    load_kie_api_key as load_api_key,
+    card_for,
+    prompt_length_error,
+    ratio_allowed,
 )
+from models import IMAGE_MODEL_BY_KIND, load_kie_api_key as load_api_key
 
 CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
 POLL_URL = "https://api.kie.ai/api/v1/jobs/recordInfo"
@@ -90,17 +87,7 @@ def choose(job: dict, aspect: str, resolution: str) -> tuple[str, str]:
 
 
 def _ratio_ok(model: str, aspect: str, resolution: str) -> bool:
-    if model == NANO:
-        return aspect in NANO_RATIOS
-    if model in {GPT_IMAGE, EDIT}:
-        if aspect not in SUNBURST_RATIOS:
-            return False
-        if resolution in {"2K", "4K"} and aspect in SUNBURST_1K_ONLY:
-            return False
-        return True
-    if model == SEEDREAM:
-        return aspect in SEEDREAM_RATIOS and resolution != "4K"
-    return True
+    return ratio_allowed(model, aspect, resolution)
 
 
 def _ref_list(job: dict) -> list[str]:
@@ -111,39 +98,21 @@ def _ref_list(job: dict) -> list[str]:
 
 
 def build_payload(model: str, prompt: str, aspect: str, resolution: str, ref_urls: list[str]) -> dict:
-    if model == GPT_IMAGE:
-        payload = {"prompt": prompt, "aspect_ratio": aspect, "resolution": resolution}
-        return {"model": model, "input": payload}
-    if model == SEEDREAM:
-        quality = "high" if resolution in {"2K", "4K"} else "basic"
-        return {
-            "model": model,
-            "input": {
-                "prompt": prompt,
-                "aspect_ratio": aspect,
-                "quality": quality,
-                "output_format": "png",
-            },
-        }
-    if model == EDIT:
-        return {
-            "model": model,
-            "input": {
-                "prompt": prompt,
-                "input_urls": ref_urls[:16],
-                "aspect_ratio": aspect,
-                "resolution": resolution,
-            },
-        }
-    body = {
-        "prompt": prompt,
-        "aspect_ratio": aspect,
-        "resolution": resolution,
-        "output_format": "png",
-    }
-    if ref_urls:
-        body["image_input"] = ref_urls[:NANO_MAX_REFS]
-    return {"model": NANO, "input": body}
+    """KIE createTask body. Field names come from the checked model card."""
+    card = card_for(model)
+    body: dict = {card.field_prompt: prompt, card.field_ratio: aspect}
+    if card.field_resolution:
+        body[card.field_resolution] = resolution
+    if card.field_output_format:
+        body[card.field_output_format] = card.output_format
+    if card.field_quality:
+        body[card.field_quality] = card.quality_for(resolution)
+    if card.field_images and (ref_urls or card.image_required):
+        body[card.field_images] = ref_urls[: card.max_images]
+    unknown = set(body) - set(card.documented_fields)
+    if unknown:
+        raise RuntimeError(f"undocumented fields for {card.model_id}: {sorted(unknown)}")
+    return {"model": card.model_id, "input": body}
 
 
 def _request(url: str, api_key: str, payload: dict | None = None, query: dict | None = None) -> dict:
@@ -281,9 +250,9 @@ def run_job(
         record["url"] = f"dry-run://{job_id}"
         return record
 
-    limit = 5000 if model == SEEDREAM else 20000
-    if len(prompt) > limit:
-        record["error"] = f"prompt is {len(prompt)} characters; {model} allows {limit}"
+    length_error = prompt_length_error(model, prompt)
+    if length_error:
+        record["error"] = length_error
         return record
 
     try:

@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 
 from art_agent import art_agent
 from budget import CLIP_SECONDS, sample_indexes, shot_budget
+from image_model_card import art_director_card
 from development_agent import development_agent
 from editor_agent import editor_agent
 from playbooks import PLAYBOOKS
@@ -267,24 +268,30 @@ class ScreenwriterStudio:
         return verdict
 
     async def _art(self, development: Development, screenplay: Screenplay) -> StillPackage:
-        budget = shot_budget(development.runtime_seconds)
-        payload = {
-            "aspect_ratio": development.aspect_ratio,
-            "runtime_seconds": development.runtime_seconds,
-            "max_keyframes": budget,
-            "look": development.look,
-            "palette": development.palette,
-            "lighting": development.lighting,
-            "characters": [character.model_dump() for character in development.characters],
-            "locations": development.locations,
-            "shots": [shot.model_dump() for shot in screenplay.shots],
-        }
-        result = await Runner.run(
-            art_agent,
-            "Write the still jobs for this locked piece.\n\n" + json.dumps(payload, indent=2),
-            max_turns=4,
-        )
+        result = await Runner.run(art_agent, art_user_message(development, screenplay), max_turns=4)
         return result.final_output_as(StillPackage)
+
+
+def art_user_message(development: Development, screenplay: Screenplay) -> str:
+    """What the art director reads: the checked model card, then the locked piece."""
+    budget = shot_budget(development.runtime_seconds)
+    payload = {
+        "aspect_ratio": development.aspect_ratio,
+        "runtime_seconds": development.runtime_seconds,
+        "max_keyframes": budget,
+        "look": development.look,
+        "palette": development.palette,
+        "lighting": development.lighting,
+        "characters": [character.model_dump() for character in development.characters],
+        "locations": development.locations,
+        "shots": [shot.model_dump() for shot in screenplay.shots],
+    }
+    return (
+        "Write the still jobs for this locked piece.\n\n"
+        + art_director_card()
+        + "\nLocked piece:\n"
+        + json.dumps(payload, indent=2)
+    )
 
 
 def _budget_issues(development: Development, screenplay: Screenplay) -> list[str]:
