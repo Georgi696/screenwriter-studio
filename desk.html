@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screenwriter Studio</title>
+<style>
+  :root {
+    --cream: #f3ead7;
+    --ink: #1a140c;
+    --gold: #e6c36a;
+    --felt: #1a3a2c;
+    --wood: #6b3e22;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    background: #0e1713;
+    color: var(--cream);
+    font-family: "Segoe UI", system-ui, sans-serif;
+  }
+  aside {
+    padding: 16px;
+    background: #24160f;
+    border-right: 6px solid var(--wood);
+  }
+  aside h1 { margin: 0 0 6px; font-size: 18px; }
+  .aside-note, .empty, .label { margin: 0 0 8px; font-size: 12px; opacity: 0.75; }
+  .label { margin-top: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
+  aside h3 { margin: 14px 0 6px; font-size: 14px; }
+  button.file, button.help, button.go {
+    font: inherit;
+    cursor: pointer;
+  }
+  button.file {
+    display: block;
+    width: 100%;
+    margin: 0 0 4px;
+    padding: 6px 8px;
+    text-align: left;
+    color: inherit;
+    background: transparent;
+    border: 1px solid rgba(243, 234, 215, 0.28);
+    border-radius: 6px;
+  }
+  button.file:hover, button.file:focus { border-color: var(--gold); }
+  main { padding: 16px 20px 32px; min-width: 0; }
+  header h1 { margin: 0; font-size: 28px; letter-spacing: 0.02em; }
+  .eyebrow { margin: 0; font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; opacity: 0.7; }
+  #stage {
+    position: relative;
+    margin-top: 12px;
+    padding: 14px 14px 16px;
+    background:
+      radial-gradient(circle at 15% 0%, rgba(255, 255, 255, 0.06), transparent 42%),
+      var(--felt);
+    border: 8px solid var(--wood);
+    border-radius: 18px;
+    box-shadow: inset 0 0 70px rgba(0, 0, 0, 0.28), 0 16px 40px rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+  }
+  #stage::before {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    opacity: 0.4;
+    background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 4px);
+    animation: scan 11s linear infinite;
+  }
+  #dust { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 3; }
+  #hud, #folder, #plaque, #pips, #track, #return-slot, #landing, .bay-label, #image-bay { position: relative; z-index: 4; }
+  #hud { display: flex; align-items: center; gap: 12px; min-height: 32px; }
+  #note { margin: 0; flex: 1; font-size: 18px; font-weight: 700; }
+  #note.is-bad { color: #ffd0c8; }
+  #live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; letter-spacing: 0.12em; }
+  #live[hidden] { display: none; }
+  #live i {
+    width: 8px; height: 8px; border-radius: 50%; background: #ff5a4a;
+    animation: blink 1s steps(2) infinite;
+  }
+  #folder, #plaque { margin: 6px 0 0; font-size: 13px; }
+  #plaque {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  #pips { display: flex; gap: 6px; margin: 10px 0 0; }
+  .pip { width: 10px; height: 10px; border-radius: 50%; background: rgba(243, 234, 215, 0.25); }
+  .pip.is-on { background: var(--gold); }
+  .pip.is-here { box-shadow: 0 0 0 3px rgba(230, 195, 106, 0.35); animation: pip 1.2s ease-in-out infinite; }
+  #track { display: flex; gap: 22px; padding: 70px 8px 6px; }
+  .station { flex: 1 0 112px; min-width: 0; }
+  .piece {
+    min-height: 118px;
+    padding: 10px 10px 12px;
+    border-radius: 16px 16px 12px 12px;
+    background: #f7f3ea;
+    color: var(--ink);
+    box-shadow: 0 8px 0 #8d8374;
+  }
+  .station[data-station="development"] .piece { background: #d7e6f8; }
+  .station[data-station="writer"] .piece { background: #f8e3b6; }
+  .station[data-station="editor"] .piece { background: #f6d2cb; }
+  .station[data-station="art"] .piece { background: #e3d6f7; }
+  .mark {
+    display: grid; place-items: center;
+    width: 28px; height: 28px; margin-bottom: 6px;
+    border-radius: 50%; background: var(--ink); color: var(--cream);
+    font-size: 12px; font-weight: 700;
+  }
+  .piece strong, .piece .model, .piece .status { display: block; }
+  .piece strong { font-size: 14px; }
+  .piece .model, .piece .status, .kinds, figcaption { font-size: 11px; margin-top: 4px; word-break: break-word; }
+  .station.is-idle .piece { opacity: 0.5; filter: saturate(0.65); }
+  .station.is-working .piece {
+    animation: bob 0.8s ease-in-out infinite;
+    box-shadow: 0 0 0 3px var(--gold), 0 10px 0 #8d8374;
+  }
+  .station.is-done .piece { box-shadow: 0 8px 0 #2f6b45; }
+  .station.is-done .status { font-weight: 700; }
+  #token {
+    position: absolute; left: 0; top: 0; z-index: 5;
+    width: 48px; height: 56px; pointer-events: none;
+    filter: drop-shadow(0 8px 4px rgba(0, 0, 0, 0.45));
+    transition: transform 0.95s cubic-bezier(.2, .75, .2, 1), opacity 0.3s linear;
+  }
+  #token.no-anim { transition: none; }
+  #token.is-hidden { opacity: 0; }
+  #return-slot { min-height: 58px; margin-top: 4px; }
+  #return-rail { position: relative; height: 36px; }
+  .rail-line {
+    position: absolute; left: 0; right: 18px; top: 16px;
+    border-top: 2px dashed rgba(243, 234, 215, 0.4);
+  }
+  #return-rail.is-live .rail-line { border-top-style: solid; border-top-color: #ffb15a; }
+  #return-token {
+    position: absolute; top: 0; left: calc(100% - 36px);
+    width: 32px; height: 36px; opacity: 0;
+    transition: left 1.05s ease-in-out, opacity 0.2s linear;
+  }
+  #return-token.no-anim { transition: none; }
+  #return-rail.is-live #return-token { opacity: 1; }
+  #return-label { margin: 0; font-size: 12px; opacity: 0.75; }
+  #return-label.is-live { opacity: 1; font-weight: 700; color: #ffb15a; }
+  .bay-label { margin: 8px 0; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.75; }
+  #landing {
+    height: 64px;
+    margin: 6px 8px 0;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.18);
+    border: 1px dashed rgba(243, 234, 215, 0.28);
+  }
+  #landing span {
+    position: absolute;
+    left: 12px;
+    bottom: 8px;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    opacity: 0.7;
+  }
+  #image-bay { display: flex; align-items: flex-start; gap: 12px; overflow-x: auto; padding-bottom: 6px; min-height: 80px; }
+  .model-col {
+    flex: 0 0 168px;
+    padding: 8px;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.22);
+  }
+  .model-col h3 { margin: 0; font-size: 12px; word-break: break-word; }
+  .model-col.is-working { animation: pulse 1.05s ease-in-out infinite; }
+  .frame {
+    position: relative;
+    margin-top: 8px;
+    min-height: 96px;
+    border-radius: 4px;
+    background:
+      radial-gradient(circle at 7px 12px, #0e1713 3px, transparent 3.5px) 0 0 / 100% 16px repeat-y,
+      radial-gradient(circle at calc(100% - 7px) 12px, #0e1713 3px, transparent 3.5px) 0 0 / 100% 16px repeat-y,
+      #24180f;
+  }
+  .frame.ghost {
+    display: grid; place-items: center;
+    color: rgba(243, 234, 215, 0.55);
+    font-size: 12px;
+  }
+  .model-col.has-jobs .ghost { display: none; }
+  .cell { margin: 10px 16px; min-height: 72px; background: #3a2c22; display: grid; place-items: center; }
+  .cell img { width: 100%; height: 78px; object-fit: cover; display: block; }
+  .hold { font-size: 11px; letter-spacing: 0.04em; white-space: nowrap; }
+  .flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+  .frame.exposing .flash { animation: expose 0.7s ease-out; }
+  .frame.exposing { animation: jitter 0.4s linear; }
+  .frame.printed .cell { animation: pop 0.5s cubic-bezier(.2, 1.5, .3, 1); }
+  .frame.is-failed { outline: 2px solid #ff6b5a; }
+  figcaption { padding: 0 8px 8px; }
+  #brief-form { margin-top: 16px; }
+  textarea {
+    width: 100%;
+    min-height: 76px;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--cream);
+    color: var(--ink);
+    font: inherit;
+  }
+  .options { display: flex; flex-wrap: wrap; gap: 16px; margin: 8px 0; }
+  .option { min-width: 220px; }
+  button.help {
+    margin-left: 8px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(243, 234, 215, 0.4);
+    background: transparent;
+    color: inherit;
+  }
+  .help-copy { margin: 6px 0 0; font-size: 13px; max-width: 52em; }
+  button.go {
+    padding: 10px 18px;
+    border: 0;
+    border-bottom: 4px solid #9a7430;
+    border-radius: 10px;
+    background: var(--gold);
+    color: var(--ink);
+    font-weight: 800;
+  }
+  button.go:active { transform: translateY(3px); border-bottom-width: 1px; }
+  button.go:disabled { opacity: 0.6; cursor: progress; }
+  #lower { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; margin-top: 16px; }
+  #lower h2 { margin: 0 0 8px; font-size: 14px; }
+  #log, #reader-text {
+    margin: 0;
+    max-height: 240px;
+    overflow: auto;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: #101814;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+  }
+  #log p { margin: 0 0 8px; }
+  #reader-image { max-width: 100%; border-radius: 8px; }
+  #stage.shake { animation: shake 0.45s linear; }
+  @keyframes scan { to { background-position: 0 48px; } }
+  @keyframes blink { 50% { opacity: 0.25; } }
+  @keyframes bob { 50% { transform: translateY(-8px); } }
+  @keyframes pip { 50% { transform: scale(1.35); } }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 2px var(--gold), 0 0 18px rgba(230, 195, 106, 0.45); } }
+  @keyframes expose { 0% { opacity: 0.95; } 100% { opacity: 0; } }
+  @keyframes jitter {
+    25% { transform: translateX(-2px); }
+    50% { transform: translateX(2px); }
+    75% { transform: translateX(-1px); }
+  }
+  @keyframes pop {
+    0% { transform: scale(0.7); filter: brightness(1.8); }
+    100% { transform: scale(1); filter: none; }
+  }
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-7px); }
+    40% { transform: translateX(7px); }
+    60% { transform: translateX(-4px); }
+    80% { transform: translateX(3px); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #stage::before, #live i, .station.is-working .piece, .pip.is-here,
+    .model-col.is-working, .frame.exposing, .frame.exposing .flash, .frame.printed .cell,
+    #token, #return-token { animation: none !important; transition: none !important; }
+  }
+  @media (max-width: 860px) {
+    body { grid-template-columns: 1fr; }
+    #lower { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<aside>
+  <h1>Library</h1>
+  <p class="aside-note">Documents and images the crew has written.</p>
+  <nav id="library"></nav>
+</aside>
+<main>
+  <header>
+    <p class="eyebrow">Table read</p>
+    <h1>Screenwriter Studio</h1>
+  </header>
+  <div id="stage">
+    <canvas id="dust"></canvas>
+    <div id="hud">
+      <p id="note">Waiting for a brief.</p>
+      <span id="live" hidden><i></i>LIVE</span>
+    </div>
+    <p id="folder"></p>
+    <p id="plaque"></p>
+    <div id="pips" aria-hidden="true">
+      <span class="pip"></span><span class="pip"></span><span class="pip"></span>
+      <span class="pip"></span><span class="pip"></span><span class="pip"></span>
+    </div>
+    <div id="track">
+      <div class="station is-idle" data-station="brief">
+        <div class="piece"><span class="mark">B</span><strong>Brief</strong><span class="model">The idea</span><span class="status">Waiting</span></div>
+      </div>
+      <div class="station is-idle" data-station="development">
+        <div class="piece"><span class="mark">1</span><strong>Development</strong><span class="model"></span><span class="status">Waiting</span></div>
+      </div>
+      <div class="station is-idle" data-station="writer">
+        <div class="piece"><span class="mark">2</span><strong>Screenwriter</strong><span class="model"></span><span class="status">Waiting</span></div>
+      </div>
+      <div class="station is-idle" data-station="editor">
+        <div class="piece"><span class="mark">3</span><strong>Script editor</strong><span class="model"></span><span class="status">Waiting</span></div>
+      </div>
+      <div class="station is-idle" data-station="art">
+        <div class="piece"><span class="mark">4</span><strong>Art director</strong><span class="model"></span><span class="status">Waiting</span></div>
+      </div>
+    </div>
+    <div id="token" aria-hidden="true"></div>
+    <div id="return-slot">
+      <div id="return-rail">
+        <div class="rail-line"></div>
+        <div id="return-token" aria-hidden="true"></div>
+      </div>
+      <p id="return-label">Editor loop, up to two rewrites</p>
+    </div>
+    <div id="landing" data-station="images"><span>Stills</span></div>
+    <p class="bay-label">Image bench</p>
+    <div id="image-bay"></div>
+  </div>
+  <form id="brief-form">
+    <label for="idea">Brief</label>
+    <textarea id="idea" name="idea" placeholder="A 30-second vertical film about someone who keeps a seat on the last bus."></textarea>
+    <button class="help" id="help-idea" type="button">Help</button>
+    <p class="help-copy" id="help-idea-copy" hidden>This is the brief the crew turns into a logline, Fountain pages, and stills. Example: a 30-second vertical film about someone who keeps a seat on the last bus.</p>
+    <div class="options">
+      <div class="option">
+        <label><input id="pages" type="checkbox"> Pages only</label>
+        <button class="help" id="help-pages" type="button">Help</button>
+        <p class="help-copy" id="help-pages-copy" hidden>The script editor still reads the draft and can send it back. The run stops before any image is generated.</p>
+      </div>
+      <div class="option">
+        <label><input id="dry" type="checkbox"> Dry-run stills</label>
+        <button class="help" id="help-dry" type="button">Help</button>
+        <p class="help-copy" id="help-dry-copy" hidden>Image models are chosen and the still jobs are written, but no images are downloaded and no image credits are spent.</p>
+      </div>
+    </div>
+    <button class="go" id="run" type="submit">Run the crew</button>
+  </form>
+  <div id="lower">
+    <section>
+      <h2>Log</h2>
+      <div id="log" aria-live="polite"></div>
+    </section>
+    <section>
+      <h2 id="reader-title">Reader</h2>
+      <p class="aside-note">Choose a document or an image from the library.</p>
+      <pre id="reader-text" hidden></pre>
+      <img id="reader-image" alt="" hidden>
+    </section>
+  </div>
+</main>
+<noscript>This desk needs JavaScript to move the crew.</noscript>
+<script>
+const GLYPHS = {
+  sheet: '<svg viewBox="0 0 26 32" width="40" height="48" aria-hidden="true"><path d="M3 1h12l8 8v21a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" fill="#f4f0e6" stroke="#1c1c1c"/><path d="M15 1v8h8" fill="#e4dcc8" stroke="#1c1c1c"/><path d="M6 16h12M6 20h12M6 24h8" stroke="#8a8172" fill="none"/></svg>',
+  page: '<svg viewBox="0 0 24 32" width="36" height="48" aria-hidden="true"><rect x="2" y="1" width="20" height="30" rx="1" fill="#f7f3ea" stroke="#1c1c1c"/><path d="M6 8h12M6 12h12M6 16h12M6 20h9" stroke="#5c564c" fill="none"/></svg>',
+  shot: '<svg viewBox="0 0 36 24" width="48" height="32" aria-hidden="true"><rect x="1" y="1" width="34" height="22" rx="2" fill="#d9e4f2" stroke="#1c1c1c"/><rect x="6" y="5" width="16" height="14" fill="#f7f3ea" stroke="#1c1c1c"/><path d="M26 8h6M26 12h6M26 16h4" stroke="#1c1c1c" fill="none"/></svg>',
+  frame: '<svg viewBox="0 0 28 22" width="44" height="34" aria-hidden="true"><rect x="1" y="1" width="26" height="20" rx="1" fill="#1c1c1c" stroke="#f4f0e6"/><rect x="4" y="4" width="20" height="14" fill="#c9b89a" stroke="#f4f0e6"/></svg>'
+};
+const PIPS = ["brief", "development", "writer", "editor", "art", "images"];
+const CREW = ["development", "writer", "editor", "art"];
+
+let last = null;
+let revision = -1;
+let shown = 0;
+let streamOK = false;
+
+function plain(text) {
+  return String(text || "").replace(/\*\*/g, "").replace(/`/g, "");
+}
+
+function setText(el, text) {
+  if (el && el.textContent !== text) el.textContent = text;
+}
+
+function setMode(el, mode) {
+  if (!el || el.dataset.mode === mode) return;
+  el.dataset.mode = mode;
+  el.classList.remove("is-working", "is-done", "is-idle");
+  el.classList.add(mode === "working" ? "is-working" : mode === "done" ? "is-done" : "is-idle");
+}
+
+function stationEl(id) {
+  return document.querySelector('[data-station="' + id + '"]');
+}
+
+function paintCrew(state) {
+  const done = new Set(state.done || []);
+  for (const id of CREW) {
+    const el = stationEl(id);
+    const crew = (state.crew || []).find((item) => item.id === id);
+    if (crew) {
+      setText(el.querySelector("strong"), crew.name);
+      setText(el.querySelector(".model"), crew.model);
+    }
+    let mode = "idle";
+    let label = "Waiting";
+    if (state.active === id) {
+      mode = "working";
+      label = "Working";
+    } else if (done.has(id)) {
+      mode = "done";
+      label = "Done";
+    }
+    setMode(el, mode);
+    setText(el.querySelector(".status"), label);
+  }
+  const brief = stationEl("brief");
+  const handedOff = state.active === "development" || done.has("development") || ["writer", "editor", "art", "images"].includes(state.station);
+  if (state.station === "brief" && state.running) {
+    setMode(brief, "working");
+    setText(brief.querySelector(".status"), "Working");
+  } else if (handedOff) {
+    setMode(brief, "done");
+    setText(brief.querySelector(".status"), "Done");
+  } else {
+    setMode(brief, "idle");
+    setText(brief.querySelector(".status"), "Waiting");
+  }
+}
+
+function moveToken(station, animate) {
+  const token = document.getElementById("token");
+  const stage = document.getElementById("stage");
+  const el = stationEl(station) || stationEl("brief");
+  const a = el.getBoundingClientRect();
+  const b = stage.getBoundingClientRect();
+  const x = a.left - b.left + a.width / 2 - token.offsetWidth / 2;
+  let y = a.top - b.top - token.offsetHeight - 6;
+  if (station === "images") y = a.top - b.top + 4;
+  if (y < 8) y = 8;
+  token.classList.toggle("no-anim", !animate);
+  token.style.transform = "translate(" + Math.round(x) + "px, " + Math.round(y) + "px)";
+}
+
+function placeRail() {
+  const slot = document.getElementById("return-slot");
+  const writer = stationEl("writer");
+  const editor = stationEl("editor");
+  const rail = document.getElementById("return-rail");
+  if (!writer || !editor) return;
+  const slotBox = slot.getBoundingClientRect();
+  const writerBox = writer.getBoundingClientRect();
+  const editorBox = editor.getBoundingClientRect();
+  const width = editorBox.right - writerBox.left;
+  if (width < 20) return;
+  rail.style.marginLeft = Math.max(0, writerBox.left - slotBox.left) + "px";
+  rail.style.width = width + "px";
+}
+
+function playReturn(instant) {
+  const rail = document.getElementById("return-rail");
+  const token = document.getElementById("return-token");
+  rail.classList.add("is-live");
+  token.classList.add("no-anim");
+  token.style.left = instant ? "0px" : "calc(100% - 36px)";
+  if (instant) return;
+  void token.offsetWidth;
+  token.classList.remove("no-anim");
+  token.style.left = "0px";
+}
+
+function parkReturn() {
+  const rail = document.getElementById("return-rail");
+  const token = document.getElementById("return-token");
+  rail.classList.remove("is-live");
+  token.classList.add("no-anim");
+  token.style.left = "calc(100% - 36px)";
+}
+
+function columnFor(bay, model) {
+  for (const col of bay.querySelectorAll(".model-col")) {
+    if (col.dataset.model === model) return col;
+  }
+  return null;
+}
+
+function ensureColumn(bay, model, kinds) {
+  let col = columnFor(bay, model);
+  if (col) {
+    if (kinds) setText(col.querySelector(".kinds"), kinds);
+    return col;
+  }
+  col = document.createElement("section");
+  col.className = "model-col";
+  col.dataset.model = model;
+  const title = document.createElement("h3");
+  title.textContent = model;
+  const kindEl = document.createElement("p");
+  kindEl.className = "kinds";
+  kindEl.textContent = kinds || "";
+  const slots = document.createElement("div");
+  slots.className = "slots";
+  const ghost = document.createElement("div");
+  ghost.className = "frame ghost";
+  ghost.textContent = "Waiting";
+  slots.appendChild(ghost);
+  col.append(title, kindEl, slots);
+  bay.appendChild(col);
+  return col;
+}
+
+function ensureFrame(col, id) {
+  const domId = "frame-" + String(id).replace(/[^A-Za-z0-9_-]/g, "_");
+  const found = document.getElementById(domId);
+  if (found) return found;
+  const frame = document.createElement("figure");
+  frame.id = domId;
+  frame.className = "frame";
+  frame.dataset.job = id;
+  frame.innerHTML = '<div class="flash"></div><div class="cell"><img alt="" hidden><span class="hold">Exposing</span></div><figcaption></figcaption>';
+  col.querySelector(".slots").appendChild(frame);
+  return frame;
+}
+
+function showDone(frame, image) {
+  const img = frame.querySelector("img");
+  const hold = frame.querySelector(".hold");
+  if (image.src) {
+    if (img.getAttribute("src") !== image.src) img.src = image.src;
+    img.hidden = false;
+    hold.hidden = true;
+  } else {
+    img.hidden = true;
+    hold.hidden = false;
+    hold.textContent = "Saved";
+  }
+}
+
+function applyFrameState(frame, image) {
+  frame.dataset.state = image.state || "";
+  frame.classList.remove("is-running", "is-done", "is-failed", "exposing", "printed");
+  const img = frame.querySelector("img");
+  const hold = frame.querySelector(".hold");
+  if (image.state === "running") {
+    frame.classList.add("is-running", "exposing");
+    img.removeAttribute("src");
+    img.hidden = true;
+    hold.hidden = false;
+    hold.textContent = "Exposing";
+  } else if (image.state === "done") {
+    frame.classList.add("is-done", "printed");
+    showDone(frame, image);
+  } else if (image.state === "failed") {
+    frame.classList.add("is-failed");
+    img.hidden = true;
+    hold.hidden = false;
+    hold.textContent = "Failed";
+  }
+}
+
+function syncImages(state) {
+  const bay = document.getElementById("image-bay");
+  for (const agent of state.image_agents || []) ensureColumn(bay, agent.model, agent.kinds);
+  const live = new Set((state.images || []).map((image) => image.id));
+  bay.querySelectorAll(".frame[data-job]").forEach((frame) => {
+    if (!live.has(frame.dataset.job)) frame.remove();
+  });
+  for (const image of state.images || []) {
+    const col = ensureColumn(bay, image.model || "still", image.kind || "");
+    const frame = ensureFrame(col, image.id);
+    const caption = image.error ? image.id + " · " + image.kind + " — " + image.error : image.id + " · " + image.kind;
+    setText(frame.querySelector("figcaption"), caption);
+    if (frame.dataset.state !== (image.state || "")) applyFrameState(frame, image);
+    else if (image.state === "done") showDone(frame, image);
+  }
+  bay.querySelectorAll(".model-col").forEach((col) => {
+    const jobs = col.querySelectorAll(".frame[data-job]");
+    col.classList.toggle("has-jobs", jobs.length > 0);
+    col.classList.toggle("is-working", [...jobs].some((frame) => frame.dataset.state === "running"));
+  });
+}
+
+function syncLog(lines) {
+  const box = document.getElementById("log");
+  const head = lines[0] || "";
+  if (lines.length < shown || box.dataset.head !== head) {
+    box.replaceChildren();
+    shown = 0;
+  }
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 12;
+  for (const line of lines.slice(shown)) {
+    const p = document.createElement("p");
+    p.textContent = plain(line);
+    box.appendChild(p);
+  }
+  shown = lines.length;
+  box.dataset.head = head;
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function paint(state, prev) {
+  const stage = document.getElementById("stage");
+  const note = document.getElementById("note");
+  setText(note, state.note || "Waiting for a brief.");
+  note.classList.toggle("is-bad", /not set|failed|stopped|cancelled|error/i.test(state.note || ""));
+  const folder = document.getElementById("folder");
+  setText(folder, state.folder || "");
+  folder.hidden = !state.folder;
+  const plaque = document.getElementById("plaque");
+  setText(plaque, state.brief || "");
+  plaque.hidden = !state.brief;
+  document.getElementById("live").hidden = !state.running;
+  stage.classList.toggle("is-running", !!state.running);
+  const run = document.getElementById("run");
+  run.disabled = !!state.running;
+  setText(run, state.running ? "Crew is working…" : "Run the crew");
+  paintCrew(state);
+  const token = document.getElementById("token");
+  const glyph = state.glyph || "sheet";
+  if (token.dataset.glyph !== glyph) {
+    token.dataset.glyph = glyph;
+    token.innerHTML = GLYPHS[glyph] || GLYPHS.sheet;
+  }
+  if (!document.getElementById("return-token").dataset.ready) {
+    document.getElementById("return-token").innerHTML = GLYPHS.page;
+    document.getElementById("return-token").dataset.ready = "1";
+  }
+  syncImages(state);
+  placeRail();
+  const first = !prev;
+  moveToken(state.station || "brief", !first);
+  token.classList.toggle("is-hidden", !!state.returning);
+  const label = document.getElementById("return-label");
+  setText(label, state.returning ? "Script page sent back" : "Editor loop, up to two rewrites");
+  label.classList.toggle("is-live", !!state.returning);
+  if (state.returning && !(prev && prev.returning)) {
+    playReturn(first);
+    if (!first) {
+      stage.classList.remove("shake");
+      void stage.offsetWidth;
+      stage.classList.add("shake");
+    }
+  } else if (!state.returning) {
+    parkReturn();
+  }
+  const here = Math.max(0, PIPS.indexOf(state.station || "brief"));
+  document.querySelectorAll(".pip").forEach((pip, index) => {
+    pip.classList.toggle("is-on", index <= here);
+    pip.classList.toggle("is-here", index === here);
+  });
+  syncLog(state.log || []);
+}
+
+function apply(state) {
+  if (!state || typeof state.revision !== "number") return;
+  if (state.revision === revision) return;
+  const prev = last;
+  last = state;
+  revision = state.revision;
+  paint(state, prev);
+}
+
+function startDust() {
+  const canvas = document.getElementById("dust");
+  const stage = document.getElementById("stage");
+  const ctx = canvas.getContext("2d");
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const specks = Array.from({ length: 32 }, () => ({
+    x: Math.random(),
+    y: Math.random(),
+    r: 0.6 + Math.random() * 1.5,
+    s: 0.06 + Math.random() * 0.18,
+    a: 0.15 + Math.random() * 0.35
+  }));
+  function frame() {
+    const w = stage.clientWidth;
+    const h = stage.clientHeight;
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+    ctx.clearRect(0, 0, w, h);
+    for (const speck of specks) {
+      if (!reduce) {
+        speck.y -= speck.s / 120;
+        if (speck.y < 0) {
+          speck.y = 1;
+          speck.x = Math.random();
+        }
+      }
+      ctx.fillStyle = "rgba(243, 234, 215, " + speck.a + ")";
+      ctx.beginPath();
+      ctx.arc(speck.x * w, speck.y * h, speck.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (!reduce) requestAnimationFrame(frame);
+  }
+  frame();
+}
+
+async function startRun() {
+  const run = document.getElementById("run");
+  run.disabled = true;
+  try {
+    const res = await fetch("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        idea: document.getElementById("idea").value,
+        pages_only: document.getElementById("pages").checked,
+        dry_run: document.getElementById("dry").checked
+      })
+    });
+    if (!res.ok) {
+      const note = document.getElementById("note");
+      note.textContent = "Could not start the crew.";
+      note.classList.add("is-bad");
+      run.disabled = false;
+    }
+  } catch (error) {
+    const note = document.getElementById("note");
+    note.textContent = "Could not start the crew.";
+    note.classList.add("is-bad");
+    run.disabled = false;
+  }
+}
+
+let librarySig = null;
+async function pollLibrary() {
+  try {
+    const res = await fetch("/api/library");
+    const data = await res.json();
+    if (data.signature === librarySig) return;
+    librarySig = data.signature;
+    const nav = document.getElementById("library");
+    nav.replaceChildren();
+    if (!data.projects || !data.projects.length) {
+      const p = document.createElement("p");
+      p.className = "empty";
+      p.textContent = "No productions yet.";
+      nav.appendChild(p);
+      return;
+    }
+    for (const project of data.projects) {
+      const section = document.createElement("section");
+      const heading = document.createElement("h3");
+      heading.textContent = project.slug;
+      section.appendChild(heading);
+      for (const [label, items] of [["Documents", project.documents], ["Images", project.images]]) {
+        const name = document.createElement("p");
+        name.className = "label";
+        name.textContent = label;
+        section.appendChild(name);
+        if (!items.length) {
+          const empty = document.createElement("p");
+          empty.className = "empty";
+          empty.textContent = "None yet.";
+          section.appendChild(empty);
+          continue;
+        }
+        for (const item of items) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "file";
+          button.textContent = item.name;
+          button.dataset.path = item.path;
+          section.appendChild(button);
+        }
+      }
+      nav.appendChild(section);
+    }
+  } catch (error) {
+    /* the board still shows the log */
+  }
+}
+
+async function openFile(path) {
+  const title = document.getElementById("reader-title");
+  const pre = document.getElementById("reader-text");
+  const img = document.getElementById("reader-image");
+  try {
+    const res = await fetch("/api/file?path=" + encodeURIComponent(path));
+    const data = await res.json();
+    title.textContent = data.name || "Reader";
+    if (data.kind === "image" && data.src) {
+      pre.hidden = true;
+      img.hidden = false;
+      img.alt = data.name || "Image";
+      img.src = data.src;
+    } else {
+      img.hidden = true;
+      pre.hidden = false;
+      pre.textContent = data.text || data.error || "That file is not in a production folder.";
+    }
+  } catch (error) {
+    title.textContent = "Reader";
+    img.hidden = true;
+    pre.hidden = false;
+    pre.textContent = "That file is not in a production folder.";
+  }
+}
+
+document.getElementById("brief-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  startRun();
+});
+document.getElementById("idea").addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+    event.preventDefault();
+    startRun();
+  }
+});
+for (const name of ["idea", "pages", "dry"]) {
+  document.getElementById("help-" + name).addEventListener("click", () => {
+    const copy = document.getElementById("help-" + name + "-copy");
+    copy.hidden = !copy.hidden;
+  });
+}
+document.getElementById("library").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-path]");
+  if (!button) return;
+  openFile(button.dataset.path);
+});
+document.getElementById("stage").addEventListener("animationend", (event) => {
+  if (event.animationName === "shake") event.currentTarget.classList.remove("shake");
+});
+window.addEventListener("resize", () => {
+  if (!last) return;
+  placeRail();
+  moveToken(last.station || "brief", false);
+});
+
+startDust();
+pollLibrary();
+setInterval(pollLibrary, 3000);
+fetch("/api/status").then((res) => res.json()).then(apply).catch(() => {
+  document.getElementById("note").textContent = "Could not read the desk.";
+});
+const events = new EventSource("/api/events");
+events.onmessage = (event) => {
+  streamOK = true;
+  apply(JSON.parse(event.data));
+};
+events.onerror = () => { streamOK = false; };
+setInterval(() => {
+  if (streamOK) return;
+  fetch("/api/status").then((res) => res.json()).then(apply).catch(() => {});
+}, 1000);
+</script>
+</body>
+</html>
