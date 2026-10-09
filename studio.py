@@ -223,38 +223,17 @@ class ScreenwriterStudio:
         previous: Screenplay | None,
         issues: list[str] | None,
     ) -> Screenplay:
-        playbook = PLAYBOOKS.get(development.job_type, PLAYBOOKS["narrative"])
-        budget = shot_budget(development.runtime_seconds)
-        parts = [
-            "Locked development. Do not renegotiate it.",
-            development.model_dump_json(indent=2),
-            (
-                f"Shot budget: {budget} shots maximum for {development.runtime_seconds} seconds "
-                f"(one shot per {CLIP_SECONDS} seconds). Each shot becomes one generated image. "
-                f"Do not write more than {budget} shots."
-            ),
-            "Playbook:\n" + playbook,
-        ]
-        if previous is not None and issues:
-            parts.append("The editor rejected the previous draft. Rewrite it.\n")
-            parts.append("Issues:\n" + "\n".join(f"- {issue}" for issue in issues))
-            parts.append("Previous Fountain:\n" + previous.fountain)
-        result = await Runner.run(writer_agent, "\n\n".join(parts), max_turns=4)
+        result = await Runner.run(
+            writer_agent,
+            writer_user_message(development, previous, issues),
+            max_turns=4,
+        )
         return result.final_output_as(Screenplay)
 
     async def _edit(self, development: Development, screenplay: Screenplay) -> ScriptVerdict:
-        budget = shot_budget(development.runtime_seconds)
-        payload = {
-            "runtime_seconds": development.runtime_seconds,
-            "shot_budget": budget,
-            "logline": development.logline,
-            "beats": [beat.model_dump() for beat in development.beats],
-            "fountain": screenplay.fountain,
-            "shots": [shot.model_dump() for shot in screenplay.shots],
-        }
         result = await Runner.run(
             editor_agent,
-            "Check this draft against the checklist.\n\n" + json.dumps(payload, indent=2),
+            editor_user_message(development, screenplay),
             max_turns=3,
         )
         verdict = result.final_output_as(ScriptVerdict)
@@ -270,6 +249,69 @@ class ScreenwriterStudio:
     async def _art(self, development: Development, screenplay: Screenplay) -> StillPackage:
         result = await Runner.run(art_agent, art_user_message(development, screenplay), max_turns=4)
         return result.final_output_as(StillPackage)
+
+
+def writer_user_message(
+    development: Development,
+    previous: Screenplay | None,
+    issues: list[str] | None,
+) -> str:
+    """First draft gets the lock and the playbook. A rewrite does not.
+
+    The writer's instructions already hold the craft rules, and look, palette,
+    and lighting are for the art director. Sending that bulk again on every
+    editor return spends context the rewrite does not use. The revision loop
+    stays bounded in run(); this only stops the stale brief from riding along.
+    See https://github.com/kunwardhruv/Supervisor-Multi-Agent-Content-Team
+    """
+    playbook = PLAYBOOKS.get(development.job_type, PLAYBOOKS["narrative"])
+    budget = shot_budget(development.runtime_seconds)
+    if previous is not None and issues:
+        lock = {
+            "title": development.title,
+            "job_type": development.job_type,
+            "runtime_seconds": development.runtime_seconds,
+            "aspect_ratio": development.aspect_ratio,
+            "language": development.language,
+            "logline": development.logline,
+            "shot_budget": budget,
+            "beats": [beat.model_dump() for beat in development.beats],
+            "character_names": [character.name for character in development.characters],
+        }
+        return "\n\n".join(
+            [
+                "The editor rejected the previous draft. Rewrite it. Do not renegotiate the lock.",
+                json.dumps(lock, separators=(",", ":")),
+                "Issues:\n" + "\n".join(f"- {issue}" for issue in issues),
+                "Previous Fountain:\n" + previous.fountain,
+            ]
+        )
+    return "\n\n".join(
+        [
+            "Locked development. Do not renegotiate it.",
+            development.model_dump_json(indent=2),
+            (
+                f"Shot budget: {budget} shots maximum for {development.runtime_seconds} seconds "
+                f"(one shot per {CLIP_SECONDS} seconds). Each shot becomes one generated image. "
+                f"Do not write more than {budget} shots."
+            ),
+            "Playbook:\n" + playbook,
+        ]
+    )
+
+
+def editor_user_message(development: Development, screenplay: Screenplay) -> str:
+    """Checklist payload. Compact JSON: this whole draft is resent on every pass."""
+    budget = shot_budget(development.runtime_seconds)
+    payload = {
+        "runtime_seconds": development.runtime_seconds,
+        "shot_budget": budget,
+        "logline": development.logline,
+        "beats": [beat.model_dump() for beat in development.beats],
+        "fountain": screenplay.fountain,
+        "shots": [shot.model_dump() for shot in screenplay.shots],
+    }
+    return "Check this draft against the checklist.\n\n" + json.dumps(payload, separators=(",", ":"))
 
 
 def art_user_message(development: Development, screenplay: Screenplay) -> str:
