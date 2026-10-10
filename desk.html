@@ -497,8 +497,11 @@
   #log p { margin: 0 0 10px; overflow-wrap: anywhere; animation: rise 220ms ease; }
   #log p:last-child { margin-bottom: 0; }
   #reader-image { display: block; max-width: min(100%, 520px); margin-top: 12px; border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
+  #reader-pane { min-width: 0; max-width: 100%; }
   #reader-preview {
     margin: 8px 0 0;
+    max-width: 100%;
+    min-width: 0;
     max-height: min(68vh, 720px);
     overflow: auto;
     padding: 16px 18px 20px;
@@ -543,6 +546,39 @@
     white-space: pre;
   }
   #reader-preview pre code { background: transparent; padding: 0; font-size: inherit; }
+  #reader-preview .md-table-wrap {
+    margin: 0.85em 0 1em;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface);
+  }
+  #reader-preview table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  #reader-preview th,
+  #reader-preview td {
+    padding: 9px 12px;
+    border: 1px solid var(--line);
+    vertical-align: top;
+    text-align: left;
+  }
+  #reader-preview th {
+    background: #f3efe8;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  #reader-preview td {
+    min-width: 5.5rem;
+    max-width: 24rem;
+    overflow-wrap: break-word;
+  }
   #reader-preview .json-key { color: #7a3e12; font-weight: 600; }
   #reader-preview .json-string { color: #1c6b45; }
   #reader-preview .json-number { color: #1d4e89; }
@@ -1500,6 +1536,78 @@ function renderInline(raw) {
   return work;
 }
 
+function endsWithDelimiter(text) {
+  if (!text.endsWith("|")) return false;
+  let slashes = 0;
+  for (let i = text.length - 2; i >= 0 && text[i] === "\\"; i -= 1) slashes += 1;
+  return slashes % 2 === 0;
+}
+
+function splitTableCells(line) {
+  let text = String(line).trim();
+  if (text.startsWith("|")) text = text.slice(1);
+  if (endsWithDelimiter(text)) text = text.slice(0, -1);
+  const cells = [];
+  let current = "";
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === "\\" && text[i + 1] === "|") {
+      current += "|";
+      i += 1;
+      continue;
+    }
+    if (text[i] === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += text[i];
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function tableAlignments(line) {
+  if (!String(line).includes("|")) return null;
+  const cells = splitTableCells(line);
+  if (!cells.length || cells.some((cell) => !/^:?-+:?$/.test(cell))) return null;
+  return cells.map((cell) => {
+    const left = cell.startsWith(":");
+    const right = cell.endsWith(":");
+    if (left && right) return "center";
+    if (right) return "right";
+    return "left";
+  });
+}
+
+function looksLikeTableRow(line) {
+  const text = String(line).trim();
+  if (!text.includes("|")) return false;
+  if (/^#{1,6}(?:[ \t]|$)/.test(text)) return false;
+  if (/^[-*+][ \t]+/.test(text)) return false;
+  if (/^\d+[.)][ \t]+/.test(text)) return false;
+  if (/^\u0000F\d+\u0000$/.test(text)) return false;
+  return true;
+}
+
+function renderTable(header, aligns, body) {
+  const cols = Math.max(header.length, aligns.length, body.reduce((n, row) => Math.max(n, row.length), 0));
+  const alignFor = (index) => (aligns[index] === "center" || aligns[index] === "right" ? aligns[index] : "left");
+  let html = '<div class="md-table-wrap"><table><thead><tr>';
+  for (let i = 0; i < cols; i += 1) {
+    html += '<th style="text-align:' + alignFor(i) + '">' + renderInline(header[i] || "") + "</th>";
+  }
+  html += "</tr></thead><tbody>";
+  for (const row of body) {
+    html += "<tr>";
+    for (let i = 0; i < cols; i += 1) {
+      html += '<td style="text-align:' + alignFor(i) + '">' + renderInline(row[i] || "") + "</td>";
+    }
+    html += "</tr>";
+  }
+  html += "</tbody></table></div>";
+  return html;
+}
+
 function renderMarkdown(source) {
   const text = String(source || "").replace(/\r\n?/g, "\n");
   const fences = [];
@@ -1521,7 +1629,8 @@ function renderMarkdown(source) {
     html += "</" + list + ">";
     list = "";
   }
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
     const fence = /^\u0000F(\d+)\u0000$/.exec(line);
     if (fence) {
       flushPara();
@@ -1536,6 +1645,23 @@ function renderMarkdown(source) {
       const level = heading[1].length;
       html += "<h" + level + ">" + renderInline(heading[2].replace(/[ \t]+#+\s*$/, "")) + "</h" + level + ">";
       continue;
+    }
+    if (looksLikeTableRow(line) && i + 1 < lines.length) {
+      const aligns = tableAlignments(lines[i + 1]);
+      if (aligns) {
+        flushPara();
+        closeList();
+        const header = splitTableCells(line);
+        const body = [];
+        i += 2;
+        while (i < lines.length && looksLikeTableRow(lines[i]) && !tableAlignments(lines[i])) {
+          body.push(splitTableCells(lines[i]));
+          i += 1;
+        }
+        i -= 1;
+        html += renderTable(header, aligns, body);
+        continue;
+      }
     }
     const bullet = /^[ \t]*[-*][ \t]+(.*)$/.exec(line);
     const ordered = /^[ \t]*\d+[.)][ \t]+(.*)$/.exec(line);

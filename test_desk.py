@@ -2,7 +2,9 @@
 
 import json
 import os
+import re
 import socket
+import subprocess
 import threading
 import unittest
 import urllib.error
@@ -192,6 +194,106 @@ class DeskPageTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             urllib.request.urlopen(request, timeout=5)
         self.assertEqual(caught.exception.code, 400)
+
+
+def _reader_renderer_js() -> str:
+    html = Path("desk.html").read_text(encoding="utf-8")
+    start = html.index("function escapeText(")
+    end = html.index("function highlightJson(")
+    return html[start:end]
+
+
+class MarkdownPreviewTest(unittest.TestCase):
+    def test_shot_sheet_table_renders_and_suffix_case_is_markdown(self):
+        fixture = "\n".join(
+            [
+                "| # | Dur | Framing | Action | Audio | Notes |",
+                "|---|---|---|---|---|---|",
+                "| 1 | 4s | Vertical wide shot of the night platform | Rain on the glass | Lukas, under his breath | Hold |",
+                "| 2 | 6s | Close on Lukas | He whispers stay \\| with me through a very long action line that must stay inside this cell | Quiet | Rescue |",
+                "| 3 | 2s | <script>alert(1)</script> | ok | — | — |",
+                "",
+                "- The repeated phrase Stay with me is planted as Lukas's immediate rescue command.",
+            ]
+        )
+        prose = "\n".join(
+            [
+                "# Title",
+                "",
+                "A **bold** and *italic* [link](https://example.com).",
+                "",
+                "- one",
+                "",
+                "```",
+                "code",
+                "```",
+            ]
+        )
+        aligned = "| Left | Right |\n|:---|---:|\n| a | b |\n"
+        driver = _reader_renderer_js() + "\n" + (
+            "const fixture = " + json.dumps(fixture) + ";\n"
+            "const prose = " + json.dumps(prose) + ";\n"
+            "const aligned = " + json.dumps(aligned) + ";\n"
+            "process.stdout.write(JSON.stringify({\n"
+            "  html: renderMarkdown(fixture),\n"
+            "  prose: renderMarkdown(prose),\n"
+            "  aligned: renderMarkdown(aligned),\n"
+            "  formats: {\n"
+            "    upper: readerFormatFor('productions/demo/02_SHOTS.MD'),\n"
+            "    lower: readerFormatFor('02_shots.md'),\n"
+            "    mixed: readerFormatFor('Notes.Md'),\n"
+            "    markdown: readerFormatFor('README.MARKDOWN'),\n"
+            "    fountain: readerFormatFor('scene.fountain'),\n"
+            "    text: readerFormatFor('notes.TXT')\n"
+            "  }\n"
+            "}));\n"
+        )
+        proc = subprocess.run(["node", "-"], input=driver, text=True, capture_output=True, check=True)
+        result = json.loads(proc.stdout)
+        html = result["html"]
+        rows = re.findall(r"<tr>(.*?)</tr>", html)
+        self.assertGreaterEqual(len(rows), 4)
+        header = re.findall(r"<th[^>]*>(.*?)</th>", rows[0])
+        self.assertEqual(header, ["#", "Dur", "Framing", "Action", "Audio", "Notes"])
+        self.assertIn("<table>", html)
+        self.assertNotIn("---", html)
+        self.assertNotIn("|---|", html)
+        self.assertNotIn("|# Dur", html)
+        self.assertNotRegex(html, r"<p>[^<]*\|")
+        action = re.findall(r"<td[^>]*>(.*?)</td>", rows[2])
+        self.assertEqual(len(action), 6)
+        self.assertIn("stay | with me", action[3])
+        self.assertIn("must stay inside this cell", action[3])
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
+        self.assertNotIn("<script", html.lower())
+        self.assertLess(html.index("</table>"), html.index("<li>"))
+        self.assertIn(
+            "<li>The repeated phrase Stay with me is planted as Lukas's immediate rescue command.</li>",
+            html,
+        )
+        prose_html = result["prose"]
+        self.assertIn("<h1>Title</h1>", prose_html)
+        self.assertIn("<strong>bold</strong>", prose_html)
+        self.assertIn("<em>italic</em>", prose_html)
+        self.assertIn('href="https://example.com"', prose_html)
+        self.assertIn("<li>one</li>", prose_html)
+        self.assertIn("<pre", prose_html)
+        self.assertIn("code", prose_html)
+        aligned_html = result["aligned"]
+        aligned_header = re.findall(r"<th\b([^>]*)>", aligned_html)
+        self.assertIn("text-align:left", aligned_header[0])
+        self.assertIn("text-align:right", aligned_header[1])
+        self.assertEqual(
+            result["formats"],
+            {
+                "upper": "md",
+                "lower": "md",
+                "mixed": "md",
+                "markdown": "md",
+                "fountain": "",
+                "text": "",
+            },
+        )
 
 
 if __name__ == "__main__":
