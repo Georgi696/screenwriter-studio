@@ -20,9 +20,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
+import time
 import traceback
 import urllib.parse
 import webbrowser
@@ -501,6 +503,91 @@ def bind(port: int) -> DeskServer:
     return DeskServer(("0.0.0.0", port), DeskHandler)
 
 
+_TUNNEL_URL = re.compile(r"https://[a-z0-9]+\.lhr\.life")
+
+
+def public_url_from_tunnel_log(text: str) -> str | None:
+    match = _TUNNEL_URL.search(text)
+    return match.group(0) if match else None
+
+
+def _browsers_are_remote() -> bool:
+    """True when the person opening the link is not on this computer.
+
+    Cursor's preview and a browser on their laptop both dial their own
+    127.0.0.1. Nothing is listening there, so every one of them reports
+    connection refused while this process is fine.
+    """
+    return bool(os.environ.get("CURSOR_AGENT") or os.environ.get("CURSOR_AGENT_SOCKET"))
+
+
+def _start_public_tunnel(port: int, timeout: float = 20) -> tuple[subprocess.Popen | None, str | None]:
+    """Publish the desk through localhost.run. Returns the ssh process and the https URL."""
+    if shutil.which("ssh") is None:
+        return None, None
+    proc = subprocess.Popen(
+        [
+            "ssh",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "BatchMode=yes",
+            "-o", "ExitOnForwardFailure=yes",
+            "-o", "ServerAliveInterval=30",
+            "-R", f"80:127.0.0.1:{port}",
+            "nokey@localhost.run",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    assert proc.stdout is not None
+    fd = proc.stdout.fileno()
+    os.set_blocking(fd, False)
+    buf = ""
+    deadline = time.monotonic() + timeout
+
+    def drain() -> None:
+        nonlocal buf
+        while True:
+            try:
+                chunk = os.read(fd, 4096)
+            except BlockingIOError:
+                return
+            if not chunk:
+                return
+            buf += chunk.decode("utf-8", "replace")
+
+    url = None
+    while time.monotonic() < deadline and proc.poll() is None:
+        drain()
+        url = public_url_from_tunnel_log(buf)
+        if url:
+            break
+        time.sleep(0.1)
+    if url is None:
+        proc.terminate()
+        return None, None
+
+    def keep_draining() -> None:
+        while proc.poll() is None:
+            drain()
+            time.sleep(0.2)
+
+    threading.Thread(target=keep_draining, name="desk-tunnel", daemon=True).start()
+    return proc, url
+
+
+def _stop_tunnel(proc: subprocess.Popen | None) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, 15)
+    except OSError:
+        proc.terminate()
+
+
 def _open_browser(url: str) -> None:
     """Open a window on this display. xdg-open hangs on the xfce helper and never shows the page."""
     chrome = shutil.which("google-chrome") or shutil.which("google-chrome-stable")
@@ -528,8 +615,25 @@ def serve(port: int = 7860, open_browser: bool = True) -> None:
     if httpd is None:
         raise SystemExit(f"Could not open the desk: {last_error}")
     bound = httpd.server_address[1]
-    url = f"http://127.0.0.1:{bound}"
-    print(f"Screenwriter desk at {url}", flush=True)
+    local = f"http://127.0.0.1:{bound}"
+    tunnel: subprocess.Popen | None = None
+    public = None
+    if _browsers_are_remote():
+        print("Publishing a link browsers outside this computer can open...", flush=True)
+        tunnel, public = _start_public_tunnel(bound)
+    if public:
+        print(f"Open this in any browser:\n{public}", flush=True)
+        print(f"{local} is only this computer. Other browsers refuse it.", flush=True)
+        url = public
+    else:
+        print(f"Screenwriter desk at {local}", flush=True)
+        if _browsers_are_remote():
+            print(
+                "No public link. A browser on another computer will say "
+                f"{local} refused to connect.",
+                flush=True,
+            )
+        url = local
     if open_browser:
         _open_browser(url)
     try:
@@ -537,4 +641,5 @@ def serve(port: int = 7860, open_browser: bool = True) -> None:
     except KeyboardInterrupt:
         print("\nDesk closed.")
     finally:
+        _stop_tunnel(tunnel)
         httpd.server_close()

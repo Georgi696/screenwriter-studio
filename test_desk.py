@@ -69,6 +69,17 @@ class DeskPageTest(unittest.TestCase):
             urllib.request.urlopen(f"http://127.0.0.1:{self.port}/media?id=../.env", timeout=5)
         self.assertEqual(caught.exception.code, 404)
 
+    def test_tunnel_log_url(self):
+        from desk import public_url_from_tunnel_log
+
+        log = (
+            "Welcome to localhost.run!\n"
+            "69e20590eedd2c.lhr.life tunneled with tls termination, "
+            "https://69e20590eedd2c.lhr.life\n"
+        )
+        self.assertEqual(public_url_from_tunnel_log(log), "https://69e20590eedd2c.lhr.life")
+        self.assertIsNone(public_url_from_tunnel_log("still waiting"))
+
     def test_ipv4_wildcard_is_in_the_listen_table(self):
         self.assertEqual(self.httpd.server_address[0], "0.0.0.0")
         needle = f"00000000:{self.port:04X}"
