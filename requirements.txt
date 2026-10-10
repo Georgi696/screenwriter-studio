@@ -1,0 +1,6 @@
+# Versions used by the regression suite (Python 3.12).
+openai-agents==0.3.3
+openai==1.109.1
+pydantic==2.11.10
+python-dotenv==1.1.1
+httpx==0.28.1

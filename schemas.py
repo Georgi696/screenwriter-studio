@@ -47,12 +47,13 @@ class Development(BaseModel):
     slug: str = Field(description="Lowercase hyphenated folder name, no spaces")
     job_type: str = Field(description="narrative, sketch, ad, vertical, explainer, or trailer")
     runtime_seconds: int = Field(ge=6, le=720)
-    aspect_ratio: str = Field(description="16:9, 9:16, or 1:1")
+    max_shots: int | None = Field(default=None, ge=1, le=240)
+    aspect_ratio: Literal["16:9", "9:16", "1:1"] = Field(description="Production aspect ratio")
     language: str
     tone: str
     audience: str
     logline: str = Field(description="One sentence: when X, a flawed character must Y before Z")
-    beats: list[Beat] = Field(min_length=3, max_length=12)
+    beats: list[Beat] = Field(min_length=1, max_length=120)
     look: str
     palette: str
     lighting: str
@@ -62,7 +63,7 @@ class Development(BaseModel):
 
 
 class Shot(BaseModel):
-    number: int
+    number: int = Field(ge=1)
     duration_seconds: int = Field(ge=3, le=15)
     framing: str
     action: str = Field(description="One continuous action. No cuts inside the shot")
@@ -72,7 +73,7 @@ class Shot(BaseModel):
 
 class Screenplay(BaseModel):
     fountain: str = Field(description="Complete Fountain screenplay, including title page lines")
-    shots: list[Shot] = Field(min_length=1, max_length=16)
+    shots: list[Shot] = Field(min_length=1, max_length=240)
     notes: list[str] = Field(description="At most two notes: an invented choice, or one alternative")
 
 

@@ -62,7 +62,7 @@ def budget_line() -> str:
         f"A 30-second film is at most {shot_budget(30)} shots. "
         f"A 15-second film is at most {shot_budget(15)} shots. "
         "Name a runtime of 15, 30, or 60 seconds and a story the crew can shoot inside that budget. "
-        "This is a short, not a feature."
+        "This is a short, not a feature. These are default generation limits; a production can choose a different shot limit."
     )
 
 

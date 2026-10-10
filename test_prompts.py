@@ -60,7 +60,7 @@ class WriterPromptTest(unittest.TestCase):
                 development.model_dump_json(indent=2),
                 (
                     f"Shot budget: {budget} shots maximum for {development.runtime_seconds} seconds "
-                    f"(one shot per {CLIP_SECONDS} seconds). Each shot becomes one generated image. "
+                    f"(a configurable still-generation limit). Each shot becomes one generated image. "
                     f"Do not write more than {budget} shots."
                 ),
                 "Playbook:\n" + PLAYBOOKS["narrative"],
@@ -114,7 +114,7 @@ class MissingKeyTest(unittest.TestCase):
         finally:
             studio.load_kie_api_key = original
         self.assertEqual(len(lines), 1)
-        self.assertIn("KIE_API_KEY is not set", lines[0])
+        self.assertIn("KIE_API_KEY is not set", lines[0].text)
 
 
 if __name__ == "__main__":

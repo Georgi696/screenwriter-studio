@@ -3,7 +3,9 @@
 import json
 import unittest
 
-from board import Board, apply_chunk, client_payload, scrub, token_glyph, token_station
+from events import StudioEvent
+
+from board import Board, apply_event, client_payload, scrub, token_glyph, token_station
 
 
 class ScrubTest(unittest.TestCase):
@@ -38,63 +40,57 @@ class TokenTest(unittest.TestCase):
         board.edge = "brief-dev"
         self.assertEqual(token_station(board), "brief")
         self.assertEqual(token_glyph(board), "sheet")
-        apply_chunk(board, "**Development** is locking the logline and the beats.\n\n")
+        apply_event(board, StudioEvent("development", "Different display wording"))
         self.assertEqual(board.active, "development")
         self.assertEqual(token_station(board), "development")
 
     def test_editor_return_and_stills(self):
         board = Board()
-        apply_chunk(board, "**Development** is locking the logline and the beats.\n\n")
-        apply_chunk(board, "**Screenwriter** is writing the pages.\n\n")
+        apply_event(board, StudioEvent("development", "Different display wording"))
+        apply_event(board, StudioEvent("writing", "Writing"))
         self.assertEqual(token_station(board), "writer")
         self.assertIn("development", board.done)
         self.assertEqual(token_glyph(board), "page")
 
-        apply_chunk(board, "**Script editor** is reading draft 1.\n\n")
+        apply_event(board, StudioEvent("reviewing", "Review"))
         self.assertEqual(board.active, "editor")
         self.assertFalse(board.returning)
 
-        apply_chunk(board, "The editor sent it back:\n- Hook is late.\n\n")
+        apply_event(board, StudioEvent("rejected", "The editor sent the draft back."))
         self.assertTrue(board.returning)
         self.assertEqual(token_station(board), "writer")
         self.assertEqual(token_glyph(board), "page")
         self.assertEqual(board.note, "The editor sent the draft back.")
 
-        apply_chunk(board, "**Screenwriter** is rewriting from the editor's notes.\n\n")
+        apply_event(board, StudioEvent("rewriting", "Rewrite"))
         self.assertEqual(board.active, "writer")
         self.assertTrue(board.returning)
 
-        apply_chunk(board, "The editor passed the draft.\n\n")
+        apply_event(board, StudioEvent("approved", "Approved"))
         self.assertFalse(board.returning)
         self.assertEqual(token_station(board), "art")
         self.assertEqual(token_glyph(board), "shot")
 
-        apply_chunk(board, "**Art director** is writing the still jobs.\n\n")
+        apply_event(board, StudioEvent("art", "Art"))
         self.assertEqual(board.active, "art")
 
-        apply_chunk(board, "**Stills** is calling KIE.ai.\n\n")
+        apply_event(board, StudioEvent("stills", "Stills"))
         self.assertEqual(token_station(board), "images")
         self.assertEqual(token_glyph(board), "frame")
 
-        apply_chunk(board, "**Still** maya (character) started on nano-banana-2-1.\n\n")
+        apply_event(board, StudioEvent("image", "Started", image={"id": "maya", "phase": "start"}))
         self.assertEqual(board.images[0]["state"], "running")
-        self.assertEqual(board.images[0]["id"], "maya")
-
-        apply_chunk(
-            board,
-            "- maya (character) — nano-banana-2-1 — `productions/hall/images/maya.png`\n\n",
-        )
+        apply_event(board, StudioEvent("image", "Done", image={"id": "maya", "path": "images/maya.png"}))
         self.assertEqual(len(board.images), 1)
         self.assertEqual(board.images[0]["state"], "done")
-        self.assertEqual(board.images[0]["path"], "productions/hall/images/maya.png")
-
-        apply_chunk(board, "- s01 (keyframe) failed: prompt is empty\n\n")
+        apply_event(board, StudioEvent("image", "Failed", image={"id": "s01", "error": "empty"}))
         self.assertEqual(board.images[-1]["state"], "failed")
-        self.assertEqual(board.images[-1]["error"], "prompt is empty")
+        apply_event(board, StudioEvent("image", "Preview", image={"id": "s02", "dry_run": True}))
+        self.assertEqual(board.images[-1]["state"], "planned")
 
     def test_missing_key_stops_the_board(self):
         board = Board()
-        apply_chunk(board, "KIE_API_KEY is not set. Add it to `.env` in the repo root.\n")
+        apply_event(board, StudioEvent("failed", "KIE_API_KEY is not set."))
         self.assertIsNone(board.active)
         self.assertEqual(board.note, "KIE_API_KEY is not set.")
         self.assertEqual(token_station(board), "brief")

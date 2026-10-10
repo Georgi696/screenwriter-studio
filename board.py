@@ -1,23 +1,18 @@
 """Crew board state. The desk and the tests share this; the page does not.
 
-Status lines still come from studio.py. apply_chunk is the only place that
-turns those lines into who is working, whether the editor sent the draft
-back, and which stills have started or finished.
+Structured events from studio.py move the crew and images. Activity text
+is only for display; wording changes cannot change workflow state.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-STATUS_PATH = Path(__file__).resolve().parent / "desk_status.json"
+from events import StudioEvent
 
-_FOLDER = re.compile(r"Folder: `([^`]+)`")
-_STILL_START = re.compile(r"^\*\*Still\*\* (.+?) \((.+?)\) started on (.+?)\.\s*$")
-_IMAGE_OK = re.compile(r"^- (.+?) \((.+?)\) — (.+?) — `(.+)`\s*$")
-_IMAGE_FAIL = re.compile(r"^- (.+?) \((.*?)\) failed: (.+)\s*$")
+STATUS_PATH = Path(__file__).resolve().parent / "desk_status.json"
 
 _CREW = {"development", "writer", "editor", "art"}
 
@@ -57,143 +52,47 @@ def _upsert_image(board: Board, image: dict) -> None:
     board.images.append(image)
 
 
-def apply_chunk(board: Board, chunk: str) -> None:
-    """Move the crew from one real stream chunk. Idle until the pipeline speaks."""
-    found = _FOLDER.search(chunk)
-    if found:
-        board.folder = found.group(1)
-    if "KIE_API_KEY is not set" in chunk:
-        board.active = None
-        board.edge = None
-        board.note = "KIE_API_KEY is not set."
-        return
-    if "**Development** is locking" in chunk:
-        board.active = "development"
-        board.edge = "brief-dev"
+def apply_event(board: Board, event: StudioEvent) -> None:
+    """Apply semantic events. Display wording never controls workflow state."""
+    if event.folder:
+        board.folder = event.folder
+    board.note = _plain(event.text)
+    kind = event.kind
+    stages = {
+        "development": ("development", "brief-dev", set()),
+        "developed": (None, "dev-writer", {"development"}),
+        "writing": ("writer", "dev-writer", {"development"}),
+        "reviewing": ("editor", "writer-editor", {"writer"}),
+        "approved": (None, "editor-art", {"writer", "editor"}),
+        "art": ("art", "editor-art", {"development", "writer", "editor"}),
+        "stills": (None, "art-images", {"art"}),
+    }
+    if kind in stages:
+        board.active, board.edge, done = stages[kind]
+        board.done.update(done)
         board.returning = False
-        board.note = "Development is locking the logline and the beats."
-    elif "**Screenwriter** is writing" in chunk:
-        board.done.add("development")
-        board.active = "writer"
-        board.edge = "dev-writer"
-        board.returning = False
-        board.note = "Screenwriter is writing the pages."
-    elif "**Screenwriter** is rewriting" in chunk:
-        board.active = "writer"
+    elif kind in {"rejected", "rewriting"}:
+        board.active = "writer" if kind == "rewriting" else "editor"
         board.edge = "editor-writer"
         board.returning = True
-        board.note = "Screenwriter is rewriting from the editor's notes."
-    elif "**Script editor** is reading" in chunk:
+        board.done.discard("writer")
+        board.done.discard("editor")
+    elif kind in {"failed", "complete"}:
+        board.active = board.edge = None
+        board.returning = False
+    elif kind == "pages":
         board.done.add("writer")
-        board.active = "editor"
-        board.edge = "writer-editor"
-        board.returning = False
-        board.note = _plain(chunk)
-    elif "The editor passed the draft." in chunk:
-        board.done.update({"writer", "editor"})
-        board.active = None
-        board.edge = "editor-art"
-        board.returning = False
-        board.note = "The editor passed the draft."
-    elif "The editor sent it back:" in chunk:
-        board.returning = True
-        board.edge = "editor-writer"
-        board.active = "editor"
-        board.note = "The editor sent the draft back."
-    elif "Rewrite limit reached." in chunk:
-        board.done.update({"writer", "editor"})
-        board.active = None
-        board.edge = None
-        board.returning = False
-        board.note = "Rewrite limit reached. The last draft is the one on disk."
-    elif chunk.startswith("Pages:"):
-        board.done.add("writer")
-        board.note = _plain(chunk)
-    elif "Stills were not generated." in chunk:
-        board.active = None
-        board.edge = None
-        board.returning = False
-        board.note = "The editor did not pass the draft. Stills were not generated."
-    elif "Pages only." in chunk:
-        board.active = None
-        board.edge = None
-        board.note = "Pages only. Stills were not requested."
-    elif "**Art director**" in chunk:
-        board.done.update({"development", "writer", "editor"})
-        board.active = "art"
-        board.edge = "editor-art"
-        board.returning = False
-        board.note = "Art director is writing the still jobs."
-    elif "**Stills** is calling" in chunk:
+    elif kind == "image" and event.image is not None:
+        record = dict(event.image)
+        record["state"] = (
+            "failed" if record.get("error") else
+            "running" if record.get("phase") == "start" else
+            "planned" if record.get("dry_run") else "done"
+        )
+        _upsert_image(board, record)
         board.done.add("art")
         board.active = None
         board.edge = "art-images"
-        board.note = "Stills is calling KIE.ai."
-    elif "**Stills stopped:**" in chunk:
-        board.active = None
-        board.edge = None
-        board.note = _plain(chunk)
-    elif chunk.startswith("Stills are in") or chunk.startswith("Dry run:"):
-        board.active = None
-        board.edge = None
-        board.note = _plain(chunk)
-    elif "Folder:" in chunk:
-        board.done.add("development")
-        board.active = None
-        board.edge = "dev-writer"
-        board.note = _plain(chunk)
-
-    for line in chunk.splitlines():
-        stripped = line.strip()
-        started = _STILL_START.match(stripped)
-        if started:
-            _upsert_image(
-                board,
-                {
-                    "id": started.group(1),
-                    "kind": started.group(2),
-                    "model": started.group(3),
-                    "path": "",
-                    "error": "",
-                    "state": "running",
-                },
-            )
-            board.done.add("art")
-            board.active = None
-            board.edge = "art-images"
-            board.note = f"{started.group(1)} · {started.group(2)} · {started.group(3)}"
-            continue
-        ok = _IMAGE_OK.match(stripped)
-        if ok:
-            _upsert_image(
-                board,
-                {
-                    "id": ok.group(1),
-                    "kind": ok.group(2),
-                    "model": ok.group(3),
-                    "path": ok.group(4),
-                    "error": "",
-                    "state": "done",
-                },
-            )
-            board.done.add("art")
-            board.edge = "art-images"
-            board.note = f"{ok.group(1)} · {ok.group(3)}"
-            continue
-        failed = _IMAGE_FAIL.match(stripped)
-        if failed:
-            _upsert_image(
-                board,
-                {
-                    "id": failed.group(1),
-                    "kind": failed.group(2),
-                    "model": "",
-                    "path": "",
-                    "error": failed.group(3),
-                    "state": "failed",
-                },
-            )
-            board.note = f"{failed.group(1)} failed"
 
 
 def token_station(board: Board) -> str:

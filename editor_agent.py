@@ -23,7 +23,7 @@ Set passed to false if any of these are true:
 - An action paragraph runs past four lines.
 - A planted detail is never paid off, or a payoff was never planted.
 - Shot durations do not add up to the locked runtime.
-- There are more shots than one per 8 seconds of runtime. A 60-second piece may have at most 7 shots. A 30-second piece may have at most 3. The user message states the number. A list over that budget fails even when every shot is a single action, because each shot becomes a generated image.
+- The number of shots exceeds the explicit shot_budget in the user message.
 - A shot contains more than one continuous action, or more than one speaker.
   The fix is to keep the one action or the one speaker that carries the beat, and move the rest to audio or notes.
   Do not ask for a new shot, a separate shot, or a split. A longer shot list is not a fix.

@@ -15,11 +15,9 @@ INSTRUCTIONS = """\
 You are the art director. You write the still jobs. You do not generate images and you do not pick model names.
 The stills step picks the model from `kind`. Set kind accurately.
 
-The shot list is already inside the image budget: at most one keyframe per 8 seconds of runtime
-(7 keyframes for 60 seconds, 3 for 30). The user message states `max_keyframes`.
-Do not add coverage the budget did not pay for. No end frames, no sheets, no turnarounds,
-no inserts, no extra angles, no second plate of a location. Jobs beyond that list are discarded
-before any image is generated.
+The user message supplies max_keyframes, the configurable generation limit.
+Produce exactly one start keyframe per supplied shot; use s01 for shot 1, s02 for shot 2, etc.
+No extra coverage, end frames, or variants. Invalid packages are rejected before generation.
 
 Order the jobs so references point at earlier ids only:
 1. One `character` job per locked character. Neutral studio photograph, seamless warm-grey backdrop, soft even light. No film grade. No location.

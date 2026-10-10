@@ -20,11 +20,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import shutil
 import subprocess
 import threading
-import time
 import traceback
 import urllib.parse
 import webbrowser
@@ -34,7 +32,7 @@ from pathlib import Path
 from brief_suggest import BriefSuggestError, suggest_brief
 from board import (
     Board,
-    apply_chunk,
+    apply_event,
     board_from,
     client_payload,
     load_status,
@@ -53,6 +51,7 @@ from models import (
     WRITER_MODEL,
 )
 from studio import REPO_ROOT, ScreenwriterStudio
+from events import StudioEvent
 
 PAGE = Path(__file__).resolve().parent / "desk.html"
 PRODUCTIONS = REPO_ROOT / "productions"
@@ -97,6 +96,11 @@ def _restore() -> None:
     global _board
     data = load_status()
     _board = board_from(data) if data else Board()
+    if _board.running:
+        _board.running = False
+        _board.active = _board.edge = None
+        _board.returning = False
+        _board.note = "Previous run was interrupted. Saved still jobs can be resumed from the command line."
     hub.revision = _board.revision
 
 
@@ -287,12 +291,12 @@ def _current(serial: int) -> bool:
         return serial == _run_serial
 
 
-def _apply(serial: int, chunk: str) -> None:
+def _apply(serial: int, chunk: StudioEvent) -> None:
     with _lock:
         if serial != _run_serial:
             return
-        apply_chunk(_board, chunk)
-        _board.log.append(chunk.strip())
+        apply_event(_board, chunk)
+        _board.log.append(chunk.text.strip())
         _board.running = True
         _replace(_board)
 
@@ -303,15 +307,16 @@ def _finish(serial: int, note: str | None) -> None:
             return
         if note:
             _board.note = note
-            _board.active = None
+            _board.active = _board.edge = None
+            _board.returning = False
         _board.running = False
         _replace(_board)
 
 
-async def _drive(serial: int, idea: str, pages_only: bool, dry_run: bool) -> None:
+async def _drive(serial: int, idea: str, pages_only: bool, dry_run: bool, max_shots: int | None = None) -> None:
     studio = ScreenwriterStudio()
     try:
-        async for chunk in studio.run(idea, pages_only=pages_only, dry_run=dry_run):
+        async for chunk in studio.run(idea, pages_only=pages_only, dry_run=dry_run, max_shots=max_shots):
             if not _current(serial):
                 return
             _apply(serial, chunk)
@@ -349,7 +354,7 @@ def clear_session() -> None:
         future.cancel()
 
 
-def start_crew(idea: str, pages_only: bool, dry_run: bool) -> None:
+def start_crew(idea: str, pages_only: bool, dry_run: bool, max_shots: int | None = None) -> None:
     global _future, _run_serial
     loop = _ensure_loop()
     with _lock:
@@ -365,7 +370,7 @@ def start_crew(idea: str, pages_only: bool, dry_run: bool) -> None:
         _replace(board)
     if _future is not None and not _future.done():
         _future.cancel()
-    _future = asyncio.run_coroutine_threadsafe(_drive(serial, idea, pages_only, dry_run), loop)
+    _future = asyncio.run_coroutine_threadsafe(_drive(serial, idea, pages_only, dry_run, max_shots), loop)
 
 
 def _content_type(path: Path) -> str:
@@ -389,6 +394,8 @@ class DeskHandler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self) -> None:
+        if not self._local_request():
+            return
         parsed = urllib.parse.urlparse(self.path)
         route = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
@@ -417,6 +424,8 @@ class DeskHandler(BaseHTTPRequestHandler):
         self._send(404, b"Not found", "text/plain; charset=utf-8")
 
     def do_POST(self) -> None:
+        if not self._local_request(mutating=True):
+            return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/log/clear":
             clear_log()
@@ -436,8 +445,27 @@ class DeskHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/brief/suggest":
             self._suggest(idea)
             return
-        start_crew(idea.strip() or DEFAULT_IDEA, bool(data.get("pages_only")), bool(data.get("dry_run")))
+        max_shots = data.get("max_shots")
+        if max_shots is not None and (type(max_shots) is not int or not 1 <= max_shots <= 240):
+            self._json(400, {"error": "Shot limit must be an integer between 1 and 240."})
+            return
+        start_crew(idea.strip() or DEFAULT_IDEA, bool(data.get("pages_only")), bool(data.get("dry_run")), max_shots)
         self._json(202, {"ok": True})
+
+    def _local_request(self, mutating: bool = False) -> bool:
+        host = self.headers.get("Host", "")
+        port = self.server.server_address[1]
+        if host not in {f"127.0.0.1:{port}", f"localhost:{port}"}:
+            self._json(403, {"error": "Use the local desk address."})
+            return False
+        origin = self.headers.get("Origin")
+        if (origin and origin != f"http://{host}") or self.headers.get("Sec-Fetch-Site") == "cross-site":
+            self._json(403, {"error": "Cross-origin access is not allowed."})
+            return False
+        if mutating and self.headers.get_content_type() != "application/json":
+            self._json(415, {"error": "Use application/json."})
+            return False
+        return True
 
     def _read_json(self) -> dict | None:
         try:
@@ -545,99 +573,8 @@ class DeskServer(ThreadingHTTPServer):
 
 
 def bind(port: int) -> DeskServer:
-    """Listen on 0.0.0.0.
-
-    Cursor's preview scans the IPv4 listen table and dials the machine address.
-    A 127.0.0.1 socket refuses that dial. An IPv6 socket never shows up in the
-    scan, so the preview browser has nothing on 127.0.0.1 and reports connection
-    refused. An IPv4 wildcard socket is visible to the scan and accepts the dial.
-    """
-    return DeskServer(("0.0.0.0", port), DeskHandler)
-
-
-_TUNNEL_URL = re.compile(r"https://[a-z0-9]+\.lhr\.life")
-
-
-def public_url_from_tunnel_log(text: str) -> str | None:
-    match = _TUNNEL_URL.search(text)
-    return match.group(0) if match else None
-
-
-def _browsers_are_remote() -> bool:
-    """True when the person opening the link is not on this computer.
-
-    Cursor's preview and a browser on their laptop both dial their own
-    127.0.0.1. Nothing is listening there, so every one of them reports
-    connection refused while this process is fine.
-    """
-    return bool(os.environ.get("CURSOR_AGENT") or os.environ.get("CURSOR_AGENT_SOCKET"))
-
-
-def _start_public_tunnel(port: int, timeout: float = 20) -> tuple[subprocess.Popen | None, str | None]:
-    """Publish the desk through localhost.run. Returns the ssh process and the https URL."""
-    if shutil.which("ssh") is None:
-        return None, None
-    proc = subprocess.Popen(
-        [
-            "ssh",
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", "BatchMode=yes",
-            "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=30",
-            "-R", f"80:127.0.0.1:{port}",
-            "nokey@localhost.run",
-        ],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    assert proc.stdout is not None
-    fd = proc.stdout.fileno()
-    os.set_blocking(fd, False)
-    buf = ""
-    deadline = time.monotonic() + timeout
-
-    def drain() -> None:
-        nonlocal buf
-        while True:
-            try:
-                chunk = os.read(fd, 4096)
-            except BlockingIOError:
-                return
-            if not chunk:
-                return
-            buf += chunk.decode("utf-8", "replace")
-
-    url = None
-    while time.monotonic() < deadline and proc.poll() is None:
-        drain()
-        url = public_url_from_tunnel_log(buf)
-        if url:
-            break
-        time.sleep(0.1)
-    if url is None:
-        proc.terminate()
-        return None, None
-
-    def keep_draining() -> None:
-        while proc.poll() is None:
-            drain()
-            time.sleep(0.2)
-
-    threading.Thread(target=keep_draining, name="desk-tunnel", daemon=True).start()
-    return proc, url
-
-
-def _stop_tunnel(proc: subprocess.Popen | None) -> None:
-    if proc is None or proc.poll() is not None:
-        return
-    try:
-        os.killpg(proc.pid, 15)
-    except OSError:
-        proc.terminate()
+    """Local desk only. Remote access requires a separately authenticated gateway."""
+    return DeskServer(("127.0.0.1", port), DeskHandler)
 
 
 def _open_browser(url: str) -> None:
@@ -668,24 +605,8 @@ def serve(port: int = 7860, open_browser: bool = True) -> None:
         raise SystemExit(f"Could not open the desk: {last_error}")
     bound = httpd.server_address[1]
     local = f"http://127.0.0.1:{bound}"
-    tunnel: subprocess.Popen | None = None
-    public = None
-    if _browsers_are_remote():
-        print("Publishing a link browsers outside this computer can open...", flush=True)
-        tunnel, public = _start_public_tunnel(bound)
-    if public:
-        print(f"Open this in any browser:\n{public}", flush=True)
-        print(f"{local} is only this computer. Other browsers refuse it.", flush=True)
-        url = public
-    else:
-        print(f"Screenwriter desk at {local}", flush=True)
-        if _browsers_are_remote():
-            print(
-                "No public link. A browser on another computer will say "
-                f"{local} refused to connect.",
-                flush=True,
-            )
-        url = local
+    print(f"Screenwriter desk at {local}", flush=True)
+    url = local
     if open_browser:
         _open_browser(url)
     try:
@@ -693,5 +614,4 @@ def serve(port: int = 7860, open_browser: bool = True) -> None:
     except KeyboardInterrupt:
         print("\nDesk closed.")
     finally:
-        _stop_tunnel(tunnel)
         httpd.server_close()

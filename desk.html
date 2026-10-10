@@ -712,6 +712,9 @@
     <textarea id="idea" name="idea" placeholder="A 30-second vertical film about someone who keeps a seat on the last bus."></textarea>
     <button class="help" id="help-idea" type="button">What is this?</button>
     <p class="help-copy" id="help-idea-copy" hidden>This is the brief the crew turns into a logline, Fountain pages, and stills. Suggest a story writes one if the box is empty. Strengthen this rewrites a note you already typed. Example: a 30-second vertical film about someone who keeps a seat on the last bus.</p>
+    <label for="max-shots">Maximum shots (optional)</label>
+    <input id="max-shots" type="number" min="1" max="240" step="1" placeholder="Automatic">
+    <p class="lead">Set a higher limit for faster cuts. Each shot needs a keyframe; character and location references are additional images.</p>
     <div class="options">
       <div class="option">
         <label class="check"><input id="pages" type="checkbox"> Pages only</label>
@@ -719,9 +722,9 @@
         <p class="help-copy" id="help-pages-copy" hidden>The script editor still reads the draft and can send it back. The run stops before any image is generated.</p>
       </div>
       <div class="option">
-        <label class="check"><input id="dry" type="checkbox"> Dry-run stills</label>
+        <label class="check"><input id="dry" type="checkbox"> Plan stills (chat charges apply)</label>
         <button class="help" id="help-dry" type="button">What is this?</button>
-        <p class="help-copy" id="help-dry-copy" hidden>Image models are chosen and the still jobs are written, but no images are downloaded and no image credits are spent.</p>
+        <p class="help-copy" id="help-dry-copy" hidden>The crew still makes paid chat calls to develop, write, review, and plan the stills. No image credits are spent. This is not a free offline run.</p>
       </div>
     </div>
     <div class="actions">
@@ -1202,6 +1205,11 @@ function applyFrameState(frame, image) {
   } else if (image.state === "done") {
     frame.classList.add("is-done", "printed");
     showDone(frame, image);
+  } else if (image.state === "planned") {
+    img.removeAttribute("src");
+    img.hidden = true;
+    hold.hidden = false;
+    hold.textContent = "Planned — no image generated";
   } else if (image.state === "failed") {
     frame.classList.add("is-failed");
     img.hidden = true;
@@ -1410,7 +1418,8 @@ async function startRun() {
       body: JSON.stringify({
         idea: document.getElementById("idea").value,
         pages_only: document.getElementById("pages").checked,
-        dry_run: document.getElementById("dry").checked
+        dry_run: document.getElementById("dry").checked,
+        max_shots: document.getElementById("max-shots").value ? Number(document.getElementById("max-shots").value) : null
       })
     });
     if (!res.ok) {
@@ -1930,7 +1939,7 @@ document.getElementById("folder-picker").addEventListener("change", (event) => {
 });
 document.getElementById("clear-log").addEventListener("click", async () => {
   try {
-    const res = await fetch("/api/log/clear", { method: "POST" });
+    const res = await fetch("/api/log/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     if (!res.ok) throw new Error("clear");
     toast("Activity cleared");
   } catch (error) {
@@ -1940,13 +1949,14 @@ document.getElementById("clear-log").addEventListener("click", async () => {
 document.getElementById("new-session").addEventListener("click", async () => {
   if (!window.confirm("Clear this session and start from a blank brief?")) return;
   try {
-    const res = await fetch("/api/session/clear", { method: "POST" });
+    const res = await fetch("/api/session/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     if (!res.ok) throw new Error("clear");
     document.getElementById("idea").value = "";
     suggestLabel();
     releaseNote();
     document.getElementById("pages").checked = false;
     document.getElementById("dry").checked = false;
+    document.getElementById("max-shots").value = "";
     resetReader();
     openPath = null;
     setView("brief");

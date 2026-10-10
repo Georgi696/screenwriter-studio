@@ -2,7 +2,7 @@
 
 import unittest
 
-from budget import sample_indexes, select_stills, shot_budget
+from budget import select_stills, shot_budget
 
 
 class ShotBudgetTest(unittest.TestCase):
@@ -16,12 +16,13 @@ class ShotBudgetTest(unittest.TestCase):
         self.assertEqual(shot_budget(6), 1)
         self.assertEqual(shot_budget(15), 1)
 
-    def test_sample_keeps_ends(self):
-        indexes = sample_indexes(15, 7)
-        self.assertEqual(indexes[0], 0)
-        self.assertEqual(indexes[-1], 14)
-        self.assertEqual(len(indexes), 7)
-        self.assertEqual(len(set(indexes)), 7)
+    def test_custom_limit_and_feasibility(self):
+        self.assertEqual(shot_budget(30, 6), 6)
+        self.assertEqual(shot_budget(16), 2)
+        with self.assertRaises(ValueError):
+            shot_budget(30, 1)
+        with self.assertRaises(ValueError):
+            shot_budget(30, 11)
 
 
 class StillLimitTest(unittest.TestCase):

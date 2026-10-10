@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest import mock
 
-import httpx2
+import httpx
 
 from brief_suggest import (
     BriefSuggestError,
@@ -106,7 +106,7 @@ class HttpTest(unittest.TestCase):
             captured["url"] = str(request.url)
             captured["auth"] = request.headers["authorization"]
             captured["body"] = json.loads(request.content.decode())
-            return httpx2.Response(
+            return httpx.Response(
                 200,
                 headers={"content-type": "application/json"},
                 content=json.dumps(_fake_response(text)).encode(),
@@ -114,7 +114,7 @@ class HttpTest(unittest.TestCase):
 
         return kie_responses_client(
             api_key="unit-test-key",
-            http_client=httpx2.Client(transport=httpx2.MockTransport(handler)),
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
         )
 
     def test_mocked_http_returns_plain_prose(self):
@@ -226,7 +226,7 @@ class EventStreamParseTest(unittest.TestCase):
 class EventStreamHttpTest(unittest.TestCase):
     def _stream_client(self, body: str):
         def handler(request):
-            return httpx2.Response(
+            return httpx.Response(
                 200,
                 headers={"content-type": "text/event-stream;charset=UTF-8"},
                 content=body.encode(),
@@ -234,7 +234,7 @@ class EventStreamHttpTest(unittest.TestCase):
 
         return kie_responses_client(
             api_key="unit-test-key",
-            http_client=httpx2.Client(transport=httpx2.MockTransport(handler)),
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
         )
 
     def test_event_stream_content_type_fills_the_brief(self):
@@ -269,7 +269,7 @@ class EventStreamHttpTest(unittest.TestCase):
                 "error": {"code": "server_error", "message": "model overloaded"},
                 "output": [],
             }
-            return httpx2.Response(
+            return httpx.Response(
                 200,
                 headers={"content-type": "application/json"},
                 content=json.dumps(payload).encode(),
@@ -277,7 +277,7 @@ class EventStreamHttpTest(unittest.TestCase):
 
         client = kie_responses_client(
             api_key="unit-test-key",
-            http_client=httpx2.Client(transport=httpx2.MockTransport(handler)),
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
         )
         with mock.patch("brief_suggest.load_kie_api_key", return_value="unit-test-key"):
             with self.assertRaises(BriefSuggestError) as caught:

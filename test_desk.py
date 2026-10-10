@@ -31,7 +31,7 @@ class DeskPageTest(unittest.TestCase):
             return res.read()
 
     def _post(self, path: str) -> bytes:
-        request = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=b"{}", method="POST")
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=b"{}", method="POST", headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(request, timeout=5) as res:
             return res.read()
 
@@ -65,7 +65,7 @@ class DeskPageTest(unittest.TestCase):
     def test_events_push_a_snapshot(self):
         sock = socket.create_connection(("127.0.0.1", self.port), 2)
         try:
-            sock.sendall(b"GET /api/events HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+            sock.sendall(f"GET /api/events HTTP/1.0\r\nHost: 127.0.0.1:{self.port}\r\n\r\n".encode())
             sock.settimeout(2)
             data = b""
             while b"\n\n" not in data:
@@ -83,37 +83,46 @@ class DeskPageTest(unittest.TestCase):
             urllib.request.urlopen(f"http://127.0.0.1:{self.port}/media?id=../.env", timeout=5)
         self.assertEqual(caught.exception.code, 404)
 
-    def test_tunnel_log_url(self):
-        from desk import public_url_from_tunnel_log
+    def test_only_loopback_is_bound(self):
+        self.assertEqual(self.httpd.server_address[0], "127.0.0.1")
 
-        log = (
-            "Welcome to localhost.run!\n"
-            "69e20590eedd2c.lhr.life tunneled with tls termination, "
-            "https://69e20590eedd2c.lhr.life\n"
+    def test_untrusted_host_and_origin_are_rejected(self):
+        for headers in [
+            {"Host": "attacker.example"},
+            {"Origin": "https://attacker.example"},
+            {"Sec-Fetch-Site": "cross-site"},
+        ]:
+            request = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/status", headers=headers)
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(caught.exception.code, 403)
+
+    def test_cross_origin_post_cannot_start_paid_run(self):
+        from unittest import mock
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/run", data=b"{}",
+            headers={"Content-Type": "application/json", "Origin": "https://attacker.example"},
         )
-        self.assertEqual(public_url_from_tunnel_log(log), "https://69e20590eedd2c.lhr.life")
-        self.assertIsNone(public_url_from_tunnel_log("still waiting"))
+        with mock.patch("desk.start_crew") as start:
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(caught.exception.code, 403)
+            start.assert_not_called()
 
-    def test_ipv4_wildcard_is_in_the_listen_table(self):
-        self.assertEqual(self.httpd.server_address[0], "0.0.0.0")
-        needle = f"00000000:{self.port:04X}"
-        with open("/proc/net/tcp", encoding="ascii") as handle:
-            rows = handle.readlines()[1:]
-        listening = any(row.split()[1] == needle and row.split()[3] == "0A" for row in rows)
-        self.assertTrue(listening, f"{needle} not listening in /proc/net/tcp")
+    def test_run_passes_custom_shot_limit(self):
+        from unittest import mock
+        with mock.patch("desk.start_crew") as start:
+            self._post_json("/api/run", {"idea": "test", "max_shots": 6})
+            start.assert_called_once_with("test", False, False, 6)
 
-    def test_reachable_off_loopback(self):
-        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            probe.connect(("10.255.255.255", 1))
-            host = probe.getsockname()[0]
-        finally:
-            probe.close()
-        if host.startswith("127."):
-            self.skipTest("no routable address")
-        with urllib.request.urlopen(f"http://{host}:{self.port}/", timeout=5) as res:
-            page = res.read()
-        self.assertIn(b'id="stage"', page)
+    def test_invalid_shot_limit_does_not_start_run(self):
+        from unittest import mock
+        for value in [True, 0, 241, 1.5, "6"]:
+            with mock.patch("desk.start_crew") as start:
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    self._post_json("/api/run", {"max_shots": value})
+                self.assertEqual(caught.exception.code, 400)
+                start.assert_not_called()
 
     def test_library_rejects_escape(self):
         from desk import library_file
@@ -183,6 +192,20 @@ class DeskPageTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, 503)
         payload = json.loads(caught.exception.read().decode("utf-8"))
         self.assertIn("KIE_API_KEY is not set", payload["error"])
+
+    def test_restore_marks_abandoned_run_interrupted(self):
+        from unittest import mock
+        import desk
+        original = desk._board
+        try:
+            with mock.patch("desk.load_status", return_value={"running": True, "active": "writer"}):
+                desk._restore()
+            self.assertFalse(desk._board.running)
+            self.assertIsNone(desk._board.active)
+            self.assertIn("interrupted", desk._board.note)
+        finally:
+            desk._board = original
+            desk.hub.revision = original.revision
 
     def test_suggest_route_rejects_bad_json(self):
         request = urllib.request.Request(

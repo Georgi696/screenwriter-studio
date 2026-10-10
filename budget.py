@@ -1,9 +1,7 @@
-"""How many shots — and therefore keyframe stills — a runtime may have.
+"""Configurable shot/keyframe count limits, separate from exact timeline duration.
 
-A clip lands around 8 seconds, the long end of the 5–8s range. Kling can
-run as short as 3s, and a writer who uses that floor turns a minute into
-fifteen generated images. The cap is one shot per 8 seconds: a 60s piece
-is 7 shots, a 30s spot is 3.
+The default remains one keyframe per eight seconds. This is a generation-count
+policy, not a required shot length or a monetary spending limit.
 """
 
 from __future__ import annotations
@@ -11,10 +9,16 @@ from __future__ import annotations
 CLIP_SECONDS = 8
 
 
-def shot_budget(runtime_seconds: int) -> int:
+def shot_budget(runtime_seconds: int, max_shots: int | None = None) -> int:
     """Upper bound on shots, and on the keyframe stills those shots become."""
     runtime = max(0, int(runtime_seconds))
-    return max(1, runtime // CLIP_SECONDS)
+    minimum = max(1, (runtime + 14) // 15)
+    maximum = min(240, max(1, runtime // 3))
+    if max_shots is not None:
+        if not minimum <= max_shots <= maximum:
+            raise ValueError(f"Shot limit must be between {minimum} and {maximum} for {runtime}s.")
+        return max_shots
+    return max(minimum, runtime // CLIP_SECONDS)
 
 
 KEYFRAME_KINDS = {"keyframe", "scene"}
@@ -22,11 +26,11 @@ TEXT_KINDS = {"poster", "title", "logo", "ui", "text"}
 PRODUCT_KINDS = {"product", "packshot"}
 
 
-def still_caps(*, runtime_seconds: int, character_count: int, location_count: int) -> dict[str, int]:
+def still_caps(*, runtime_seconds: int, character_count: int, location_count: int, max_shots: int | None = None) -> dict[str, int]:
     return {
         "character": max(0, character_count),
         "location": max(0, location_count),
-        "keyframe": shot_budget(runtime_seconds),
+        "keyframe": shot_budget(runtime_seconds, max_shots),
         "text": 1,
         "product": 1,
     }
@@ -50,12 +54,14 @@ def select_stills(
     runtime_seconds: int,
     character_count: int,
     location_count: int,
+    max_shots: int | None = None,
 ) -> list[tuple[str, str]]:
     """Keep the stills a runtime budgeted. `jobs` are `(id, kind)`, in generation order."""
     caps = still_caps(
         runtime_seconds=runtime_seconds,
         character_count=character_count,
         location_count=location_count,
+        max_shots=max_shots,
     )
     counts = {bucket: 0 for bucket in caps}
     kept: list[tuple[str, str]] = []
@@ -70,27 +76,3 @@ def select_stills(
         counts[bucket] += 1
         kept.append((job_id, kind))
     return kept
-
-
-def sample_indexes(count: int, budget: int) -> list[int]:
-    """Evenly spaced indexes, always including the first and the last.
-
-    Used only when a draft is still over budget after rewrites, so the
-    opening and the button survive and the middle is thinned.
-    """
-    if count <= 0 or budget <= 0:
-        return []
-    if budget >= count:
-        return list(range(count))
-    if budget == 1:
-        return [0]
-    raw = [round(i * (count - 1) / (budget - 1)) for i in range(budget)]
-    used: set[int] = set()
-    indexes: list[int] = []
-    for index in raw:
-        while index in used and index + 1 < count:
-            index += 1
-        if index not in used:
-            used.add(index)
-            indexes.append(index)
-    return indexes
