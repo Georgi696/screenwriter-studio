@@ -159,10 +159,64 @@ function applyStillFilter() {
   bay.dataset.filterEmpty = bay.children.length && shownCols === 0 ? "1" : "";
 }
 
+const folderPreferences = new Map();
+try {
+  const saved = JSON.parse(localStorage.getItem("studio.library.collapsed") || "[]");
+  if (Array.isArray(saved)) {
+    for (const key of saved) if (typeof key === "string") folderPreferences.set(key, false);
+  }
+} catch (_) { /* Folder toggles still work when browser storage is unavailable. */ }
+let folderSequence = 0;
+
+function setFolderExpanded(section, expanded) {
+  section.querySelector(".folder-toggle").setAttribute("aria-expanded", String(expanded));
+  section.querySelector(".folder-content").hidden = !expanded;
+}
+
+function libraryFolder(group, source) {
+  const section = document.createElement("section");
+  section.className = "library-folder";
+  section.dataset.folder = source + ":" + group.slug;
+  const head = document.createElement("div");
+  head.className = "folder-head";
+  const heading = document.createElement("h3");
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "folder-toggle";
+  toggle.textContent = group.slug;
+  const content = document.createElement("div");
+  content.className = "folder-content";
+  content.id = "library-folder-" + (++folderSequence);
+  toggle.setAttribute("aria-controls", content.id);
+  heading.appendChild(toggle);
+  head.appendChild(heading);
+  section.append(head, content);
+  setFolderExpanded(section, folderPreferences.get(section.dataset.folder) !== false);
+  toggle.addEventListener("click", () => {
+    const expanded = toggle.getAttribute("aria-expanded") !== "true";
+    folderPreferences.set(section.dataset.folder, expanded);
+    setFolderExpanded(section, expanded);
+    try {
+      localStorage.setItem("studio.library.collapsed", JSON.stringify(
+        [...folderPreferences].filter(([, open]) => !open).map(([key]) => key)
+      ));
+    } catch (_) { /* Keep the in-memory preference. */ }
+  });
+  return { section, head, content };
+}
+
 function filterLibrary() {
   const q = (document.getElementById("library-search").value || "").trim().toLowerCase();
-  document.querySelectorAll("#library .file, #opened-folder .file").forEach((button) => {
-    button.hidden = !!q && !button.textContent.toLowerCase().includes(q);
+  document.querySelectorAll(".library-folder").forEach((section) => {
+    const folderMatches = section.querySelector(".folder-toggle").textContent.toLowerCase().includes(q);
+    let matches = false;
+    section.querySelectorAll(".file").forEach((button) => {
+      button.hidden = !!q && !folderMatches && !button.textContent.toLowerCase().includes(q);
+      if (!button.hidden) matches = true;
+    });
+    section.hidden = !!q && !folderMatches && !matches;
+    // Search reveals matches; clearing it restores the user's folder preference.
+    setFolderExpanded(section, q ? !section.hidden : folderPreferences.get(section.dataset.folder) !== false);
   });
 }
 
@@ -183,25 +237,20 @@ function renderOpenedFolder(groups) {
     return;
   }
   for (const group of groups) {
-    const section = document.createElement("section");
-    const head = document.createElement("div");
-    head.className = "folder-head";
-    const heading = document.createElement("h3");
-    heading.textContent = group.slug;
+    const { section, head, content } = libraryFolder(group, "local");
     const close = document.createElement("button");
     close.type = "button";
     close.className = "linkish";
-    close.id = "close-folder";
+    close.dataset.closeFolder = "true";
     close.textContent = "Close";
-    head.append(heading, close);
-    section.appendChild(head);
+    head.appendChild(close);
     for (const [label, items] of [["Documents", group.documents], ["Images", group.images]]) {
       if (!items.length) continue;
       const name = document.createElement("p");
       name.className = "label";
       name.textContent = label;
-      section.appendChild(name);
-      for (const item of items) section.appendChild(fileButton(item));
+      content.appendChild(name);
+      for (const item of items) content.appendChild(fileButton(item));
     }
     host.appendChild(section);
   }
@@ -640,30 +689,21 @@ async function pollLibrary() {
       return;
     }
     for (const project of data.projects) {
-      const section = document.createElement("section");
-      const heading = document.createElement("h3");
-      heading.textContent = project.slug;
-      section.appendChild(heading);
+      const { section, content } = libraryFolder(project, "production");
       for (const [label, items] of [["Documents", project.documents], ["Images", project.images]]) {
         const name = document.createElement("p");
         name.className = "label";
         name.textContent = label;
-        section.appendChild(name);
+        content.appendChild(name);
         if (!items.length) {
           const empty = document.createElement("p");
           empty.className = "empty";
           empty.textContent = "None yet.";
-          section.appendChild(empty);
+          content.appendChild(empty);
           continue;
         }
         for (const item of items) {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "file";
-          if (item.path === openPath) button.classList.add("is-open");
-          button.textContent = item.name;
-          button.dataset.path = item.path;
-          section.appendChild(button);
+          content.appendChild(fileButton(item));
         }
       }
       nav.appendChild(section);
@@ -1095,7 +1135,7 @@ document.getElementById("still-tools").addEventListener("click", (event) => {
 });
 document.getElementById("library-search").addEventListener("input", filterLibrary);
 document.querySelector("aside").addEventListener("click", (event) => {
-  if (event.target.closest("#close-folder")) {
+  if (event.target.closest("[data-close-folder]")) {
     localFiles.clear();
     document.getElementById("opened-folder").replaceChildren();
     if (String(openPath || "").startsWith("local:")) openPath = null;
