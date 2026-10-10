@@ -497,6 +497,57 @@
   #log p { margin: 0 0 10px; overflow-wrap: anywhere; animation: rise 220ms ease; }
   #log p:last-child { margin-bottom: 0; }
   #reader-image { display: block; max-width: min(100%, 520px); margin-top: 12px; border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
+  #reader-preview {
+    margin: 8px 0 0;
+    max-height: min(68vh, 720px);
+    overflow: auto;
+    padding: 16px 18px 20px;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    font-size: 15px;
+    line-height: 1.55;
+  }
+  #reader-preview > :first-child { margin-top: 0; }
+  #reader-preview h1, #reader-preview h2, #reader-preview h3, #reader-preview h4, #reader-preview h5, #reader-preview h6 {
+    margin: 1.15em 0 0.4em;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.25;
+  }
+  #reader-preview h1 { font-size: 28px; }
+  #reader-preview h2 { font-size: 22px; }
+  #reader-preview h3 { font-size: 18px; }
+  #reader-preview h4, #reader-preview h5, #reader-preview h6 { font-size: 16px; }
+  #reader-preview p { margin: 0.55em 0; }
+  #reader-preview ul, #reader-preview ol { margin: 0.4em 0 0.8em; padding-left: 1.35em; }
+  #reader-preview li { margin: 0.2em 0; }
+  #reader-preview a { color: var(--accent); }
+  #reader-preview code {
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    background: #f3efe8;
+    padding: 0.08em 0.35em;
+    border-radius: 6px;
+  }
+  #reader-preview pre {
+    margin: 0.8em 0;
+    padding: 12px 14px;
+    overflow: auto;
+    border-radius: 12px;
+    background: #f6f3ee;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre;
+  }
+  #reader-preview pre code { background: transparent; padding: 0; font-size: inherit; }
+  #reader-preview .json-key { color: #7a3e12; font-weight: 600; }
+  #reader-preview .json-string { color: #1c6b45; }
+  #reader-preview .json-number { color: #1d4e89; }
+  #reader-preview .json-bool, #reader-preview .json-null { color: #8a3d6b; }
+  #reader-preview .parse-note { margin: 0 0 10px; color: var(--bad); font-weight: 600; }
   #stage.shake { animation: shake 0.4s ease; }
   #toast {
     position: fixed;
@@ -709,9 +760,11 @@
     <section id="reader-pane">
       <div class="toolbar">
         <h2 id="reader-title">Reader</h2>
+        <button class="ghost" id="preview-reader" type="button" hidden aria-pressed="false">Preview</button>
         <button class="ghost" id="copy-reader" type="button">Copy text</button>
       </div>
       <p class="aside-note" id="reader-hint">Choose a document or an image from the library.</p>
+      <div id="reader-preview" hidden></div>
       <pre id="reader-text" hidden></pre>
       <img id="reader-image" alt="" hidden>
     </section>
@@ -735,6 +788,9 @@ let revision = -1;
 let shown = 0;
 let streamOK = false;
 let openPath = null;
+let readerSource = "";
+let readerFormat = "";
+let readerMode = "source";
 let follow = true;
 let stillFilter = "all";
 let toastTimer = 0;
@@ -1387,33 +1443,250 @@ async function pollLibrary() {
   }
 }
 
+function escapeText(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeAttr(text) {
+  return escapeText(text).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function safeUrl(url) {
+  const value = String(url || "").trim();
+  if (!value || /[\u0000-\u001F\u007F]/.test(value) || value.startsWith("//")) return "";
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value) && !/^(https?:|mailto:)/i.test(value)) return "";
+  return value;
+}
+
+function readerFormatFor(name) {
+  const base = String(name || "").split(/[/\\]/).pop();
+  const dot = base.lastIndexOf(".");
+  const suffix = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+  if (suffix === "md" || suffix === "markdown") return "md";
+  if (suffix === "json") return "json";
+  return "";
+}
+
+function renderInline(raw) {
+  const codes = [];
+  let work = String(raw).replace(/`([^`\n]+)`/g, (_, code) => {
+    codes.push("<code>" + escapeText(code) + "</code>");
+    return "\u0000C" + (codes.length - 1) + "\u0000";
+  });
+  const links = [];
+  work = work.replace(/(^|[^!])\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_, lead, label, url) => {
+    links.push({ label, url });
+    return lead + "\u0000L" + (links.length - 1) + "\u0000";
+  });
+  work = work.split(/(\u0000[CL]\d+\u0000)/).map((part) => {
+    if (/^\u0000[CL]\d+\u0000$/.test(part)) return part;
+    return escapeText(part);
+  }).join("");
+  work = work.replace(/\*\*\*([^*\n]+)\*\*\*/g, "<strong><em>$1</em></strong>");
+  work = work.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  work = work.replace(/__([^_\n]+)__/g, "<strong>$1</strong>");
+  work = work.replace(/(^|[^*])\*([^*\n]+)\*/g, (_, lead, body) => lead + "<em>" + body + "</em>");
+  work = work.replace(/(^|[^_\w])_([^_\n]+)_(?![_\w])/g, (_, lead, body) => lead + "<em>" + body + "</em>");
+  work = work.replace(/\u0000L(\d+)\u0000/g, (_, id) => {
+    const link = links[Number(id)];
+    const href = safeUrl(link.url);
+    if (!href) return escapeText("[" + link.label + "](" + link.url + ")");
+    return '<a href="' + escapeAttr(href) + '" rel="noopener noreferrer">' + renderInline(link.label) + "</a>";
+  });
+  work = work.replace(/\u0000C(\d+)\u0000/g, (_, id) => codes[Number(id)]);
+  return work;
+}
+
+function renderMarkdown(source) {
+  const text = String(source || "").replace(/\r\n?/g, "\n");
+  const fences = [];
+  const stripped = text.replace(/^[ ]{0,3}```[^\n]*\n([\s\S]*?)^[ ]{0,3}```[ \t]*$/gm, (_, code) => {
+    fences.push('<pre class="md-code"><code>' + escapeText(code.replace(/\n$/, "")) + "</code></pre>");
+    return "\u0000F" + (fences.length - 1) + "\u0000";
+  });
+  const lines = stripped.split("\n");
+  let html = "";
+  let list = "";
+  const para = [];
+  function flushPara() {
+    if (!para.length) return;
+    html += "<p>" + renderInline(para.join(" ")) + "</p>";
+    para.length = 0;
+  }
+  function closeList() {
+    if (!list) return;
+    html += "</" + list + ">";
+    list = "";
+  }
+  for (const line of lines) {
+    const fence = /^\u0000F(\d+)\u0000$/.exec(line);
+    if (fence) {
+      flushPara();
+      closeList();
+      html += fences[Number(fence[1])];
+      continue;
+    }
+    const heading = /^(#{1,6})[ \t]+(.*)$/.exec(line);
+    if (heading) {
+      flushPara();
+      closeList();
+      const level = heading[1].length;
+      html += "<h" + level + ">" + renderInline(heading[2].replace(/[ \t]+#+\s*$/, "")) + "</h" + level + ">";
+      continue;
+    }
+    const bullet = /^[ \t]*[-*][ \t]+(.*)$/.exec(line);
+    const ordered = /^[ \t]*\d+[.)][ \t]+(.*)$/.exec(line);
+    if (bullet || ordered) {
+      flushPara();
+      const kind = bullet ? "ul" : "ol";
+      if (list !== kind) {
+        closeList();
+        html += "<" + kind + ">";
+        list = kind;
+      }
+      html += "<li>" + renderInline((bullet || ordered)[1]) + "</li>";
+      continue;
+    }
+    if (!line.trim()) {
+      flushPara();
+      closeList();
+      continue;
+    }
+    closeList();
+    para.push(line.trim());
+  }
+  flushPara();
+  closeList();
+  return html;
+}
+
+function highlightJson(pretty) {
+  return escapeText(pretty).replace(
+    /("(?:\\.|[^"\\])*")(\s*:)|("(?:\\.|[^"\\])*")|\b(true|false)\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g,
+    (match, key, colon, str, bool) => {
+      if (key) return '<span class="json-key">' + key + "</span>" + colon;
+      if (str) return '<span class="json-string">' + str + "</span>";
+      if (bool) return '<span class="json-bool">' + bool + "</span>";
+      if (match === "null") return '<span class="json-null">null</span>';
+      return '<span class="json-number">' + match + "</span>";
+    }
+  );
+}
+
+function renderJsonPreview(source) {
+  try {
+    return '<pre class="json-view">' + highlightJson(JSON.stringify(JSON.parse(source), null, 2)) + "</pre>";
+  } catch (error) {
+    return '<p class="parse-note">This file could not be parsed as JSON.</p><pre class="json-view">' + escapeText(source) + "</pre>";
+  }
+}
+
+function syncPreviewButton() {
+  const button = document.getElementById("preview-reader");
+  if (!button) return;
+  const available = readerFormat === "md" || readerFormat === "json";
+  button.hidden = !available;
+  button.disabled = !available;
+  const showing = available && readerMode === "preview";
+  button.textContent = showing ? "Source" : "Preview";
+  button.classList.toggle("is-on", showing);
+  button.setAttribute("aria-pressed", showing ? "true" : "false");
+}
+
+function paintReader() {
+  const pre = document.getElementById("reader-text");
+  const preview = document.getElementById("reader-preview");
+  pre.textContent = readerSource;
+  if ((readerFormat === "md" || readerFormat === "json") && readerMode === "preview") {
+    pre.hidden = true;
+    preview.hidden = false;
+    preview.innerHTML = readerFormat === "json" ? renderJsonPreview(readerSource) : renderMarkdown(readerSource);
+  } else {
+    preview.hidden = true;
+    preview.replaceChildren();
+    pre.hidden = false;
+  }
+  syncPreviewButton();
+}
+
+function releaseReaderImage() {
+  const img = document.getElementById("reader-image");
+  const src = img.getAttribute("src") || "";
+  if (src.startsWith("blob:")) URL.revokeObjectURL(src);
+  img.removeAttribute("src");
+  img.alt = "";
+  img.hidden = true;
+}
+
+function showReaderDocument(name, text) {
+  readerSource = String(text == null ? "" : text);
+  readerFormat = readerFormatFor(name);
+  readerMode = readerFormat ? "preview" : "source";
+  document.getElementById("reader-title").textContent = name || "Reader";
+  releaseReaderImage();
+  paintReader();
+}
+
+function showReaderImage(name, src) {
+  readerSource = "";
+  readerFormat = "";
+  readerMode = "source";
+  document.getElementById("reader-title").textContent = name || "Image";
+  const pre = document.getElementById("reader-text");
+  pre.hidden = true;
+  pre.textContent = "";
+  const preview = document.getElementById("reader-preview");
+  preview.hidden = true;
+  preview.replaceChildren();
+  syncPreviewButton();
+  const img = document.getElementById("reader-image");
+  const previous = img.getAttribute("src") || "";
+  if (previous.startsWith("blob:") && previous !== src) URL.revokeObjectURL(previous);
+  img.hidden = false;
+  img.alt = name || "Image";
+  img.src = src;
+}
+
+function resetReader() {
+  readerSource = "";
+  readerFormat = "";
+  readerMode = "source";
+  const hint = document.getElementById("reader-hint");
+  if (hint) hint.hidden = false;
+  const pre = document.getElementById("reader-text");
+  pre.hidden = true;
+  pre.textContent = "";
+  const preview = document.getElementById("reader-preview");
+  preview.hidden = true;
+  preview.replaceChildren();
+  releaseReaderImage();
+  document.getElementById("reader-title").textContent = "Reader";
+  syncPreviewButton();
+}
+
+function toggleReaderPreview() {
+  if (readerFormat !== "md" && readerFormat !== "json") return;
+  readerMode = readerMode === "preview" ? "source" : "preview";
+  paintReader();
+}
+
 async function openLocalFile(path) {
   const file = localFiles.get(path);
-  const title = document.getElementById("reader-title");
-  const pre = document.getElementById("reader-text");
-  const img = document.getElementById("reader-image");
   const hint = document.getElementById("reader-hint");
   if (!file) return;
   if (hint) hint.hidden = true;
-  title.textContent = file.name;
   const suffix = file.name.includes(".") ? file.name.split(".").pop().toLowerCase() : "";
   if (LOCAL_IMAGES.has(suffix)) {
-    if (img.src.startsWith("blob:")) URL.revokeObjectURL(img.src);
-    pre.hidden = true;
-    img.hidden = false;
-    img.alt = file.name;
-    img.src = URL.createObjectURL(file);
+    showReaderImage(file.name, URL.createObjectURL(file));
     return;
   }
-  img.hidden = true;
-  pre.hidden = false;
-  pre.textContent = await file.text();
+  showReaderDocument(file.name, await file.text());
 }
 
 async function openFile(path) {
-  const title = document.getElementById("reader-title");
-  const pre = document.getElementById("reader-text");
-  const img = document.getElementById("reader-image");
   const hint = document.getElementById("reader-hint");
   if (hint) hint.hidden = true;
   setView("reader", true);
@@ -1424,22 +1697,13 @@ async function openFile(path) {
   try {
     const res = await fetch("/api/file?path=" + encodeURIComponent(path));
     const data = await res.json();
-    title.textContent = data.name || "Reader";
     if (data.kind === "image" && data.src) {
-      pre.hidden = true;
-      img.hidden = false;
-      img.alt = data.name || "Image";
-      img.src = data.src;
-    } else {
-      img.hidden = true;
-      pre.hidden = false;
-      pre.textContent = data.text || data.error || "That file is not in a production folder.";
+      showReaderImage(data.name || "Image", data.src);
+      return;
     }
+    showReaderDocument(data.name || "Reader", data.text || data.error || "That file is not in a production folder.");
   } catch (error) {
-    title.textContent = "Reader";
-    img.hidden = true;
-    pre.hidden = false;
-    pre.textContent = "That file is not in a production folder.";
+    showReaderDocument("Reader", "That file is not in a production folder.");
   }
 }
 
@@ -1495,9 +1759,9 @@ document.getElementById("log-end").addEventListener("click", () => {
   const box = document.getElementById("log");
   box.scrollTop = box.scrollHeight;
 });
+document.getElementById("preview-reader").addEventListener("click", toggleReaderPreview);
 document.getElementById("copy-reader").addEventListener("click", () => {
-  const pre = document.getElementById("reader-text");
-  copyText(pre.hidden ? "" : pre.textContent, "Reader copied");
+  copyText(readerSource, "Reader copied");
 });
 document.getElementById("still-tools").addEventListener("click", (event) => {
   const chip = event.target.closest("[data-filter]");
@@ -1557,11 +1821,7 @@ document.getElementById("new-session").addEventListener("click", async () => {
     releaseNote();
     document.getElementById("pages").checked = false;
     document.getElementById("dry").checked = false;
-    const hint = document.getElementById("reader-hint");
-    if (hint) hint.hidden = false;
-    document.getElementById("reader-text").hidden = true;
-    document.getElementById("reader-image").hidden = true;
-    document.getElementById("reader-title").textContent = "Reader";
+    resetReader();
     openPath = null;
     setView("brief");
     toast("New session");
