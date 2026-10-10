@@ -6,15 +6,16 @@
 <title>Screenwriter Studio</title>
 <style>
   :root {
-    --paper: #f3f0ea;
+    --ink: #171512;
+    --paper: #efeae3;
     --surface: #fffcf8;
-    --ink: #1c1915;
-    --muted: #6d675f;
-    --line: #e3ddd4;
-    --accent: #b8431f;
-    --accent-soft: #f8e6dc;
-    --good: #1d6b43;
+    --muted: #6e675f;
+    --line: #e2dbd1;
+    --accent: #e25b2a;
+    --accent-soft: #fde7dc;
+    --good: #1c7a4a;
     --bad: #a3261b;
+    --shadow: 0 10px 30px rgba(23, 21, 18, 0.06);
   }
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
@@ -22,7 +23,7 @@
     margin: 0;
     min-height: 100vh;
     display: grid;
-    grid-template-columns: 272px 1fr;
+    grid-template-columns: 280px 1fr;
     background: var(--paper);
     color: var(--ink);
     font-family: ui-sans-serif, "Segoe UI", system-ui, sans-serif;
@@ -33,45 +34,61 @@
     position: sticky;
     top: 0;
     align-self: start;
-    max-height: 100vh;
+    height: 100vh;
     overflow: auto;
-    padding: 28px 18px 40px;
-    background: #faf8f4;
-    border-right: 1px solid var(--line);
+    padding: 22px 16px 32px;
+    background: var(--ink);
+    color: #f6f1ea;
   }
-  .aside-title { margin: 0 0 6px; font-size: 22px; font-weight: 500; letter-spacing: -0.02em; }
-  .aside-note, .empty { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+  .aside-title { margin: 0 0 4px; font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }
+  .aside-note, .empty { margin: 0 0 12px; color: rgba(246, 241, 234, 0.62); font-size: 13px; }
+  .search {
+    display: block;
+    margin: 14px 0 8px;
+  }
+  .search input, #library-search {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid rgba(246, 241, 234, 0.16);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.06);
+    color: #fff;
+  }
+  .search input::placeholder { color: rgba(246, 241, 234, 0.45); }
   .label {
     margin: 14px 0 4px;
-    color: var(--muted);
+    color: rgba(246, 241, 234, 0.5);
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
-  aside h3 { margin: 18px 0 0; font-size: 14px; font-weight: 600; }
-  button, textarea, input { font: inherit; }
-  button.file, button.help, button.go { cursor: pointer; }
+  aside h3 { margin: 16px 0 0; font-size: 14px; font-weight: 600; }
+  button, textarea, input { font: inherit; color: inherit; }
+  button { cursor: pointer; }
   button.file {
     display: block;
     width: 100%;
     margin: 0 0 2px;
     padding: 7px 8px;
     text-align: left;
-    color: var(--ink);
+    color: #f6f1ea;
     background: transparent;
     border: 0;
     border-radius: 8px;
+    transition: background 160ms ease, transform 160ms ease;
   }
-  button.file:hover, button.file:focus-visible { background: #efeae3; }
-  button.file.is-open { background: var(--ink); color: #fff; }
-  main {
-    min-width: 0;
-    padding: 32px 40px 72px;
-    max-width: 1180px;
+  button.file:hover, button.file:focus-visible { background: rgba(255, 255, 255, 0.08); transform: translateX(3px); }
+  button.file.is-open { background: var(--accent); color: #fff; }
+  main { min-width: 0; padding: 22px 32px 64px; }
+  .topbar {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
   }
   .eyebrow {
-    margin: 0 0 6px;
+    margin: 0 0 4px;
     color: var(--muted);
     font-size: 12px;
     font-weight: 600;
@@ -81,81 +98,168 @@
   header h1 {
     margin: 0;
     font-family: "Iowan Old Style", Palatino, Georgia, serif;
-    font-size: 42px;
+    font-size: 34px;
     font-weight: 500;
     letter-spacing: -0.03em;
     line-height: 1.05;
   }
-  .lead { margin: 12px 0 0; max-width: 40em; color: var(--muted); }
+  .stats { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+  .stat {
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .tabs {
+    position: sticky;
+    top: 0;
+    z-index: 8;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 18px -32px 18px;
+    padding: 0 32px;
+    background: rgba(239, 234, 227, 0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line);
+  }
+  .tablist { position: relative; display: flex; gap: 4px; min-width: 0; overflow-x: auto; }
+  .tab {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 12px 14px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .tab.is-on { color: var(--ink); }
+  .tab .count {
+    min-width: 1.4em;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: rgba(23, 21, 18, 0.06);
+    font-size: 11px;
+    line-height: 18px;
+    text-align: center;
+  }
+  .tab.is-on .count { background: var(--accent-soft); color: var(--accent); }
+  .tab.has-news .count { animation: pop 400ms cubic-bezier(.2, 1.4, .3, 1); }
+  #tab-glider {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 2px;
+    width: 48px;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: transform 220ms ease, width 220ms ease;
+  }
+  button.ghost, button.go, button.chip, button.help { transition: background 160ms ease, transform 160ms ease, border-color 160ms ease; }
+  button.ghost, button.chip {
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 600;
+  }
+  button.ghost:hover, button.chip:hover { transform: translateY(-1px); }
+  button.ghost.is-on, button.chip.is-on { border-color: var(--accent); background: var(--accent-soft); color: #8a3416; }
+  button.go {
+    padding: 10px 16px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--ink);
+    color: #fff;
+    font-weight: 600;
+    box-shadow: 0 8px 16px rgba(23, 21, 18, 0.16);
+  }
+  button.go:hover { transform: translateY(-1px); }
+  button.go:active, button.ghost:active, button.chip:active { transform: translateY(1px); }
+  button.go:disabled { opacity: 0.45; cursor: progress; transform: none; box-shadow: none; }
+  #brief-form, #track, #activity-pane, #reader-pane, #image-bay {
+    animation: none;
+  }
+  body.is-entering[data-view="brief"] #brief-form,
+  body.is-entering[data-view="pipeline"] #track,
+  body.is-entering[data-view="stills"] #image-bay,
+  body.is-entering[data-view="activity"] #activity-pane,
+  body.is-entering[data-view="reader"] #reader-pane {
+    animation: rise 280ms ease;
+  }
+  .panel-head h2 {
+    margin: 0;
+    font-family: "Iowan Old Style", Palatino, Georgia, serif;
+    font-size: 32px;
+    font-weight: 500;
+    letter-spacing: -0.03em;
+  }
+  .lead { margin: 8px 0 0; max-width: 42em; color: var(--muted); }
   #brief-form {
-    margin-top: 22px;
+    margin-top: 8px;
     padding: 18px;
     background: var(--surface);
     border: 1px solid var(--line);
-    border-radius: 16px;
+    border-radius: 18px;
+    box-shadow: var(--shadow);
   }
-  #brief-form > label { display: block; margin-bottom: 8px; font-weight: 600; }
+  #brief-form > label { display: block; margin: 16px 0 8px; font-weight: 600; }
   textarea {
     width: 100%;
-    min-height: 96px;
+    min-height: 120px;
     padding: 12px 14px;
     border: 1px solid var(--line);
     border-radius: 12px;
     background: #fff;
     color: var(--ink);
     resize: vertical;
+    transition: border-color 160ms ease, box-shadow 160ms ease;
   }
   textarea:focus, button:focus-visible, input:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
-  .options { display: flex; flex-wrap: wrap; gap: 18px; margin: 12px 0; }
-  .option { min-width: 220px; }
-  .check { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; }
+  .options { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 12px 0; }
+  .option { min-width: 0; }
+  .check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #fff;
+    font-weight: 600;
+    transition: border-color 160ms ease, background 160ms ease;
+  }
+  .check:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
   button.help {
-    margin-left: 8px;
+    margin-left: 6px;
     padding: 0;
     border: 0;
     background: none;
     color: var(--accent);
     font-size: 13px;
+    font-weight: 600;
     text-decoration: underline;
     text-underline-offset: 2px;
   }
   .help-copy { margin: 6px 0 0; max-width: 46em; color: var(--muted); font-size: 13px; }
-  button.go {
-    padding: 10px 16px;
-    border: 0;
-    border-radius: 10px;
-    background: var(--ink);
-    color: #fff;
-    font-weight: 600;
-  }
-  button.go:hover { background: #322c26; }
-  button.go:disabled { opacity: 0.45; cursor: progress; }
-  #stage {
-    position: relative;
-    margin-top: 28px;
-    padding: 0;
-    background: transparent;
-    overflow: visible;
-  }
+  .actions, .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .actions { margin-top: 4px; }
+  #stage { position: relative; margin-top: 8px; }
   #dust { display: none; }
-  #hud {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
-  }
-  .kicker {
-    margin: 0;
-    color: var(--muted);
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-  #note { margin: 2px 0 0; font-size: 18px; font-weight: 500; letter-spacing: -0.01em; }
+  #hud { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .kicker { margin: 0; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  #note { margin: 2px 0 0; font-size: 20px; font-weight: 600; letter-spacing: -0.02em; }
   #note.is-bad { color: var(--bad); }
   #live {
     display: inline-flex;
@@ -187,24 +291,34 @@
   #pips { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   #track {
     display: flex;
-    gap: 0;
+    gap: 20px;
     margin-top: 18px;
-    padding: 22px 0 4px;
+    padding: 8px 0 4px;
     overflow-x: auto;
   }
-  .station { position: relative; flex: 1 0 112px; min-width: 0; text-align: center; }
+  .station { position: relative; flex: 1 0 140px; min-width: 0; text-align: center; }
   .station::after {
     content: "";
     position: absolute;
-    top: 13px;
-    left: calc(50% + 18px);
-    width: calc(100% - 36px);
-    height: 1px;
+    top: 26px;
+    left: calc(100% - 1px);
+    z-index: 3;
+    width: 20px;
+    height: 2px;
+    border-radius: 2px;
     background: var(--line);
+    transform-origin: left center;
   }
   .station:last-child::after { display: none; }
-  .station.is-done::after { background: var(--ink); }
-  .piece { padding: 0 8px; background: transparent; }
+  .station.is-done::after { background: var(--ink); animation: draw 420ms ease; }
+  .piece {
+    padding: 12px 10px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    transition: transform 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+  }
   .mark {
     position: relative;
     z-index: 1;
@@ -223,17 +337,23 @@
   .piece strong { font-size: 13px; font-weight: 600; }
   .piece .model, .kinds, figcaption { color: var(--muted); font-size: 12px; }
   .piece .model { margin-top: 2px; word-break: break-word; }
-  .piece .status { margin-top: 4px; color: var(--muted); font-size: 12px; }
-  .station.is-idle { opacity: 0.55; }
+  .piece .status { margin-top: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
+  .station.is-idle { opacity: 0.72; }
   .station.is-working { opacity: 1; }
+  .station.is-working .piece {
+    border-color: var(--accent);
+    transform: translateY(-4px);
+    box-shadow: 0 14px 28px rgba(226, 91, 42, 0.14);
+  }
   .station.is-working .mark {
     border-color: var(--accent);
     background: var(--accent);
     color: #fff;
-    box-shadow: 0 0 0 4px var(--accent-soft);
+    animation: ring 1.5s ease-out infinite;
   }
-  .station.is-working .status { color: var(--accent); font-weight: 700; }
+  .station.is-working .status { color: var(--accent); }
   .station.is-done { opacity: 1; }
+  .station.is-done .piece { border-color: #c9e4d4; }
   .station.is-done .mark { border-color: var(--ink); background: var(--ink); color: transparent; }
   .station.is-done .mark::after {
     content: "";
@@ -245,179 +365,237 @@
     border: solid #fff;
     border-width: 0 2px 2px 0;
     transform: rotate(45deg);
+    animation: pop 280ms cubic-bezier(.2, 1.4, .3, 1);
   }
-  .station.is-done .status { color: var(--good); font-weight: 600; }
+  .station.is-done .status { color: var(--good); }
   #token, #return-token {
     position: absolute;
-    left: 0;
-    top: 0;
-    z-index: 5;
     width: 8px;
     height: 8px;
     opacity: 0;
     pointer-events: none;
   }
   #token svg, #return-token svg { display: none; }
-  #return-slot { position: relative; min-height: 36px; margin-top: 4px; }
-  #return-rail { position: relative; height: 28px; }
+  #return-slot { position: relative; min-height: 28px; margin-top: 14px; }
+  #return-rail { position: relative; height: 8px; }
   .rail-line {
     position: absolute;
     left: 0;
     right: 8px;
-    top: 12px;
-    border-top: 1px solid var(--line);
+    top: 3px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--line);
   }
-  #return-rail.is-live .rail-line { border-top-color: var(--accent); }
-  #return-token { top: 8px; left: calc(100% - 8px); }
-  #return-label { margin: 0; color: var(--muted); font-size: 13px; }
-  #return-label.is-live { color: var(--accent); font-weight: 600; }
-  #landing { height: auto; margin: 28px 0 0; border: 0; background: none; }
+  #return-rail.is-live .rail-line {
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    background-size: 200% 100%;
+    animation: sweep 1.1s ease;
+  }
+  #return-token { top: 0; left: calc(100% - 8px); }
+  #return-label { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+  #return-label.is-live { color: var(--accent); font-weight: 700; }
+  #landing { margin: 0 0 8px; }
   #landing span {
-    position: static;
     color: var(--muted);
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
-  .bay-label { margin: 4px 0 12px; color: var(--muted); font-size: 13px; }
-  #image-bay:empty::before {
-    content: "Stills land here after the art director finishes.";
+  .bay-label { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+  #still-tools { margin-bottom: 12px; }
+  #image-bay:empty::before,
+  #image-bay[data-filter-empty="1"]::after {
+    content: "Nothing to show in this view yet.";
     color: var(--muted);
     font-size: 14px;
   }
-  #image-bay {
-    display: flex;
-    flex-direction: column;
-    gap: 22px;
-    min-height: 0;
-  }
-  .model-col {
-    display: block;
-    min-width: 0;
-    padding: 0;
-    background: transparent;
-  }
-  .model-col h3 {
-    margin: 0;
-    color: var(--ink);
-    font-size: 14px;
-    font-weight: 600;
-    line-height: 1.35;
-    word-break: break-word;
-  }
+  #image-bay { display: flex; flex-direction: column; gap: 22px; }
+  .model-col { min-width: 0; }
+  .model-col h3 { margin: 0; font-size: 15px; font-weight: 600; }
   .kinds { margin: 2px 0 0; }
   .model-col.is-working h3 { color: var(--accent); }
-  .slots {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    gap: 10px;
-    margin-top: 8px;
-  }
+  .slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; margin-top: 8px; }
   .frame {
     position: relative;
     margin: 0;
     overflow: hidden;
     border: 1px solid var(--line);
-    border-radius: 12px;
+    border-radius: 14px;
     background: var(--surface);
+    box-shadow: var(--shadow);
+    transition: transform 180ms ease, box-shadow 180ms ease;
+    animation: rise 360ms ease both;
   }
+  .frame:hover { transform: translateY(-3px); box-shadow: 0 12px 24px rgba(23, 21, 18, 0.1); }
+  .slots .frame:nth-child(2) { animation-delay: 30ms; }
+  .slots .frame:nth-child(3) { animation-delay: 60ms; }
+  .slots .frame:nth-child(4) { animation-delay: 90ms; }
+  .slots .frame:nth-child(5) { animation-delay: 120ms; }
+  .slots .frame:nth-child(6) { animation-delay: 150ms; }
   .frame.ghost {
     display: grid;
     place-items: center;
-    min-height: 44px;
+    min-height: 52px;
     border-style: dashed;
     background: transparent;
+    box-shadow: none;
     color: var(--muted);
     font-size: 13px;
   }
+  .model-col.is-working .frame.ghost { animation: ring 1.5s ease-out infinite; }
   .model-col.has-jobs .ghost { display: none; }
-  .cell {
-    display: grid;
-    place-items: center;
-    margin: 0;
-    min-height: 64px;
-    padding: 14px 10px;
-    background: #f6f3ee;
-  }
+  .cell { display: grid; place-items: center; margin: 0; min-height: 64px; padding: 14px 10px; background: #f6f3ee; }
   .frame:has(img:not([hidden])) .cell { aspect-ratio: 9 / 14; min-height: 0; padding: 0; }
   .cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .hold {
-    padding: 0 16px;
-    color: var(--muted);
-    font-size: 13px;
-    text-align: center;
-    white-space: normal;
-  }
+  .hold { padding: 0 12px; color: var(--muted); font-size: 13px; text-align: center; }
   .flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
   .frame.exposing .flash { animation: expose 0.45s ease-out; }
   .frame.is-running { border-color: var(--accent); }
   .frame.is-failed { border-color: var(--bad); }
   .frame.is-done:not(:has(img:not([hidden]))) .cell { display: none; }
-  .frame.is-done:not(:has(img:not([hidden]))) figcaption {
-    padding: 11px 12px;
-    color: var(--ink);
-    font-size: 13px;
-  }
+  .frame.is-done:not(:has(img:not([hidden]))) figcaption { padding: 11px 12px; color: var(--ink); font-size: 13px; }
   figcaption { padding: 8px 10px 10px; line-height: 1.35; word-break: break-word; }
-  #lower { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 18px; margin-top: 32px; }
+  #lower { margin-top: 8px; }
   #lower h2 { margin: 0 0 8px; font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
   #log, #reader-text {
-    margin: 0;
-    max-height: 340px;
+    margin: 8px 0 0;
+    max-height: min(68vh, 720px);
     overflow: auto;
     padding: 14px 16px;
     border: 1px solid var(--line);
-    border-radius: 14px;
+    border-radius: 16px;
     background: var(--surface);
+    box-shadow: var(--shadow);
     font-family: inherit;
     font-size: 14px;
     line-height: 1.5;
     white-space: pre-wrap;
   }
-  #log p { margin: 0 0 10px; }
+  #log p { margin: 0 0 10px; overflow-wrap: anywhere; animation: rise 220ms ease; }
   #log p:last-child { margin-bottom: 0; }
-  #reader-image { display: block; max-width: 100%; margin-top: 8px; border: 1px solid var(--line); border-radius: 14px; }
-  #stage.shake { animation: shake 0.45s ease; }
-  @keyframes blink { 50% { opacity: 0.35; } }
-  @keyframes expose { 0% { opacity: 0.7; } 100% { opacity: 0; } }
-  @keyframes shake {
-    0%, 100% { box-shadow: none; }
-    40% { box-shadow: inset 0 0 0 2px var(--accent); }
+  #reader-image { display: block; max-width: min(100%, 520px); margin-top: 12px; border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
+  #stage.shake { animation: shake 0.4s ease; }
+  #toast {
+    position: fixed;
+    left: 50%;
+    bottom: 20px;
+    z-index: 20;
+    margin: 0;
+    padding: 10px 14px;
+    border-radius: 999px;
+    background: var(--ink);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    transform: translateX(-50%);
+    box-shadow: var(--shadow);
+    animation: rise 200ms ease;
   }
+  #toast[hidden] { display: none; }
+  body[data-view="brief"] #track,
+  body[data-view="brief"] #return-slot,
+  body[data-view="brief"] #landing,
+  body[data-view="brief"] .bay-label,
+  body[data-view="brief"] #still-tools,
+  body[data-view="brief"] #image-bay,
+  body[data-view="brief"] #lower,
+  body[data-view="pipeline"] #brief-form,
+  body[data-view="pipeline"] #landing,
+  body[data-view="pipeline"] .bay-label,
+  body[data-view="pipeline"] #still-tools,
+  body[data-view="pipeline"] #image-bay,
+  body[data-view="pipeline"] #lower,
+  body[data-view="stills"] #brief-form,
+  body[data-view="stills"] #track,
+  body[data-view="stills"] #return-slot,
+  body[data-view="stills"] #lower,
+  body[data-view="activity"] #brief-form,
+  body[data-view="activity"] #track,
+  body[data-view="activity"] #return-slot,
+  body[data-view="activity"] #landing,
+  body[data-view="activity"] .bay-label,
+  body[data-view="activity"] #still-tools,
+  body[data-view="activity"] #image-bay,
+  body[data-view="activity"] #reader-pane,
+  body[data-view="reader"] #brief-form,
+  body[data-view="reader"] #track,
+  body[data-view="reader"] #return-slot,
+  body[data-view="reader"] #landing,
+  body[data-view="reader"] .bay-label,
+  body[data-view="reader"] #still-tools,
+  body[data-view="reader"] #image-bay,
+  body[data-view="reader"] #activity-pane { display: none !important; }
+  body.library-hidden { grid-template-columns: 0 1fr; }
+  body.library-hidden aside { overflow: hidden; padding: 0; border: 0; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @keyframes blink { 50% { opacity: 0.35; } }
+  @keyframes expose { 0% { opacity: 0.75; } 100% { opacity: 0; } }
+  @keyframes shake { 40% { box-shadow: inset 3px 0 0 var(--accent); } }
+  @keyframes ring { 70% { box-shadow: 0 0 0 8px rgba(226, 91, 42, 0); } 100% { box-shadow: 0 0 0 0 rgba(226, 91, 42, 0); } }
+  @keyframes draw { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  @keyframes pop { from { transform: rotate(45deg) scale(0); } to { transform: rotate(45deg) scale(1); } }
+  @keyframes sweep { from { background-position: 100% 0; } to { background-position: -100% 0; } }
   @media (prefers-reduced-motion: reduce) {
-    #live i, #token, #return-token, .frame.exposing .flash, #stage.shake { animation: none !important; transition: none !important; }
+    *, *::before, *::after { animation: none !important; transition: none !important; }
   }
   @media (max-width: 900px) {
-    body { grid-template-columns: 1fr; }
-    aside { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); }
-    main { padding: 24px 16px 48px; }
-    header h1 { font-size: 34px; }
-    #lower { grid-template-columns: 1fr; }
-    #track { flex-direction: column; gap: 14px; overflow: visible; }
+    body, body.library-hidden { grid-template-columns: 1fr; }
+    aside, body.library-hidden aside { position: static; height: auto; padding: 16px; overflow: visible; }
+    main { padding: 16px 16px 48px; }
+    .tabs { margin-left: -16px; margin-right: -16px; padding: 0 16px; }
+    header h1, .panel-head h2 { font-size: 28px; }
+    #track { flex-direction: column; overflow: visible; }
     .station { flex: none; text-align: left; }
-    .station::after { top: 32px; left: 13px; width: 1px; height: calc(100% - 10px); }
+    .station::after { top: calc(100% - 10px); left: 26px; width: 2px; height: 20px; transform-origin: top center; }
     .piece { display: grid; grid-template-columns: 36px 1fr auto; column-gap: 10px; align-items: center; }
     .mark { grid-row: 1 / span 2; margin: 0; }
     .piece strong, .piece .model { text-align: left; }
     .piece .status { grid-column: 3; grid-row: 1 / span 2; margin: 0; }
+    .station.is-working .piece { transform: none; }
   }
 </style>
 </head>
-<body>
+<body data-view="brief">
 <aside>
   <p class="eyebrow">Library</p>
   <p class="aside-title">Productions</p>
-  <p class="aside-note">Scripts and stills saved on this computer.</p>
+  <p class="aside-note">Scripts and stills on this computer.</p>
+  <label class="search">Search files
+    <input id="library-search" type="search" placeholder="Name or scene">
+  </label>
   <nav id="library"></nav>
 </aside>
 <main>
-  <header>
-    <p class="eyebrow">Screenwriter Studio</p>
-    <h1>Start with the brief.</h1>
-    <p class="lead">The crew develops the idea, writes the pages, and the editor can send them back twice. Stills are made last.</p>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Desk</p>
+      <h1>Screenwriter Studio</h1>
+    </div>
+    <div class="stats">
+      <span class="stat" id="stat-steps">0 of 5 done</span>
+      <span class="stat" id="stat-stills">0 stills</span>
+      <span class="stat" id="stat-loop">Editor loop ready</span>
+      <button class="ghost" id="toggle-library" type="button">Hide library</button>
+    </div>
   </header>
+  <div class="tabs">
+    <div class="tablist" role="tablist" aria-label="Desk">
+      <button class="tab is-on" type="button" role="tab" data-tab="brief" aria-selected="true">Brief</button>
+      <button class="tab" type="button" role="tab" data-tab="pipeline" aria-selected="false">Pipeline <span class="count" id="count-pipeline">0</span></button>
+      <button class="tab" type="button" role="tab" data-tab="stills" aria-selected="false">Stills <span class="count" id="count-stills">0</span></button>
+      <button class="tab" type="button" role="tab" data-tab="activity" aria-selected="false">Activity <span class="count" id="count-activity">0</span></button>
+      <button class="tab" type="button" role="tab" data-tab="reader" aria-selected="false">Reader</button>
+      <span id="tab-glider"></span>
+    </div>
+    <button class="ghost is-on" id="follow" type="button">Follow crew</button>
+  </div>
   <form id="brief-form">
+    <div class="panel-head">
+      <h2>Start with the brief.</h2>
+      <p class="lead">The crew develops the idea, writes the pages, and the editor can send them back twice. Stills are made last.</p>
+    </div>
     <label for="idea">Brief</label>
     <textarea id="idea" name="idea" placeholder="A 30-second vertical film about someone who keeps a seat on the last bus."></textarea>
     <button class="help" id="help-idea" type="button">What is this?</button>
@@ -434,13 +612,18 @@
         <p class="help-copy" id="help-dry-copy" hidden>Image models are chosen and the still jobs are written, but no images are downloaded and no image credits are spent.</p>
       </div>
     </div>
-    <button class="go" id="run" type="submit">Start production</button>
+    <div class="actions">
+      <button class="go" id="run" type="submit">Start production</button>
+      <button class="ghost" id="sample" type="button">Use sample</button>
+      <button class="ghost" id="clear-brief" type="button">Clear</button>
+      <button class="ghost" id="copy-brief" type="button">Copy brief</button>
+    </div>
   </form>
   <div id="stage">
     <canvas id="dust" hidden></canvas>
     <div id="hud">
       <div>
-        <p class="kicker">Pipeline</p>
+        <p class="kicker">Status</p>
         <p id="note">Waiting for a brief.</p>
         <p id="folder" hidden></p>
         <p id="plaque" hidden></p>
@@ -477,22 +660,37 @@
       <p id="return-label">Editor loop, up to two rewrites</p>
     </div>
     <div id="landing" data-station="images"><span>Stills</span></div>
-    <p class="bay-label">Grouped by the model that made them. Open one from the library to read it.</p>
+    <p class="bay-label">Grouped by the model that made them.</p>
+    <div id="still-tools" class="toolbar">
+      <button class="chip is-on" type="button" data-filter="all">All</button>
+      <button class="chip" type="button" data-filter="character">Characters</button>
+      <button class="chip" type="button" data-filter="location">Locations</button>
+      <button class="chip" type="button" data-filter="keyframe">Keyframes</button>
+      <button class="chip" type="button" data-filter="waiting">Waiting</button>
+    </div>
     <div id="image-bay"></div>
   </div>
   <div id="lower">
-    <section>
-      <h2>Activity</h2>
+    <section id="activity-pane">
+      <div class="toolbar">
+        <h2>Activity</h2>
+        <button class="ghost" id="copy-log" type="button">Copy log</button>
+        <button class="ghost" id="log-end" type="button">Latest</button>
+      </div>
       <div id="log" aria-live="polite"></div>
     </section>
-    <section>
-      <h2 id="reader-title">Reader</h2>
+    <section id="reader-pane">
+      <div class="toolbar">
+        <h2 id="reader-title">Reader</h2>
+        <button class="ghost" id="copy-reader" type="button">Copy text</button>
+      </div>
       <p class="aside-note" id="reader-hint">Choose a document or an image from the library.</p>
       <pre id="reader-text" hidden></pre>
       <img id="reader-image" alt="" hidden>
     </section>
   </div>
 </main>
+<p id="toast" hidden></p>
 <noscript>Turn on JavaScript to run the crew and open the library.</noscript>
 <script>
 const GLYPHS = {
@@ -503,12 +701,17 @@ const GLYPHS = {
 };
 const PIPS = ["brief", "development", "writer", "editor", "art", "images"];
 const CREW = ["development", "writer", "editor", "art"];
+const SAMPLE = "A 30-second vertical film about someone who keeps a seat on the last bus.";
 
 let last = null;
 let revision = -1;
 let shown = 0;
 let streamOK = false;
 let openPath = null;
+let follow = true;
+let stillFilter = "all";
+let toastTimer = 0;
+let viewChosen = false;
 
 function plain(text) {
   return String(text || "")
@@ -548,6 +751,108 @@ function setMode(el, mode) {
 
 function stationEl(id) {
   return document.querySelector('[data-station="' + id + '"]');
+}
+
+function toast(message) {
+  const el = document.getElementById("toast");
+  el.hidden = false;
+  el.textContent = message;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, 1600);
+}
+
+function copyText(text, message) {
+  const value = String(text || "");
+  if (!value.trim()) {
+    toast("Nothing to copy");
+    return;
+  }
+  const done = () => toast(message);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(value).then(done).catch(() => {
+      fallbackCopy(value);
+      done();
+    });
+    return;
+  }
+  fallbackCopy(value);
+  done();
+}
+
+function fallbackCopy(value) {
+  const area = document.createElement("textarea");
+  area.value = value;
+  document.body.appendChild(area);
+  area.select();
+  document.execCommand("copy");
+  area.remove();
+}
+
+function moveGlider() {
+  const bar = document.querySelector(".tablist");
+  const on = bar.querySelector(".tab.is-on");
+  const glider = document.getElementById("tab-glider");
+  if (!on || !glider) return;
+  glider.style.width = on.offsetWidth + "px";
+  glider.style.transform = "translateX(" + on.offsetLeft + "px)";
+}
+
+function setView(name, fromUser) {
+  if (fromUser) {
+    follow = false;
+    viewChosen = true;
+    document.getElementById("follow").classList.remove("is-on");
+  }
+  document.body.dataset.view = name;
+  document.querySelectorAll(".tab").forEach((tab) => {
+    const on = tab.dataset.tab === name;
+    tab.classList.toggle("is-on", on);
+    tab.setAttribute("aria-selected", on ? "true" : "false");
+    if (on) tab.classList.remove("has-news");
+  });
+  document.body.classList.remove("is-entering");
+  void document.body.offsetWidth;
+  document.body.classList.add("is-entering");
+  requestAnimationFrame(() => {
+    moveGlider();
+    placeRail();
+    if (last) moveToken(last.station || "brief", false);
+  });
+}
+
+function viewFor(state) {
+  if ((state.images || []).some((image) => image.state === "running") || state.station === "images") return "stills";
+  if (state.station && state.station !== "brief") return "pipeline";
+  return "brief";
+}
+
+function applyStillFilter() {
+  const bay = document.getElementById("image-bay");
+  let shownCols = 0;
+  bay.querySelectorAll(".model-col").forEach((col) => {
+    let visible = 0;
+    col.querySelectorAll(".frame").forEach((frame) => {
+      const ghost = frame.classList.contains("ghost");
+      const kind = (frame.dataset.kind || "").toLowerCase();
+      const state = frame.dataset.state || "";
+      const waitingSlot = ghost && !col.classList.contains("has-jobs");
+      let show = !ghost;
+      if (stillFilter === "waiting") show = waitingSlot || state === "running";
+      else if (stillFilter !== "all") show = !ghost && kind.includes(stillFilter);
+      frame.hidden = !show;
+      if (show) visible += 1;
+    });
+    col.hidden = visible === 0;
+    if (!col.hidden) shownCols += 1;
+  });
+  bay.dataset.filterEmpty = bay.children.length && shownCols === 0 ? "1" : "";
+}
+
+function filterLibrary() {
+  const q = (document.getElementById("library-search").value || "").trim().toLowerCase();
+  document.querySelectorAll("#library .file").forEach((button) => {
+    button.hidden = !!q && !button.textContent.toLowerCase().includes(q);
+  });
 }
 
 function paintCrew(state) {
@@ -718,6 +1023,7 @@ function applyFrameState(frame, image) {
 
 function syncImages(state) {
   const bay = document.getElementById("image-bay");
+  const before = bay.querySelectorAll(".frame[data-job]").length;
   for (const agent of state.image_agents || []) ensureColumn(bay, agent.model, agent.kinds);
   const live = new Set((state.images || []).map((image) => image.id));
   bay.querySelectorAll(".frame[data-job]").forEach((frame) => {
@@ -726,6 +1032,7 @@ function syncImages(state) {
   for (const image of state.images || []) {
     const col = ensureColumn(bay, image.model || "still", image.kind || "");
     const frame = ensureFrame(col, image.id);
+    frame.dataset.kind = image.kind || "";
     const caption = image.error ? image.id + " · " + image.kind + " — " + image.error : image.id + " · " + image.kind;
     setText(frame.querySelector("figcaption"), caption);
     if (frame.dataset.state !== (image.state || "")) applyFrameState(frame, image);
@@ -736,6 +1043,10 @@ function syncImages(state) {
     col.classList.toggle("has-jobs", jobs.length > 0);
     col.classList.toggle("is-working", [...jobs].some((frame) => frame.dataset.state === "running"));
   });
+  applyStillFilter();
+  if ((state.images || []).length > before && document.body.dataset.view !== "stills") {
+    document.querySelector('.tab[data-tab="stills"]').classList.add("has-news");
+  }
 }
 
 function syncLog(lines) {
@@ -807,6 +1118,22 @@ function paint(state, prev) {
     pip.classList.toggle("is-here", index === here);
   });
   syncLog(state.log || []);
+  const stepsDone = document.querySelectorAll(".station.is-done").length;
+  setText(document.getElementById("count-pipeline"), String(stepsDone));
+  setText(document.getElementById("count-stills"), String((state.images || []).length));
+  setText(document.getElementById("count-activity"), String((state.log || []).length));
+  setText(document.getElementById("stat-steps"), stepsDone + " of 5 done");
+  const stillCount = (state.images || []).length;
+  setText(document.getElementById("stat-stills"), stillCount + (stillCount === 1 ? " still" : " stills"));
+  setText(document.getElementById("stat-loop"), state.returning ? "Rewrite in flight" : "Editor loop ready");
+  if (!viewChosen) {
+    if (stillCount) setView("stills");
+    else if ((state.done || []).length) setView("pipeline");
+    viewChosen = true;
+  } else if (follow && state.running) {
+    const next = viewFor(state);
+    if (document.body.dataset.view !== next) setView(next);
+  }
 }
 
 function apply(state) {
@@ -823,6 +1150,9 @@ function startDust() {}
 async function startRun() {
   const run = document.getElementById("run");
   run.disabled = true;
+  follow = true;
+  document.getElementById("follow").classList.add("is-on");
+  setView("pipeline");
   try {
     const res = await fetch("/api/run", {
       method: "POST",
@@ -892,6 +1222,7 @@ async function pollLibrary() {
       }
       nav.appendChild(section);
     }
+    filterLibrary();
   } catch (error) {
     /* the board still shows the log */
   }
@@ -903,6 +1234,7 @@ async function openFile(path) {
   const img = document.getElementById("reader-image");
   const hint = document.getElementById("reader-hint");
   if (hint) hint.hidden = true;
+  setView("reader", true);
   try {
     const res = await fetch("/api/file?path=" + encodeURIComponent(path));
     const data = await res.json();
@@ -941,6 +1273,52 @@ for (const name of ["idea", "pages", "dry"]) {
     copy.hidden = !copy.hidden;
   });
 }
+document.querySelectorAll(".tab").forEach((tab) => {
+  tab.addEventListener("click", () => setView(tab.dataset.tab, true));
+});
+document.getElementById("follow").addEventListener("click", () => {
+  follow = !follow;
+  document.getElementById("follow").classList.toggle("is-on", follow);
+  if (follow && last) setView(viewFor(last));
+  toast(follow ? "Following the crew" : "Tabs stay where you put them");
+});
+document.getElementById("toggle-library").addEventListener("click", () => {
+  const hidden = document.body.classList.toggle("library-hidden");
+  document.getElementById("toggle-library").textContent = hidden ? "Show library" : "Hide library";
+});
+document.getElementById("sample").addEventListener("click", () => {
+  document.getElementById("idea").value = SAMPLE;
+  document.getElementById("idea").focus();
+});
+document.getElementById("clear-brief").addEventListener("click", () => {
+  document.getElementById("idea").value = "";
+  document.getElementById("idea").focus();
+});
+document.getElementById("copy-brief").addEventListener("click", () => {
+  copyText(document.getElementById("idea").value, "Brief copied");
+});
+document.getElementById("copy-log").addEventListener("click", () => {
+  const lines = [...document.querySelectorAll("#log p")].map((p) => p.textContent).join("\n");
+  copyText(lines, "Log copied");
+});
+document.getElementById("log-end").addEventListener("click", () => {
+  const box = document.getElementById("log");
+  box.scrollTop = box.scrollHeight;
+});
+document.getElementById("copy-reader").addEventListener("click", () => {
+  const pre = document.getElementById("reader-text");
+  copyText(pre.hidden ? "" : pre.textContent, "Reader copied");
+});
+document.getElementById("still-tools").addEventListener("click", (event) => {
+  const chip = event.target.closest("[data-filter]");
+  if (!chip) return;
+  stillFilter = chip.dataset.filter;
+  document.querySelectorAll("#still-tools .chip").forEach((button) => {
+    button.classList.toggle("is-on", button === chip);
+  });
+  applyStillFilter();
+});
+document.getElementById("library-search").addEventListener("input", filterLibrary);
 document.getElementById("library").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-path]");
   if (!button) return;
@@ -949,10 +1327,19 @@ document.getElementById("library").addEventListener("click", (event) => {
   button.classList.add("is-open");
   openFile(button.dataset.path);
 });
+document.addEventListener("keydown", (event) => {
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement && document.activeElement.tagName);
+  if (typing) return;
+  const views = ["brief", "pipeline", "stills", "activity", "reader"];
+  const index = "12345".indexOf(event.key);
+  if (index >= 0) setView(views[index], true);
+});
 document.getElementById("stage").addEventListener("animationend", (event) => {
   if (event.animationName === "shake") event.currentTarget.classList.remove("shake");
 });
 window.addEventListener("resize", () => {
+  moveGlider();
   if (!last) return;
   placeRail();
   moveToken(last.station || "brief", false);
@@ -961,6 +1348,7 @@ window.addEventListener("resize", () => {
 startDust();
 pollLibrary();
 setInterval(pollLibrary, 3000);
+moveGlider();
 fetch("/api/status").then((res) => res.json()).then(apply).catch(() => {
   document.getElementById("note").textContent = "Could not read the desk.";
 });
