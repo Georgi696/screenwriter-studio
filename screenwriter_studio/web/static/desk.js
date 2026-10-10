@@ -205,18 +205,51 @@ function libraryFolder(group, source) {
   return { section, head, content };
 }
 
+function searchWords(value) {
+  return String(value || "").normalize("NFKD").replace(/\p{M}/gu, "")
+    .toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
 function filterLibrary() {
-  const q = (document.getElementById("library-search").value || "").trim().toLowerCase();
+  const query = document.getElementById("library-search").value.trim();
+  const terms = searchWords(query).split(/\s+/).filter(Boolean);
+  const searching = terms.length > 0;
+  let files = 0;
+  let folders = 0;
   document.querySelectorAll(".library-folder").forEach((section) => {
-    const folderMatches = section.querySelector(".folder-toggle").textContent.toLowerCase().includes(q);
-    let matches = false;
+    const folderName = searchWords(section.querySelector(".folder-toggle").textContent);
+    const folderMatches = terms.every((term) => folderName.includes(term));
+    let matches = 0;
     section.querySelectorAll(".file").forEach((button) => {
-      button.hidden = !!q && !folderMatches && !button.textContent.toLowerCase().includes(q);
-      if (!button.hidden) matches = true;
+      const name = searchWords(folderName + " " + button.textContent + " " + button.dataset.path);
+      button.hidden = searching && !terms.every((term) => name.includes(term));
+      if (!button.hidden) matches += 1;
     });
-    section.hidden = !!q && !folderMatches && !matches;
-    // Search reveals matches; clearing it restores the user's folder preference.
-    setFolderExpanded(section, q ? !section.hidden : folderPreferences.get(section.dataset.folder) !== false);
+    section.querySelectorAll(".library-group").forEach((group) => {
+      group.hidden = searching && !folderMatches && ![...group.querySelectorAll(".file")].some((file) => !file.hidden);
+    });
+    section.hidden = searching && !folderMatches && matches === 0;
+    if (!section.hidden) { folders += 1; files += matches; }
+    // Searching reveals matches without changing saved collapse preferences.
+    setFolderExpanded(section, searching ? !section.hidden : folderPreferences.get(section.dataset.folder) !== false);
+  });
+  const status = document.getElementById("library-search-status");
+  status.hidden = !searching;
+  status.textContent = !searching ? "" : folders
+    ? `${files} ${files === 1 ? "file" : "files"} in ${folders} ${folders === 1 ? "folder" : "folders"}`
+    : `No files or folders match “${query}”.`;
+  document.getElementById("clear-library-search").hidden = !query;
+}
+
+function bindLibrarySearch() {
+  const input = document.getElementById("library-search");
+  input.addEventListener("input", filterLibrary);
+  // Safari's built-in search-field clear control also emits this event.
+  input.addEventListener("search", filterLibrary);
+  document.getElementById("clear-library-search").addEventListener("click", () => {
+    input.value = "";
+    filterLibrary();
+    input.focus();
   });
 }
 
@@ -246,11 +279,14 @@ function renderOpenedFolder(groups) {
     head.appendChild(close);
     for (const [label, items] of [["Documents", group.documents], ["Images", group.images]]) {
       if (!items.length) continue;
+      const groupContent = document.createElement("div");
+      groupContent.className = "library-group";
+      content.appendChild(groupContent);
       const name = document.createElement("p");
       name.className = "label";
       name.textContent = label;
-      content.appendChild(name);
-      for (const item of items) content.appendChild(fileButton(item));
+      groupContent.appendChild(name);
+      for (const item of items) groupContent.appendChild(fileButton(item));
     }
     host.appendChild(section);
   }
@@ -681,29 +717,33 @@ async function pollLibrary() {
     const nav = document.getElementById("library");
     nav.replaceChildren();
     if (!data.projects || !data.projects.length) {
-      if (localFiles.size) return;
+      if (localFiles.size) { filterLibrary(); return; }
       const p = document.createElement("p");
       p.className = "empty";
       p.textContent = "No productions yet.";
       nav.appendChild(p);
+      filterLibrary();
       return;
     }
     for (const project of data.projects) {
       const { section, content } = libraryFolder(project, "production");
       for (const [label, items] of [["Documents", project.documents], ["Images", project.images]]) {
+        const groupContent = document.createElement("div");
+        groupContent.className = "library-group";
+        content.appendChild(groupContent);
         const name = document.createElement("p");
         name.className = "label";
         name.textContent = label;
-        content.appendChild(name);
+        groupContent.appendChild(name);
         if (!items.length) {
           const empty = document.createElement("p");
           empty.className = "empty";
           empty.textContent = "None yet.";
-          content.appendChild(empty);
+          groupContent.appendChild(empty);
           continue;
         }
         for (const item of items) {
-          content.appendChild(fileButton(item));
+          groupContent.appendChild(fileButton(item));
         }
       }
       nav.appendChild(section);
@@ -1133,7 +1173,7 @@ document.getElementById("still-tools").addEventListener("click", (event) => {
   });
   applyStillFilter();
 });
-document.getElementById("library-search").addEventListener("input", filterLibrary);
+bindLibrarySearch();
 document.querySelector("aside").addEventListener("click", (event) => {
   if (event.target.closest("[data-close-folder]")) {
     localFiles.clear();
@@ -1146,6 +1186,7 @@ document.querySelector("aside").addEventListener("click", (event) => {
       p.textContent = "No productions yet.";
       nav.appendChild(p);
     }
+    filterLibrary();
     return;
   }
   const button = event.target.closest("button[data-path]");

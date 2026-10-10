@@ -79,7 +79,7 @@
   .folder-toggle[aria-expanded="true"]::before { content: "▾"; }
   .folder-toggle:hover { color: #fff; }
   .folder-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .library-folder[hidden], .folder-content[hidden], button.file[hidden] { display: none; }
+  .library-folder[hidden], .folder-content[hidden], .library-group[hidden], button.file[hidden] { display: none; }
 
   button.linkish {
     padding: 0;
@@ -676,3 +676,5 @@
     .piece .status { grid-column: 3; grid-row: 1 / span 2; margin: 0; }
     .station.is-working .piece { transform: none; }
   }
+
+  #library-search-status { margin: 8px 0; }

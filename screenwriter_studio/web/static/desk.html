@@ -12,8 +12,10 @@
   <p class="aside-title">Productions</p>
   <p class="aside-note">Scripts and stills on this computer.</p>
   <label class="search">Search files
-    <input id="library-search" type="search" placeholder="Name or scene">
+    <input id="library-search" type="search" placeholder="Filename or folder" aria-controls="library opened-folder" autocomplete="off">
   </label>
+  <button class="linkish" id="clear-library-search" type="button" hidden>Clear search</button>
+  <p class="aside-note" id="library-search-status" role="status" aria-live="polite" hidden></p>
   <button class="side" id="open-folder" type="button">Open folder</button>
   <input id="folder-picker" type="file" hidden webkitdirectory multiple>
   <div id="opened-folder"></div>
