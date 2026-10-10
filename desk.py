@@ -327,6 +327,27 @@ async def _drive(serial: int, idea: str, pages_only: bool, dry_run: bool) -> Non
     _finish(serial, None)
 
 
+def clear_log() -> None:
+    """Drop the activity lines. The crew, the brief, and the stills stay."""
+    with _lock:
+        _board.log = []
+        _replace(_board)
+
+
+def clear_session() -> None:
+    """Stop the crew and put the desk back to a blank brief."""
+    global _future, _run_serial
+    future = None
+    with _lock:
+        _run_serial += 1
+        future = _future
+        board = Board()
+        board.revision = _board.revision
+        _replace(board)
+    if future is not None and not future.done():
+        future.cancel()
+
+
 def start_crew(idea: str, pages_only: bool, dry_run: bool) -> None:
     global _future, _run_serial
     loop = _ensure_loop()
@@ -396,6 +417,14 @@ class DeskHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/log/clear":
+            clear_log()
+            self._json(200, {"ok": True})
+            return
+        if parsed.path == "/api/session/clear":
+            clear_session()
+            self._json(200, {"ok": True})
+            return
         if parsed.path != "/api/run":
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return

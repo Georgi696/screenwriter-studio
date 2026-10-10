@@ -55,6 +55,27 @@
     color: #fff;
   }
   .search input::placeholder { color: rgba(246, 241, 234, 0.45); }
+  button.side {
+    width: 100%;
+    margin: 4px 0 12px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(246, 241, 234, 0.28);
+    background: transparent;
+    color: #f6f1ea;
+    font-weight: 600;
+  }
+  button.side:hover { background: rgba(255, 255, 255, 0.08); }
+  #opened-folder { margin-bottom: 8px; }
+  .folder-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  button.linkish {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: rgba(246, 241, 234, 0.72);
+    font-size: 12px;
+    font-weight: 600;
+  }
   .label {
     margin: 14px 0 4px;
     color: rgba(246, 241, 234, 0.5);
@@ -565,6 +586,9 @@
   <label class="search">Search files
     <input id="library-search" type="search" placeholder="Name or scene">
   </label>
+  <button class="side" id="open-folder" type="button">Open folder</button>
+  <input id="folder-picker" type="file" hidden webkitdirectory multiple>
+  <div id="opened-folder"></div>
   <nav id="library"></nav>
 </aside>
 <main>
@@ -577,6 +601,7 @@
       <span class="stat" id="stat-steps">0 of 5 done</span>
       <span class="stat" id="stat-stills">0 stills</span>
       <span class="stat" id="stat-loop">Editor loop ready</span>
+      <button class="ghost" id="new-session" type="button">New session</button>
       <button class="ghost" id="toggle-library" type="button">Hide library</button>
     </div>
   </header>
@@ -676,6 +701,7 @@
         <h2>Activity</h2>
         <button class="ghost" id="copy-log" type="button">Copy log</button>
         <button class="ghost" id="log-end" type="button">Latest</button>
+        <button class="ghost" id="clear-log" type="button">Clear</button>
       </div>
       <div id="log" aria-live="polite"></div>
     </section>
@@ -712,6 +738,9 @@ let follow = true;
 let stillFilter = "all";
 let toastTimer = 0;
 let viewChosen = false;
+const localFiles = new Map();
+const LOCAL_DOCS = new Set(["json", "md", "fountain", "txt"]);
+const LOCAL_IMAGES = new Set(["png", "jpg", "jpeg", "webp", "gif"]);
 
 function plain(text) {
   return String(text || "")
@@ -850,9 +879,76 @@ function applyStillFilter() {
 
 function filterLibrary() {
   const q = (document.getElementById("library-search").value || "").trim().toLowerCase();
-  document.querySelectorAll("#library .file").forEach((button) => {
+  document.querySelectorAll("#library .file, #opened-folder .file").forEach((button) => {
     button.hidden = !!q && !button.textContent.toLowerCase().includes(q);
   });
+}
+
+function fileButton(item) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "file";
+  if (item.path === openPath) button.classList.add("is-open");
+  button.textContent = item.name;
+  button.dataset.path = item.path;
+  return button;
+}
+
+function renderOpenedFolder(groups) {
+  const host = document.getElementById("opened-folder");
+  host.replaceChildren();
+  if (!groups.length) {
+    return;
+  }
+  for (const group of groups) {
+    const section = document.createElement("section");
+    const head = document.createElement("div");
+    head.className = "folder-head";
+    const heading = document.createElement("h3");
+    heading.textContent = group.slug;
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "linkish";
+    close.id = "close-folder";
+    close.textContent = "Close";
+    head.append(heading, close);
+    section.appendChild(head);
+    for (const [label, items] of [["Documents", group.documents], ["Images", group.images]]) {
+      if (!items.length) continue;
+      const name = document.createElement("p");
+      name.className = "label";
+      name.textContent = label;
+      section.appendChild(name);
+      for (const item of items) section.appendChild(fileButton(item));
+    }
+    host.appendChild(section);
+  }
+  filterLibrary();
+}
+
+function takeFolder(fileList) {
+  localFiles.clear();
+  const grouped = new Map();
+  for (const file of fileList) {
+    const relative = file.webkitRelativePath || file.name;
+    const parts = relative.split("/").filter(Boolean);
+    const slug = parts.length > 1 ? parts[0] : file.name;
+    const name = parts.length > 1 ? parts.slice(1).join("/") : file.name;
+    const suffix = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+    const kind = LOCAL_IMAGES.has(suffix) ? "images" : LOCAL_DOCS.has(suffix) ? "documents" : "";
+    if (!kind) continue;
+    const path = "local:" + relative;
+    localFiles.set(path, file);
+    if (!grouped.has(slug)) grouped.set(slug, { slug, documents: [], images: [] });
+    grouped.get(slug)[kind].push({ path, name });
+  }
+  const groups = [...grouped.values()].filter((group) => group.documents.length || group.images.length);
+  if (!groups.length) {
+    toast("That folder has no scripts or stills");
+    return;
+  }
+  renderOpenedFolder(groups);
+  toast(groups.length === 1 ? groups[0].slug + " opened" : groups.length + " folders opened");
 }
 
 function paintCrew(state) {
@@ -1187,6 +1283,7 @@ async function pollLibrary() {
     const nav = document.getElementById("library");
     nav.replaceChildren();
     if (!data.projects || !data.projects.length) {
+      if (localFiles.size) return;
       const p = document.createElement("p");
       p.className = "empty";
       p.textContent = "No productions yet.";
@@ -1228,6 +1325,29 @@ async function pollLibrary() {
   }
 }
 
+async function openLocalFile(path) {
+  const file = localFiles.get(path);
+  const title = document.getElementById("reader-title");
+  const pre = document.getElementById("reader-text");
+  const img = document.getElementById("reader-image");
+  const hint = document.getElementById("reader-hint");
+  if (!file) return;
+  if (hint) hint.hidden = true;
+  title.textContent = file.name;
+  const suffix = file.name.includes(".") ? file.name.split(".").pop().toLowerCase() : "";
+  if (LOCAL_IMAGES.has(suffix)) {
+    if (img.src.startsWith("blob:")) URL.revokeObjectURL(img.src);
+    pre.hidden = true;
+    img.hidden = false;
+    img.alt = file.name;
+    img.src = URL.createObjectURL(file);
+    return;
+  }
+  img.hidden = true;
+  pre.hidden = false;
+  pre.textContent = await file.text();
+}
+
 async function openFile(path) {
   const title = document.getElementById("reader-title");
   const pre = document.getElementById("reader-text");
@@ -1235,6 +1355,10 @@ async function openFile(path) {
   const hint = document.getElementById("reader-hint");
   if (hint) hint.hidden = true;
   setView("reader", true);
+  if (String(path).startsWith("local:")) {
+    await openLocalFile(path);
+    return;
+  }
   try {
     const res = await fetch("/api/file?path=" + encodeURIComponent(path));
     const data = await res.json();
@@ -1319,13 +1443,63 @@ document.getElementById("still-tools").addEventListener("click", (event) => {
   applyStillFilter();
 });
 document.getElementById("library-search").addEventListener("input", filterLibrary);
-document.getElementById("library").addEventListener("click", (event) => {
+document.querySelector("aside").addEventListener("click", (event) => {
+  if (event.target.closest("#close-folder")) {
+    localFiles.clear();
+    document.getElementById("opened-folder").replaceChildren();
+    if (String(openPath || "").startsWith("local:")) openPath = null;
+    const nav = document.getElementById("library");
+    if (!nav.querySelector(".file, .empty")) {
+      const p = document.createElement("p");
+      p.className = "empty";
+      p.textContent = "No productions yet.";
+      nav.appendChild(p);
+    }
+    return;
+  }
   const button = event.target.closest("button[data-path]");
   if (!button) return;
   openPath = button.dataset.path;
-  document.querySelectorAll("#library button.file.is-open").forEach((el) => el.classList.remove("is-open"));
+  document.querySelectorAll("aside button.file.is-open").forEach((el) => el.classList.remove("is-open"));
   button.classList.add("is-open");
   openFile(button.dataset.path);
+});
+document.getElementById("open-folder").addEventListener("click", () => {
+  document.getElementById("folder-picker").click();
+});
+document.getElementById("folder-picker").addEventListener("change", (event) => {
+  const files = event.target.files;
+  if (files && files.length) takeFolder(files);
+  event.target.value = "";
+});
+document.getElementById("clear-log").addEventListener("click", async () => {
+  try {
+    const res = await fetch("/api/log/clear", { method: "POST" });
+    if (!res.ok) throw new Error("clear");
+    toast("Activity cleared");
+  } catch (error) {
+    toast("Could not clear the activity");
+  }
+});
+document.getElementById("new-session").addEventListener("click", async () => {
+  if (!window.confirm("Clear this session and start from a blank brief?")) return;
+  try {
+    const res = await fetch("/api/session/clear", { method: "POST" });
+    if (!res.ok) throw new Error("clear");
+    document.getElementById("idea").value = "";
+    document.getElementById("pages").checked = false;
+    document.getElementById("dry").checked = false;
+    const hint = document.getElementById("reader-hint");
+    if (hint) hint.hidden = false;
+    document.getElementById("reader-text").hidden = true;
+    document.getElementById("reader-image").hidden = true;
+    document.getElementById("reader-title").textContent = "Reader";
+    openPath = null;
+    setView("brief");
+    toast("New session");
+  } catch (error) {
+    toast("Could not start a new session");
+  }
 });
 document.addEventListener("keydown", (event) => {
   if (event.metaKey || event.ctrlKey || event.altKey) return;

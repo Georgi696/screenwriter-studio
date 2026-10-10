@@ -28,12 +28,20 @@ class DeskPageTest(unittest.TestCase):
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=5) as res:
             return res.read()
 
+    def _post(self, path: str) -> bytes:
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=b"{}", method="POST")
+        with urllib.request.urlopen(request, timeout=5) as res:
+            return res.read()
+
     def test_page_is_a_board_not_gradio(self):
         page = self._get("/").decode("utf-8")
         self.assertNotIn("gradio", page.lower())
         self.assertIn('id="stage"', page)
         self.assertIn('id="return-rail"', page)
         self.assertIn('id="token"', page)
+        self.assertIn('id="open-folder"', page)
+        self.assertIn('id="clear-log"', page)
+        self.assertIn('id="new-session"', page)
         self.assertNotIn("import gradio", Path("run.py").read_text(encoding="utf-8"))
 
     def test_status_has_no_key_and_no_image_paths(self):
@@ -107,6 +115,34 @@ class DeskPageTest(unittest.TestCase):
         self.assertIsNone(library_file("../.env"))
         self.assertIsNone(library_file("/etc/passwd"))
         self.assertIsNone(library_file("foo/../../.env"))
+
+    def test_clear_log_keeps_the_session_and_new_session_resets_it(self):
+        from board import STATUS_PATH
+
+        original = STATUS_PATH.read_bytes() if STATUS_PATH.is_file() else None
+        try:
+            before = json.loads(self._get("/api/status").decode("utf-8"))
+            cleared = json.loads(self._post("/api/log/clear").decode("utf-8"))
+            self.assertTrue(cleared["ok"])
+            after_log = json.loads(self._get("/api/status").decode("utf-8"))
+            self.assertEqual(after_log["log"], [])
+            self.assertEqual(after_log["brief"], before["brief"])
+            self.assertEqual(after_log["folder"], before["folder"])
+            self.assertEqual(len(after_log["images"]), len(before["images"]))
+            reset = json.loads(self._post("/api/session/clear").decode("utf-8"))
+            self.assertTrue(reset["ok"])
+            fresh = json.loads(self._get("/api/status").decode("utf-8"))
+            self.assertEqual(fresh["note"], "Waiting for a brief.")
+            self.assertEqual(fresh["log"], [])
+            self.assertEqual(fresh["images"], [])
+            self.assertEqual(fresh["brief"], "")
+            self.assertEqual(fresh["done"], [])
+            self.assertFalse(fresh["running"])
+        finally:
+            if original is None:
+                STATUS_PATH.unlink(missing_ok=True)
+            else:
+                STATUS_PATH.write_bytes(original)
 
 
 if __name__ == "__main__":
