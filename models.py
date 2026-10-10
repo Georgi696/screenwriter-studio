@@ -17,7 +17,7 @@ from pathlib import Path
 
 from agents import OpenAIResponsesModel
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAI
 
 from image_model_card import EDIT_MODEL, GPT_IMAGE_MODEL, NANO_BANANA_MODEL, SEEDREAM_MODEL
 
@@ -98,6 +98,22 @@ def kie_chat_model(model_id: str) -> OpenAIResponsesModel:
         base_url=KIE_RESPONSES_BASE,
     )
     return OpenAIResponsesModel(model=model_id, openai_client=client)
+
+
+def kie_responses_client(*, api_key: str | None = None, http_client=None) -> OpenAI:
+    """Sync client for the same Responses endpoint the crew uses.
+
+    `kie_chat_model` wraps an async client for the Agents SDK. A one-shot brief
+    on the desk uses this sync client: same key, same base URL, model id in the body.
+    """
+    key = load_kie_api_key() if api_key is None else api_key
+    return OpenAI(
+        api_key=key or "missing",
+        base_url=KIE_RESPONSES_BASE,
+        http_client=http_client,
+        max_retries=0,
+        timeout=60.0,
+    )
 
 
 development_chat = kie_chat_model(DEVELOPMENT_MODEL)

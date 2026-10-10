@@ -205,7 +205,7 @@
   }
   button.go:hover { transform: translateY(-1px); }
   button.go:active, button.ghost:active, button.chip:active { transform: translateY(1px); }
-  button.go:disabled { opacity: 0.45; cursor: progress; transform: none; box-shadow: none; }
+  button.go:disabled, button.ghost:disabled { opacity: 0.45; cursor: progress; transform: none; box-shadow: none; }
   #brief-form, #track, #activity-pane, #reader-pane, #image-bay {
     animation: none;
   }
@@ -624,7 +624,7 @@
     <label for="idea">Brief</label>
     <textarea id="idea" name="idea" placeholder="A 30-second vertical film about someone who keeps a seat on the last bus."></textarea>
     <button class="help" id="help-idea" type="button">What is this?</button>
-    <p class="help-copy" id="help-idea-copy" hidden>This is the brief the crew turns into a logline, Fountain pages, and stills. Example: a 30-second vertical film about someone who keeps a seat on the last bus.</p>
+    <p class="help-copy" id="help-idea-copy" hidden>This is the brief the crew turns into a logline, Fountain pages, and stills. Suggest a story writes one if the box is empty. Strengthen this rewrites a note you already typed. Example: a 30-second vertical film about someone who keeps a seat on the last bus.</p>
     <div class="options">
       <div class="option">
         <label class="check"><input id="pages" type="checkbox"> Pages only</label>
@@ -639,6 +639,7 @@
     </div>
     <div class="actions">
       <button class="go" id="run" type="submit">Start production</button>
+      <button class="ghost" id="suggest" type="button">Suggest a story</button>
       <button class="ghost" id="sample" type="button">Use sample</button>
       <button class="ghost" id="clear-brief" type="button">Clear</button>
       <button class="ghost" id="copy-brief" type="button">Copy brief</button>
@@ -782,12 +783,12 @@ function stationEl(id) {
   return document.querySelector('[data-station="' + id + '"]');
 }
 
-function toast(message) {
+function toast(message, ms) {
   const el = document.getElementById("toast");
   el.hidden = false;
   el.textContent = message;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, 1600);
+  toastTimer = setTimeout(() => { el.hidden = true; }, ms || 1600);
 }
 
 function copyText(text, message) {
@@ -1166,8 +1167,13 @@ function syncLog(lines) {
 function paint(state, prev) {
   const stage = document.getElementById("stage");
   const note = document.getElementById("note");
-  setText(note, noteText(state.note));
-  note.classList.toggle("is-bad", /not set|failed|stopped|cancelled|error/i.test(state.note || ""));
+  if (note.dataset.sticky) {
+    setText(note, note.dataset.sticky);
+    note.classList.add("is-bad");
+  } else {
+    setText(note, noteText(state.note));
+    note.classList.toggle("is-bad", /not set|failed|stopped|cancelled|error/i.test(state.note || ""));
+  }
   const folder = document.getElementById("folder");
   setText(folder, state.folder || "");
   folder.hidden = !state.folder;
@@ -1243,7 +1249,63 @@ function apply(state) {
 
 function startDust() {}
 
+function suggestLabel() {
+  const button = document.getElementById("suggest");
+  if (!button || button.dataset.busy === "1") return;
+  const empty = !document.getElementById("idea").value.trim();
+  button.textContent = empty ? "Suggest a story" : "Strengthen this";
+}
+
+function holdNote(message) {
+  const note = document.getElementById("note");
+  note.dataset.sticky = message;
+  note.textContent = message;
+  note.classList.add("is-bad");
+}
+
+function releaseNote() {
+  const note = document.getElementById("note");
+  delete note.dataset.sticky;
+  if (!last) return;
+  setText(note, noteText(last.note));
+  note.classList.toggle("is-bad", /not set|failed|stopped|cancelled|error/i.test(last.note || ""));
+}
+
+async function suggestBrief() {
+  const button = document.getElementById("suggest");
+  const idea = document.getElementById("idea");
+  if (button.dataset.busy === "1") return;
+  button.dataset.busy = "1";
+  button.disabled = true;
+  button.textContent = "Writing…";
+  try {
+    const res = await fetch("/api/brief/suggest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idea: idea.value })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.brief) {
+      const message = data.error || "Could not write a brief.";
+      toast(message, 4000);
+      if (/KIE_API_KEY is not set/.test(message)) holdNote(message);
+      return;
+    }
+    releaseNote();
+    idea.value = data.brief;
+    idea.focus();
+    toast("Brief ready to edit");
+  } catch (error) {
+    toast("Could not write a brief.", 4000);
+  } finally {
+    button.disabled = false;
+    delete button.dataset.busy;
+    suggestLabel();
+  }
+}
+
 async function startRun() {
+  releaseNote();
   const run = document.getElementById("run");
   run.disabled = true;
   follow = true;
@@ -1385,6 +1447,7 @@ document.getElementById("brief-form").addEventListener("submit", (event) => {
   event.preventDefault();
   startRun();
 });
+document.getElementById("idea").addEventListener("input", suggestLabel);
 document.getElementById("idea").addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
     event.preventDefault();
@@ -1410,13 +1473,16 @@ document.getElementById("toggle-library").addEventListener("click", () => {
   const hidden = document.body.classList.toggle("library-hidden");
   document.getElementById("toggle-library").textContent = hidden ? "Show library" : "Hide library";
 });
+document.getElementById("suggest").addEventListener("click", suggestBrief);
 document.getElementById("sample").addEventListener("click", () => {
   document.getElementById("idea").value = SAMPLE;
   document.getElementById("idea").focus();
+  suggestLabel();
 });
 document.getElementById("clear-brief").addEventListener("click", () => {
   document.getElementById("idea").value = "";
   document.getElementById("idea").focus();
+  suggestLabel();
 });
 document.getElementById("copy-brief").addEventListener("click", () => {
   copyText(document.getElementById("idea").value, "Brief copied");
@@ -1487,6 +1553,8 @@ document.getElementById("new-session").addEventListener("click", async () => {
     const res = await fetch("/api/session/clear", { method: "POST" });
     if (!res.ok) throw new Error("clear");
     document.getElementById("idea").value = "";
+    suggestLabel();
+    releaseNote();
     document.getElementById("pages").checked = false;
     document.getElementById("dry").checked = false;
     const hint = document.getElementById("reader-hint");
@@ -1519,6 +1587,7 @@ window.addEventListener("resize", () => {
   moveToken(last.station || "brief", false);
 });
 
+suggestLabel();
 startDust();
 pollLibrary();
 setInterval(pollLibrary, 3000);

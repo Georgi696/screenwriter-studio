@@ -42,6 +42,10 @@ class DeskPageTest(unittest.TestCase):
         self.assertIn('id="open-folder"', page)
         self.assertIn('id="clear-log"', page)
         self.assertIn('id="new-session"', page)
+        self.assertIn('id="suggest"', page)
+        self.assertIn("Suggest a story", page)
+        self.assertIn("Strengthen this", page)
+        self.assertIn("/api/brief/suggest", page)
         self.assertNotIn("import gradio", Path("run.py").read_text(encoding="utf-8"))
 
     def test_status_has_no_key_and_no_image_paths(self):
@@ -143,6 +147,51 @@ class DeskPageTest(unittest.TestCase):
                 STATUS_PATH.unlink(missing_ok=True)
             else:
                 STATUS_PATH.write_bytes(original)
+
+
+    def _post_json(self, path: str, payload: dict) -> bytes:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as res:
+            return res.read()
+
+    def test_suggest_route_returns_the_brief_and_does_not_start_the_crew(self):
+        from unittest import mock
+
+        with mock.patch("desk.suggest_brief", return_value="A 30-second 9:16 film about Nia.") as call:
+            body = json.loads(self._post_json("/api/brief/suggest", {"idea": "nia and a ferry"}).decode("utf-8"))
+        self.assertEqual(body["brief"], "A 30-second 9:16 film about Nia.")
+        call.assert_called_once_with("nia and a ferry")
+        status = json.loads(self._get("/api/status").decode("utf-8"))
+        self.assertFalse(status["running"])
+
+    def test_suggest_route_reports_a_missing_key(self):
+        from unittest import mock
+
+        from brief_suggest import BriefSuggestError
+
+        message = "KIE_API_KEY is not set. Add it to `.env` in the repo root."
+        with mock.patch("desk.suggest_brief", side_effect=BriefSuggestError(message)):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self._post_json("/api/brief/suggest", {"idea": ""})
+        self.assertEqual(caught.exception.code, 503)
+        payload = json.loads(caught.exception.read().decode("utf-8"))
+        self.assertIn("KIE_API_KEY is not set", payload["error"])
+
+    def test_suggest_route_rejects_bad_json(self):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/brief/suggest",
+            data=b"not-json",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=5)
+        self.assertEqual(caught.exception.code, 400)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from brief_suggest import BriefSuggestError, suggest_brief
 from board import (
     Board,
     apply_chunk,
@@ -425,29 +426,51 @@ class DeskHandler(BaseHTTPRequestHandler):
             clear_session()
             self._json(200, {"ok": True})
             return
-        if parsed.path != "/api/run":
+        if parsed.path not in {"/api/run", "/api/brief/suggest"}:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return
+        data = self._read_json()
+        if data is None:
+            return
+        idea = data.get("idea") if isinstance(data.get("idea"), str) else ""
+        if parsed.path == "/api/brief/suggest":
+            self._suggest(idea)
+            return
+        start_crew(idea.strip() or DEFAULT_IDEA, bool(data.get("pages_only")), bool(data.get("dry_run")))
+        self._json(202, {"ok": True})
+
+    def _read_json(self) -> dict | None:
         try:
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
             self._json(400, {"error": "expected JSON"})
-            return
+            return None
         if length < 0 or length > _MAX_BODY:
             self._json(413, {"error": "brief is too long"})
-            return
+            return None
         raw = self.rfile.read(length) if length else b"{}"
         try:
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._json(400, {"error": "expected JSON"})
-            return
+            return None
         if not isinstance(data, dict):
             self._json(400, {"error": "expected JSON"})
+            return None
+        return data
+
+    def _suggest(self, idea: str) -> None:
+        """Fill the brief box. Does not start the crew."""
+        try:
+            brief = suggest_brief(idea)
+        except BriefSuggestError as exc:
+            self._json(503, {"error": str(exc)})
             return
-        idea = data.get("idea") if isinstance(data.get("idea"), str) else ""
-        start_crew(idea.strip() or DEFAULT_IDEA, bool(data.get("pages_only")), bool(data.get("dry_run")))
-        self._json(202, {"ok": True})
+        except Exception:
+            traceback.print_exc()
+            self._json(503, {"error": "Could not write a brief."})
+            return
+        self._json(200, {"brief": brief})
 
     def _file(self, path: str) -> None:
         file = library_file(path)
