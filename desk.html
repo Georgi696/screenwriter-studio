@@ -6,301 +6,447 @@
 <title>Screenwriter Studio</title>
 <style>
   :root {
-    --cream: #f3ead7;
-    --ink: #1a140c;
-    --gold: #e6c36a;
-    --felt: #1a3a2c;
-    --wood: #6b3e22;
+    --paper: #f3f0ea;
+    --surface: #fffcf8;
+    --ink: #1c1915;
+    --muted: #6d675f;
+    --line: #e3ddd4;
+    --accent: #b8431f;
+    --accent-soft: #f8e6dc;
+    --good: #1d6b43;
+    --bad: #a3261b;
   }
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   body {
     margin: 0;
     min-height: 100vh;
     display: grid;
-    grid-template-columns: 260px 1fr;
-    background: #0e1713;
-    color: var(--cream);
-    font-family: "Segoe UI", system-ui, sans-serif;
+    grid-template-columns: 272px 1fr;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: ui-sans-serif, "Segoe UI", system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
   }
   aside {
-    padding: 16px;
-    background: #24160f;
-    border-right: 6px solid var(--wood);
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: 100vh;
+    overflow: auto;
+    padding: 28px 18px 40px;
+    background: #faf8f4;
+    border-right: 1px solid var(--line);
   }
-  aside h1 { margin: 0 0 6px; font-size: 18px; }
-  .aside-note, .empty, .label { margin: 0 0 8px; font-size: 12px; opacity: 0.75; }
-  .label { margin-top: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
-  aside h3 { margin: 14px 0 6px; font-size: 14px; }
-  button.file, button.help, button.go {
-    font: inherit;
-    cursor: pointer;
+  .aside-title { margin: 0 0 6px; font-size: 22px; font-weight: 500; letter-spacing: -0.02em; }
+  .aside-note, .empty { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+  .label {
+    margin: 14px 0 4px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
+  aside h3 { margin: 18px 0 0; font-size: 14px; font-weight: 600; }
+  button, textarea, input { font: inherit; }
+  button.file, button.help, button.go { cursor: pointer; }
   button.file {
     display: block;
     width: 100%;
-    margin: 0 0 4px;
-    padding: 6px 8px;
+    margin: 0 0 2px;
+    padding: 7px 8px;
     text-align: left;
-    color: inherit;
+    color: var(--ink);
     background: transparent;
-    border: 1px solid rgba(243, 234, 215, 0.28);
-    border-radius: 6px;
+    border: 0;
+    border-radius: 8px;
   }
-  button.file:hover, button.file:focus { border-color: var(--gold); }
-  main { padding: 16px 20px 32px; min-width: 0; }
-  header h1 { margin: 0; font-size: 28px; letter-spacing: 0.02em; }
-  .eyebrow { margin: 0; font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; opacity: 0.7; }
+  button.file:hover, button.file:focus-visible { background: #efeae3; }
+  button.file.is-open { background: var(--ink); color: #fff; }
+  main {
+    min-width: 0;
+    padding: 32px 40px 72px;
+    max-width: 1180px;
+  }
+  .eyebrow {
+    margin: 0 0 6px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  header h1 {
+    margin: 0;
+    font-family: "Iowan Old Style", Palatino, Georgia, serif;
+    font-size: 42px;
+    font-weight: 500;
+    letter-spacing: -0.03em;
+    line-height: 1.05;
+  }
+  .lead { margin: 12px 0 0; max-width: 40em; color: var(--muted); }
+  #brief-form {
+    margin-top: 22px;
+    padding: 18px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+  }
+  #brief-form > label { display: block; margin-bottom: 8px; font-weight: 600; }
+  textarea {
+    width: 100%;
+    min-height: 96px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+    color: var(--ink);
+    resize: vertical;
+  }
+  textarea:focus, button:focus-visible, input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .options { display: flex; flex-wrap: wrap; gap: 18px; margin: 12px 0; }
+  .option { min-width: 220px; }
+  .check { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; }
+  button.help {
+    margin-left: 8px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font-size: 13px;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .help-copy { margin: 6px 0 0; max-width: 46em; color: var(--muted); font-size: 13px; }
+  button.go {
+    padding: 10px 16px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--ink);
+    color: #fff;
+    font-weight: 600;
+  }
+  button.go:hover { background: #322c26; }
+  button.go:disabled { opacity: 0.45; cursor: progress; }
   #stage {
     position: relative;
-    margin-top: 12px;
-    padding: 14px 14px 16px;
-    background:
-      radial-gradient(circle at 15% 0%, rgba(255, 255, 255, 0.06), transparent 42%),
-      var(--felt);
-    border: 8px solid var(--wood);
-    border-radius: 18px;
-    box-shadow: inset 0 0 70px rgba(0, 0, 0, 0.28), 0 16px 40px rgba(0, 0, 0, 0.35);
-    overflow: hidden;
+    margin-top: 28px;
+    padding: 0;
+    background: transparent;
+    overflow: visible;
   }
-  #stage::before {
-    content: "";
-    pointer-events: none;
-    position: absolute;
-    inset: 0;
-    z-index: 6;
-    opacity: 0.4;
-    background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 4px);
-    animation: scan 11s linear infinite;
+  #dust { display: none; }
+  #hud {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
   }
-  #dust { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 3; }
-  #hud, #folder, #plaque, #pips, #track, #return-slot, #landing, .bay-label, #image-bay { position: relative; z-index: 4; }
-  #hud { display: flex; align-items: center; gap: 12px; min-height: 32px; }
-  #note { margin: 0; flex: 1; font-size: 18px; font-weight: 700; }
-  #note.is-bad { color: #ffd0c8; }
-  #live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; letter-spacing: 0.12em; }
+  .kicker {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  #note { margin: 2px 0 0; font-size: 18px; font-weight: 500; letter-spacing: -0.01em; }
+  #note.is-bad { color: var(--bad); }
+  #live {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
   #live[hidden] { display: none; }
   #live i {
-    width: 8px; height: 8px; border-radius: 50%; background: #ff5a4a;
-    animation: blink 1s steps(2) infinite;
+    width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+    animation: blink 1.4s ease-in-out infinite;
   }
-  #folder, #plaque { margin: 6px 0 0; font-size: 13px; }
+  #folder, #plaque { margin: 6px 0 0; color: var(--muted); font-size: 14px; }
   #plaque {
+    max-width: 62em;
+    color: var(--ink);
     display: -webkit-box;
     -webkit-line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
-  #pips { display: flex; gap: 6px; margin: 10px 0 0; }
-  .pip { width: 10px; height: 10px; border-radius: 50%; background: rgba(243, 234, 215, 0.25); }
-  .pip.is-on { background: var(--gold); }
-  .pip.is-here { box-shadow: 0 0 0 3px rgba(230, 195, 106, 0.35); animation: pip 1.2s ease-in-out infinite; }
-  #track { display: flex; gap: 22px; padding: 70px 8px 6px; }
-  .station { flex: 1 0 112px; min-width: 0; }
-  .piece {
-    min-height: 118px;
-    padding: 10px 10px 12px;
-    border-radius: 16px 16px 12px 12px;
-    background: #f7f3ea;
-    color: var(--ink);
-    box-shadow: 0 8px 0 #8d8374;
+  #pips { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  #track {
+    display: flex;
+    gap: 0;
+    margin-top: 18px;
+    padding: 22px 0 4px;
+    overflow-x: auto;
   }
-  .station[data-station="development"] .piece { background: #d7e6f8; }
-  .station[data-station="writer"] .piece { background: #f8e3b6; }
-  .station[data-station="editor"] .piece { background: #f6d2cb; }
-  .station[data-station="art"] .piece { background: #e3d6f7; }
+  .station { position: relative; flex: 1 0 112px; min-width: 0; text-align: center; }
+  .station::after {
+    content: "";
+    position: absolute;
+    top: 13px;
+    left: calc(50% + 18px);
+    width: calc(100% - 36px);
+    height: 1px;
+    background: var(--line);
+  }
+  .station:last-child::after { display: none; }
+  .station.is-done::after { background: var(--ink); }
+  .piece { padding: 0 8px; background: transparent; }
   .mark {
-    display: grid; place-items: center;
-    width: 28px; height: 28px; margin-bottom: 6px;
-    border-radius: 50%; background: var(--ink); color: var(--cream);
-    font-size: 12px; font-weight: 700;
+    position: relative;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    margin: 0 auto 8px;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    background: var(--surface);
+    font-size: 12px;
+    font-weight: 700;
   }
   .piece strong, .piece .model, .piece .status { display: block; }
-  .piece strong { font-size: 14px; }
-  .piece .model, .piece .status, .kinds, figcaption { font-size: 11px; margin-top: 4px; word-break: break-word; }
-  .station.is-idle .piece { opacity: 0.5; filter: saturate(0.65); }
-  .station.is-working .piece {
-    animation: bob 0.8s ease-in-out infinite;
-    box-shadow: 0 0 0 3px var(--gold), 0 10px 0 #8d8374;
+  .piece strong { font-size: 13px; font-weight: 600; }
+  .piece .model, .kinds, figcaption { color: var(--muted); font-size: 12px; }
+  .piece .model { margin-top: 2px; word-break: break-word; }
+  .piece .status { margin-top: 4px; color: var(--muted); font-size: 12px; }
+  .station.is-idle { opacity: 0.55; }
+  .station.is-working { opacity: 1; }
+  .station.is-working .mark {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 0 4px var(--accent-soft);
   }
-  .station.is-done .piece { box-shadow: 0 8px 0 #2f6b45; }
-  .station.is-done .status { font-weight: 700; }
-  #token {
-    position: absolute; left: 0; top: 0; z-index: 5;
-    width: 48px; height: 56px; pointer-events: none;
-    filter: drop-shadow(0 8px 4px rgba(0, 0, 0, 0.45));
-    transition: transform 0.95s cubic-bezier(.2, .75, .2, 1), opacity 0.3s linear;
-  }
-  #token.no-anim { transition: none; }
-  #token.is-hidden { opacity: 0; }
-  #return-slot { min-height: 58px; margin-top: 4px; }
-  #return-rail { position: relative; height: 36px; }
-  .rail-line {
-    position: absolute; left: 0; right: 18px; top: 16px;
-    border-top: 2px dashed rgba(243, 234, 215, 0.4);
-  }
-  #return-rail.is-live .rail-line { border-top-style: solid; border-top-color: #ffb15a; }
-  #return-token {
-    position: absolute; top: 0; left: calc(100% - 36px);
-    width: 32px; height: 36px; opacity: 0;
-    transition: left 1.05s ease-in-out, opacity 0.2s linear;
-  }
-  #return-token.no-anim { transition: none; }
-  #return-rail.is-live #return-token { opacity: 1; }
-  #return-label { margin: 0; font-size: 12px; opacity: 0.75; }
-  #return-label.is-live { opacity: 1; font-weight: 700; color: #ffb15a; }
-  .bay-label { margin: 8px 0; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.75; }
-  #landing {
-    height: 64px;
-    margin: 6px 8px 0;
-    border-radius: 12px;
-    background: rgba(0, 0, 0, 0.18);
-    border: 1px dashed rgba(243, 234, 215, 0.28);
-  }
-  #landing span {
+  .station.is-working .status { color: var(--accent); font-weight: 700; }
+  .station.is-done { opacity: 1; }
+  .station.is-done .mark { border-color: var(--ink); background: var(--ink); color: transparent; }
+  .station.is-done .mark::after {
+    content: "";
     position: absolute;
-    left: 12px;
-    bottom: 8px;
-    font-size: 11px;
-    letter-spacing: 0.14em;
+    top: 6px;
+    left: 10px;
+    width: 5px;
+    height: 9px;
+    border: solid #fff;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+  .station.is-done .status { color: var(--good); font-weight: 600; }
+  #token, #return-token {
+    position: absolute;
+    left: 0;
+    top: 0;
+    z-index: 5;
+    width: 8px;
+    height: 8px;
+    opacity: 0;
+    pointer-events: none;
+  }
+  #token svg, #return-token svg { display: none; }
+  #return-slot { position: relative; min-height: 36px; margin-top: 4px; }
+  #return-rail { position: relative; height: 28px; }
+  .rail-line {
+    position: absolute;
+    left: 0;
+    right: 8px;
+    top: 12px;
+    border-top: 1px solid var(--line);
+  }
+  #return-rail.is-live .rail-line { border-top-color: var(--accent); }
+  #return-token { top: 8px; left: calc(100% - 8px); }
+  #return-label { margin: 0; color: var(--muted); font-size: 13px; }
+  #return-label.is-live { color: var(--accent); font-weight: 600; }
+  #landing { height: auto; margin: 28px 0 0; border: 0; background: none; }
+  #landing span {
+    position: static;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    opacity: 0.7;
   }
-  #image-bay { display: flex; align-items: flex-start; gap: 12px; overflow-x: auto; padding-bottom: 6px; min-height: 80px; }
+  .bay-label { margin: 4px 0 12px; color: var(--muted); font-size: 13px; }
+  #image-bay:empty::before {
+    content: "Stills land here after the art director finishes.";
+    color: var(--muted);
+    font-size: 14px;
+  }
+  #image-bay {
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    min-height: 0;
+  }
   .model-col {
-    flex: 0 0 168px;
-    padding: 8px;
-    border-radius: 12px;
-    background: rgba(0, 0, 0, 0.22);
+    display: block;
+    min-width: 0;
+    padding: 0;
+    background: transparent;
   }
-  .model-col h3 { margin: 0; font-size: 12px; word-break: break-word; }
-  .model-col.is-working { animation: pulse 1.05s ease-in-out infinite; }
+  .model-col h3 {
+    margin: 0;
+    color: var(--ink);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.35;
+    word-break: break-word;
+  }
+  .kinds { margin: 2px 0 0; }
+  .model-col.is-working h3 { color: var(--accent); }
+  .slots {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 10px;
+    margin-top: 8px;
+  }
   .frame {
     position: relative;
-    margin-top: 8px;
-    min-height: 96px;
-    border-radius: 4px;
-    background:
-      radial-gradient(circle at 7px 12px, #0e1713 3px, transparent 3.5px) 0 0 / 100% 16px repeat-y,
-      radial-gradient(circle at calc(100% - 7px) 12px, #0e1713 3px, transparent 3.5px) 0 0 / 100% 16px repeat-y,
-      #24180f;
+    margin: 0;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface);
   }
   .frame.ghost {
-    display: grid; place-items: center;
-    color: rgba(243, 234, 215, 0.55);
-    font-size: 12px;
+    display: grid;
+    place-items: center;
+    min-height: 44px;
+    border-style: dashed;
+    background: transparent;
+    color: var(--muted);
+    font-size: 13px;
   }
   .model-col.has-jobs .ghost { display: none; }
-  .cell { margin: 10px 16px; min-height: 72px; background: #3a2c22; display: grid; place-items: center; }
-  .cell img { width: 100%; height: 78px; object-fit: cover; display: block; }
-  .hold { font-size: 11px; letter-spacing: 0.04em; white-space: nowrap; }
+  .cell {
+    display: grid;
+    place-items: center;
+    margin: 0;
+    min-height: 64px;
+    padding: 14px 10px;
+    background: #f6f3ee;
+  }
+  .frame:has(img:not([hidden])) .cell { aspect-ratio: 9 / 14; min-height: 0; padding: 0; }
+  .cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .hold {
+    padding: 0 16px;
+    color: var(--muted);
+    font-size: 13px;
+    text-align: center;
+    white-space: normal;
+  }
   .flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
-  .frame.exposing .flash { animation: expose 0.7s ease-out; }
-  .frame.exposing { animation: jitter 0.4s linear; }
-  .frame.printed .cell { animation: pop 0.5s cubic-bezier(.2, 1.5, .3, 1); }
-  .frame.is-failed { outline: 2px solid #ff6b5a; }
-  figcaption { padding: 0 8px 8px; }
-  #brief-form { margin-top: 16px; }
-  textarea {
-    width: 100%;
-    min-height: 76px;
-    padding: 8px 10px;
-    border: 0;
-    border-radius: 8px;
-    background: var(--cream);
+  .frame.exposing .flash { animation: expose 0.45s ease-out; }
+  .frame.is-running { border-color: var(--accent); }
+  .frame.is-failed { border-color: var(--bad); }
+  .frame.is-done:not(:has(img:not([hidden]))) .cell { display: none; }
+  .frame.is-done:not(:has(img:not([hidden]))) figcaption {
+    padding: 11px 12px;
     color: var(--ink);
-    font: inherit;
+    font-size: 13px;
   }
-  .options { display: flex; flex-wrap: wrap; gap: 16px; margin: 8px 0; }
-  .option { min-width: 220px; }
-  button.help {
-    margin-left: 8px;
-    padding: 2px 8px;
-    border-radius: 999px;
-    border: 1px solid rgba(243, 234, 215, 0.4);
-    background: transparent;
-    color: inherit;
-  }
-  .help-copy { margin: 6px 0 0; font-size: 13px; max-width: 52em; }
-  button.go {
-    padding: 10px 18px;
-    border: 0;
-    border-bottom: 4px solid #9a7430;
-    border-radius: 10px;
-    background: var(--gold);
-    color: var(--ink);
-    font-weight: 800;
-  }
-  button.go:active { transform: translateY(3px); border-bottom-width: 1px; }
-  button.go:disabled { opacity: 0.6; cursor: progress; }
-  #lower { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; margin-top: 16px; }
-  #lower h2 { margin: 0 0 8px; font-size: 14px; }
+  figcaption { padding: 8px 10px 10px; line-height: 1.35; word-break: break-word; }
+  #lower { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 18px; margin-top: 32px; }
+  #lower h2 { margin: 0 0 8px; font-size: 13px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
   #log, #reader-text {
     margin: 0;
-    max-height: 240px;
+    max-height: 340px;
     overflow: auto;
-    padding: 8px 10px;
-    border-radius: 8px;
-    background: #101814;
-    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-    font-size: 12px;
-    line-height: 1.45;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--surface);
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.5;
     white-space: pre-wrap;
   }
-  #log p { margin: 0 0 8px; }
-  #reader-image { max-width: 100%; border-radius: 8px; }
-  #stage.shake { animation: shake 0.45s linear; }
-  @keyframes scan { to { background-position: 0 48px; } }
-  @keyframes blink { 50% { opacity: 0.25; } }
-  @keyframes bob { 50% { transform: translateY(-8px); } }
-  @keyframes pip { 50% { transform: scale(1.35); } }
-  @keyframes pulse { 50% { box-shadow: 0 0 0 2px var(--gold), 0 0 18px rgba(230, 195, 106, 0.45); } }
-  @keyframes expose { 0% { opacity: 0.95; } 100% { opacity: 0; } }
-  @keyframes jitter {
-    25% { transform: translateX(-2px); }
-    50% { transform: translateX(2px); }
-    75% { transform: translateX(-1px); }
-  }
-  @keyframes pop {
-    0% { transform: scale(0.7); filter: brightness(1.8); }
-    100% { transform: scale(1); filter: none; }
-  }
+  #log p { margin: 0 0 10px; }
+  #log p:last-child { margin-bottom: 0; }
+  #reader-image { display: block; max-width: 100%; margin-top: 8px; border: 1px solid var(--line); border-radius: 14px; }
+  #stage.shake { animation: shake 0.45s ease; }
+  @keyframes blink { 50% { opacity: 0.35; } }
+  @keyframes expose { 0% { opacity: 0.7; } 100% { opacity: 0; } }
   @keyframes shake {
-    0%, 100% { transform: translateX(0); }
-    20% { transform: translateX(-7px); }
-    40% { transform: translateX(7px); }
-    60% { transform: translateX(-4px); }
-    80% { transform: translateX(3px); }
+    0%, 100% { box-shadow: none; }
+    40% { box-shadow: inset 0 0 0 2px var(--accent); }
   }
   @media (prefers-reduced-motion: reduce) {
-    #stage::before, #live i, .station.is-working .piece, .pip.is-here,
-    .model-col.is-working, .frame.exposing, .frame.exposing .flash, .frame.printed .cell,
-    #token, #return-token { animation: none !important; transition: none !important; }
+    #live i, #token, #return-token, .frame.exposing .flash, #stage.shake { animation: none !important; transition: none !important; }
   }
-  @media (max-width: 860px) {
+  @media (max-width: 900px) {
     body { grid-template-columns: 1fr; }
+    aside { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); }
+    main { padding: 24px 16px 48px; }
+    header h1 { font-size: 34px; }
     #lower { grid-template-columns: 1fr; }
+    #track { flex-direction: column; gap: 14px; overflow: visible; }
+    .station { flex: none; text-align: left; }
+    .station::after { top: 32px; left: 13px; width: 1px; height: calc(100% - 10px); }
+    .piece { display: grid; grid-template-columns: 36px 1fr auto; column-gap: 10px; align-items: center; }
+    .mark { grid-row: 1 / span 2; margin: 0; }
+    .piece strong, .piece .model { text-align: left; }
+    .piece .status { grid-column: 3; grid-row: 1 / span 2; margin: 0; }
   }
 </style>
 </head>
 <body>
 <aside>
-  <h1>Library</h1>
-  <p class="aside-note">Documents and images the crew has written.</p>
+  <p class="eyebrow">Library</p>
+  <p class="aside-title">Productions</p>
+  <p class="aside-note">Scripts and stills saved on this computer.</p>
   <nav id="library"></nav>
 </aside>
 <main>
   <header>
-    <p class="eyebrow">Table read</p>
-    <h1>Screenwriter Studio</h1>
+    <p class="eyebrow">Screenwriter Studio</p>
+    <h1>Start with the brief.</h1>
+    <p class="lead">The crew develops the idea, writes the pages, and the editor can send them back twice. Stills are made last.</p>
   </header>
-  <div id="stage">
-    <canvas id="dust"></canvas>
-    <div id="hud">
-      <p id="note">Waiting for a brief.</p>
-      <span id="live" hidden><i></i>LIVE</span>
+  <form id="brief-form">
+    <label for="idea">Brief</label>
+    <textarea id="idea" name="idea" placeholder="A 30-second vertical film about someone who keeps a seat on the last bus."></textarea>
+    <button class="help" id="help-idea" type="button">What is this?</button>
+    <p class="help-copy" id="help-idea-copy" hidden>This is the brief the crew turns into a logline, Fountain pages, and stills. Example: a 30-second vertical film about someone who keeps a seat on the last bus.</p>
+    <div class="options">
+      <div class="option">
+        <label class="check"><input id="pages" type="checkbox"> Pages only</label>
+        <button class="help" id="help-pages" type="button">What is this?</button>
+        <p class="help-copy" id="help-pages-copy" hidden>The script editor still reads the draft and can send it back. The run stops before any image is generated.</p>
+      </div>
+      <div class="option">
+        <label class="check"><input id="dry" type="checkbox"> Dry-run stills</label>
+        <button class="help" id="help-dry" type="button">What is this?</button>
+        <p class="help-copy" id="help-dry-copy" hidden>Image models are chosen and the still jobs are written, but no images are downloaded and no image credits are spent.</p>
+      </div>
     </div>
-    <p id="folder"></p>
-    <p id="plaque"></p>
+    <button class="go" id="run" type="submit">Start production</button>
+  </form>
+  <div id="stage">
+    <canvas id="dust" hidden></canvas>
+    <div id="hud">
+      <div>
+        <p class="kicker">Pipeline</p>
+        <p id="note">Waiting for a brief.</p>
+        <p id="folder" hidden></p>
+        <p id="plaque" hidden></p>
+      </div>
+      <span id="live" hidden><i></i>Live</span>
+    </div>
     <div id="pips" aria-hidden="true">
       <span class="pip"></span><span class="pip"></span><span class="pip"></span>
       <span class="pip"></span><span class="pip"></span><span class="pip"></span>
@@ -331,48 +477,29 @@
       <p id="return-label">Editor loop, up to two rewrites</p>
     </div>
     <div id="landing" data-station="images"><span>Stills</span></div>
-    <p class="bay-label">Image bench</p>
+    <p class="bay-label">Grouped by the model that made them. Open one from the library to read it.</p>
     <div id="image-bay"></div>
   </div>
-  <form id="brief-form">
-    <label for="idea">Brief</label>
-    <textarea id="idea" name="idea" placeholder="A 30-second vertical film about someone who keeps a seat on the last bus."></textarea>
-    <button class="help" id="help-idea" type="button">Help</button>
-    <p class="help-copy" id="help-idea-copy" hidden>This is the brief the crew turns into a logline, Fountain pages, and stills. Example: a 30-second vertical film about someone who keeps a seat on the last bus.</p>
-    <div class="options">
-      <div class="option">
-        <label><input id="pages" type="checkbox"> Pages only</label>
-        <button class="help" id="help-pages" type="button">Help</button>
-        <p class="help-copy" id="help-pages-copy" hidden>The script editor still reads the draft and can send it back. The run stops before any image is generated.</p>
-      </div>
-      <div class="option">
-        <label><input id="dry" type="checkbox"> Dry-run stills</label>
-        <button class="help" id="help-dry" type="button">Help</button>
-        <p class="help-copy" id="help-dry-copy" hidden>Image models are chosen and the still jobs are written, but no images are downloaded and no image credits are spent.</p>
-      </div>
-    </div>
-    <button class="go" id="run" type="submit">Run the crew</button>
-  </form>
   <div id="lower">
     <section>
-      <h2>Log</h2>
+      <h2>Activity</h2>
       <div id="log" aria-live="polite"></div>
     </section>
     <section>
       <h2 id="reader-title">Reader</h2>
-      <p class="aside-note">Choose a document or an image from the library.</p>
+      <p class="aside-note" id="reader-hint">Choose a document or an image from the library.</p>
       <pre id="reader-text" hidden></pre>
       <img id="reader-image" alt="" hidden>
     </section>
   </div>
 </main>
-<noscript>This desk needs JavaScript to move the crew.</noscript>
+<noscript>Turn on JavaScript to run the crew and open the library.</noscript>
 <script>
 const GLYPHS = {
-  sheet: '<svg viewBox="0 0 26 32" width="40" height="48" aria-hidden="true"><path d="M3 1h12l8 8v21a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z" fill="#f4f0e6" stroke="#1c1c1c"/><path d="M15 1v8h8" fill="#e4dcc8" stroke="#1c1c1c"/><path d="M6 16h12M6 20h12M6 24h8" stroke="#8a8172" fill="none"/></svg>',
-  page: '<svg viewBox="0 0 24 32" width="36" height="48" aria-hidden="true"><rect x="2" y="1" width="20" height="30" rx="1" fill="#f7f3ea" stroke="#1c1c1c"/><path d="M6 8h12M6 12h12M6 16h12M6 20h9" stroke="#5c564c" fill="none"/></svg>',
-  shot: '<svg viewBox="0 0 36 24" width="48" height="32" aria-hidden="true"><rect x="1" y="1" width="34" height="22" rx="2" fill="#d9e4f2" stroke="#1c1c1c"/><rect x="6" y="5" width="16" height="14" fill="#f7f3ea" stroke="#1c1c1c"/><path d="M26 8h6M26 12h6M26 16h4" stroke="#1c1c1c" fill="none"/></svg>',
-  frame: '<svg viewBox="0 0 28 22" width="44" height="34" aria-hidden="true"><rect x="1" y="1" width="26" height="20" rx="1" fill="#1c1c1c" stroke="#f4f0e6"/><rect x="4" y="4" width="20" height="14" fill="#c9b89a" stroke="#f4f0e6"/></svg>'
+  sheet: '<svg viewBox="0 0 8 8" aria-hidden="true"></svg>',
+  page: '<svg viewBox="0 0 8 8" aria-hidden="true"></svg>',
+  shot: '<svg viewBox="0 0 8 8" aria-hidden="true"></svg>',
+  frame: '<svg viewBox="0 0 8 8" aria-hidden="true"></svg>'
 };
 const PIPS = ["brief", "development", "writer", "editor", "art", "images"];
 const CREW = ["development", "writer", "editor", "art"];
@@ -381,9 +508,31 @@ let last = null;
 let revision = -1;
 let shown = 0;
 let streamOK = false;
+let openPath = null;
 
 function plain(text) {
-  return String(text || "").replace(/\*\*/g, "").replace(/`/g, "");
+  return String(text || "")
+    .replace(/\*\*/g, "")
+    .replace(/`/g, "")
+    .replace(/(?:\/[\w.-]+)+\/productions\//g, "productions/");
+}
+
+const MODEL_NAMES = {
+  "nano-banana-2-1": "Nano Banana",
+  "gpt-image-2-5-sunburst-text-to-image": "Sunburst",
+  "gpt-image-2-5-sunburst-image-to-image": "Sunburst edit",
+  "seedream/5-pro-text-to-image": "Seedream"
+};
+
+function modelTitle(model) {
+  const raw = String(model || "Still");
+  return MODEL_NAMES[raw] || raw.replace(/[-_/]+/g, " ");
+}
+
+function noteText(note) {
+  const text = note || "Waiting for a brief.";
+  if (text === "Stills are in images/.") return "Stills are ready.";
+  return text;
 }
 
 function setText(el, text) {
@@ -408,7 +557,7 @@ function paintCrew(state) {
     const crew = (state.crew || []).find((item) => item.id === id);
     if (crew) {
       setText(el.querySelector("strong"), crew.name);
-      setText(el.querySelector(".model"), crew.model);
+      setText(el.querySelector(".model"), crew.model || "");
     }
     let mode = "idle";
     let label = "Waiting";
@@ -470,7 +619,7 @@ function playReturn(instant) {
   const token = document.getElementById("return-token");
   rail.classList.add("is-live");
   token.classList.add("no-anim");
-  token.style.left = instant ? "0px" : "calc(100% - 36px)";
+  token.style.left = instant ? "0px" : "calc(100% - 8px)";
   if (instant) return;
   void token.offsetWidth;
   token.classList.remove("no-anim");
@@ -482,7 +631,7 @@ function parkReturn() {
   const token = document.getElementById("return-token");
   rail.classList.remove("is-live");
   token.classList.add("no-anim");
-  token.style.left = "calc(100% - 36px)";
+  token.style.left = "calc(100% - 8px)";
 }
 
 function columnFor(bay, model) {
@@ -502,7 +651,8 @@ function ensureColumn(bay, model, kinds) {
   col.className = "model-col";
   col.dataset.model = model;
   const title = document.createElement("h3");
-  title.textContent = model;
+  title.textContent = modelTitle(model);
+  title.title = model;
   const kindEl = document.createElement("p");
   kindEl.className = "kinds";
   kindEl.textContent = kinds || "";
@@ -525,7 +675,7 @@ function ensureFrame(col, id) {
   frame.id = domId;
   frame.className = "frame";
   frame.dataset.job = id;
-  frame.innerHTML = '<div class="flash"></div><div class="cell"><img alt="" hidden><span class="hold">Exposing</span></div><figcaption></figcaption>';
+  frame.innerHTML = '<div class="flash"></div><div class="cell"><img alt="" hidden><span class="hold">Working</span></div><figcaption></figcaption>';
   col.querySelector(".slots").appendChild(frame);
   return frame;
 }
@@ -540,7 +690,7 @@ function showDone(frame, image) {
   } else {
     img.hidden = true;
     hold.hidden = false;
-    hold.textContent = "Saved";
+    hold.textContent = "Not on this machine";
   }
 }
 
@@ -554,7 +704,7 @@ function applyFrameState(frame, image) {
     img.removeAttribute("src");
     img.hidden = true;
     hold.hidden = false;
-    hold.textContent = "Exposing";
+    hold.textContent = "Working";
   } else if (image.state === "done") {
     frame.classList.add("is-done", "printed");
     showDone(frame, image);
@@ -609,7 +759,7 @@ function syncLog(lines) {
 function paint(state, prev) {
   const stage = document.getElementById("stage");
   const note = document.getElementById("note");
-  setText(note, state.note || "Waiting for a brief.");
+  setText(note, noteText(state.note));
   note.classList.toggle("is-bad", /not set|failed|stopped|cancelled|error/i.test(state.note || ""));
   const folder = document.getElementById("folder");
   setText(folder, state.folder || "");
@@ -621,7 +771,7 @@ function paint(state, prev) {
   stage.classList.toggle("is-running", !!state.running);
   const run = document.getElementById("run");
   run.disabled = !!state.running;
-  setText(run, state.running ? "Crew is working…" : "Run the crew");
+  setText(run, state.running ? "Working…" : "Start production");
   paintCrew(state);
   const token = document.getElementById("token");
   const glyph = state.glyph || "sheet";
@@ -668,41 +818,7 @@ function apply(state) {
   paint(state, prev);
 }
 
-function startDust() {
-  const canvas = document.getElementById("dust");
-  const stage = document.getElementById("stage");
-  const ctx = canvas.getContext("2d");
-  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const specks = Array.from({ length: 32 }, () => ({
-    x: Math.random(),
-    y: Math.random(),
-    r: 0.6 + Math.random() * 1.5,
-    s: 0.06 + Math.random() * 0.18,
-    a: 0.15 + Math.random() * 0.35
-  }));
-  function frame() {
-    const w = stage.clientWidth;
-    const h = stage.clientHeight;
-    if (canvas.width !== w) canvas.width = w;
-    if (canvas.height !== h) canvas.height = h;
-    ctx.clearRect(0, 0, w, h);
-    for (const speck of specks) {
-      if (!reduce) {
-        speck.y -= speck.s / 120;
-        if (speck.y < 0) {
-          speck.y = 1;
-          speck.x = Math.random();
-        }
-      }
-      ctx.fillStyle = "rgba(243, 234, 215, " + speck.a + ")";
-      ctx.beginPath();
-      ctx.arc(speck.x * w, speck.y * h, speck.r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    if (!reduce) requestAnimationFrame(frame);
-  }
-  frame();
-}
+function startDust() {}
 
 async function startRun() {
   const run = document.getElementById("run");
@@ -768,6 +884,7 @@ async function pollLibrary() {
           const button = document.createElement("button");
           button.type = "button";
           button.className = "file";
+          if (item.path === openPath) button.classList.add("is-open");
           button.textContent = item.name;
           button.dataset.path = item.path;
           section.appendChild(button);
@@ -784,6 +901,8 @@ async function openFile(path) {
   const title = document.getElementById("reader-title");
   const pre = document.getElementById("reader-text");
   const img = document.getElementById("reader-image");
+  const hint = document.getElementById("reader-hint");
+  if (hint) hint.hidden = true;
   try {
     const res = await fetch("/api/file?path=" + encodeURIComponent(path));
     const data = await res.json();
@@ -825,6 +944,9 @@ for (const name of ["idea", "pages", "dry"]) {
 document.getElementById("library").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-path]");
   if (!button) return;
+  openPath = button.dataset.path;
+  document.querySelectorAll("#library button.file.is-open").forEach((el) => el.classList.remove("is-open"));
+  button.classList.add("is-open");
   openFile(button.dataset.path);
 });
 document.getElementById("stage").addEventListener("animationend", (event) => {
