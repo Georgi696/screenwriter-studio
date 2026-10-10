@@ -2,7 +2,9 @@
 
 The desk calls this when someone asks for a story. It posts to the same KIE
 Responses endpoint as the crew (`POST /codex/v1/responses`, development model).
-It does not start a production and it does not call an image model.
+KIE answers that POST with `text/event-stream` even when the request does not
+ask to stream, so the body is parsed as server-sent events. It does not start
+a production and it does not call an image model.
 """
 
 from __future__ import annotations
@@ -13,10 +15,10 @@ import re
 import secrets
 
 from budget import CLIP_SECONDS, shot_budget
-from models import BRIEF_MODEL, kie_responses_client, load_kie_api_key
+from models import DEVELOPMENT_MODEL, kie_responses_client, load_kie_api_key
 
 MISSING_KEY = (
-    "KIE_API_KEY is not set. Add it to `.env` in the repo root. "
+    "API key is not set. Add KIE_API_KEY to `.env` in the repo root. "
     "Keys are created at https://kie.ai/api-key"
 )
 
@@ -105,10 +107,13 @@ def build_input(idea: str, *, salt: str) -> str:
 def build_request(idea: str, *, salt: str | None = None) -> dict:
     """Body fields for `responses.create` on the KIE chat client."""
     return {
-        "model": BRIEF_MODEL,
+        "model": DEVELOPMENT_MODEL,
         "instructions": instructions(),
         "input": build_input(idea, salt=salt or secrets.token_hex(4)),
-        "max_output_tokens": 1200,
+        # Reasoning tokens count against this cap. A medium effort pass can
+        # spend the whole budget before any visible paragraph exists.
+        "max_output_tokens": 4096,
+        "reasoning": {"effort": "low"},
         "store": False,
     }
 
@@ -199,6 +204,163 @@ def brief_from_response(payload: dict) -> str:
     return parse_brief_text(text_from_response(payload))
 
 
+def _error_message(payload: object) -> str:
+    if isinstance(payload, str):
+        return payload.strip()
+    if not isinstance(payload, dict):
+        return ""
+    error = payload.get("error")
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+    if isinstance(error, dict):
+        for field in ("message", "code"):
+            value = error.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    message = payload.get("message")
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+    return ""
+
+
+def _failure_reason(payload: dict) -> str:
+    """Why a payload has no assistant text. Empty when the payload is not a failure."""
+    incomplete = payload.get("incomplete_details")
+    if isinstance(incomplete, dict) and incomplete.get("reason") == "max_output_tokens":
+        return "The model ran out of room before it wrote the brief."
+    message = _error_message(payload)
+    if message:
+        return message
+    if payload.get("status") in {"failed", "incomplete"}:
+        return "The model did not answer."
+    return ""
+
+
+def _sse_payloads(raw: str):
+    """JSON objects from one event-stream body. Comments and blank lines are ignored."""
+    data_lines: list[str] = []
+
+    def flush():
+        nonlocal data_lines
+        blob = "\n".join(data_lines).strip()
+        data_lines = []
+        if not blob:
+            return None
+        try:
+            return json.loads(blob)
+        except json.JSONDecodeError:
+            return None
+
+    for line in raw.splitlines():
+        if line == "":
+            payload = flush()
+            if payload is not None:
+                yield payload
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    payload = flush()
+    if payload is not None:
+        yield payload
+
+
+def _looks_like_sse(raw: str) -> bool:
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        return stripped.startswith(("event:", "data:", ":"))
+    return False
+
+
+def text_from_sse(raw: str) -> tuple[str, str]:
+    """Assistant prose and a failure reason from a KIE `text/event-stream` body.
+
+    The visible brief is `response.output_text.delta` or the completed message.
+    Reasoning items, encrypted reasoning, and `: keep-alive` comments are not it.
+    """
+    deltas: list[str] = []
+    done = ""
+    completed = ""
+    failure = ""
+    for payload in _sse_payloads(raw):
+        if not isinstance(payload, dict):
+            continue
+        kind = payload.get("type")
+        if kind == "response.output_text.delta" and isinstance(payload.get("delta"), str):
+            deltas.append(payload["delta"])
+            continue
+        if kind == "response.output_text.done" and isinstance(payload.get("text"), str):
+            done = payload["text"]
+            continue
+        if kind == "response.output_item.done":
+            item = payload.get("item")
+            if isinstance(item, dict) and item.get("type") == "message":
+                piece = text_from_response({"output": [item]})
+                if piece.strip():
+                    completed = piece
+            continue
+        response = payload.get("response")
+        if kind in {"response.completed", "response.incomplete", "response.failed"} and isinstance(response, dict):
+            piece = text_from_response(response)
+            if piece.strip():
+                completed = piece
+            reason = _failure_reason(response)
+            if reason:
+                failure = reason
+            continue
+        if kind in {"error", "response.error"}:
+            reason = _error_message(payload)
+            if reason:
+                failure = reason
+    text = "".join(deltas).strip() or done.strip() or completed.strip()
+    return text, "" if text else failure
+
+
+def text_from_body(raw: str) -> tuple[str, str]:
+    """Assistant text and a failure reason from JSON, an event stream, or plain prose."""
+    text = (raw or "").strip()
+    if not text:
+        return "", ""
+    if text[0] in "{[":
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            extracted = text_from_response(data)
+            nested = data.get("response")
+            if not extracted and isinstance(nested, dict):
+                extracted = text_from_response(nested)
+            if extracted.strip():
+                return extracted, ""
+            reason = _failure_reason(data)
+            if not reason and isinstance(nested, dict):
+                reason = _failure_reason(nested)
+            return "", reason
+        if isinstance(data, str) and data.strip():
+            return data.strip(), ""
+    if _looks_like_sse(text):
+        return text_from_sse(text)
+    lowered = text[:80].lower()
+    if lowered.startswith("<!doctype") or lowered.startswith("<html"):
+        return "", "The model did not answer."
+    return text, ""
+
+
+def brief_from_body(raw: str) -> str:
+    """Plain prose from a KIE body. A failure raises instead of returning that body."""
+    text, failure = text_from_body(raw)
+    brief = parse_brief_text(text)
+    if brief:
+        return brief
+    if failure:
+        raise BriefSuggestError(failure)
+    raise BriefSuggestError("The model returned an empty brief.")
+
+
 def _safe_error(exc: Exception, key: str) -> str:
     message = getattr(exc, "message", None) or str(exc)
     if key:
@@ -207,6 +369,26 @@ def _safe_error(exc: Exception, key: str) -> str:
     if len(message) > 240:
         message = message[:240].rstrip() + "…"
     return message or "The model did not answer."
+
+
+def _text_from_client_response(response, *, key: str) -> str:
+    """Text from an SDK object, a dict, or the raw event-stream string KIE returns."""
+    output_text = getattr(response, "output_text", None)
+    if not isinstance(response, str) and isinstance(output_text, str) and output_text.strip():
+        return output_text
+    if isinstance(response, str):
+        text, failure = text_from_body(response)
+    else:
+        payload = response if isinstance(response, dict) else None
+        if payload is None and hasattr(response, "model_dump"):
+            payload = response.model_dump()
+        if not isinstance(payload, dict):
+            return ""
+        text = text_from_response(payload)
+        failure = "" if text.strip() else _failure_reason(payload)
+    if failure and not str(text).strip():
+        raise BriefSuggestError(_safe_error(RuntimeError(failure), key))
+    return text
 
 
 def suggest_brief(idea: str, *, client=None, salt: str | None = None) -> str:
@@ -220,15 +402,10 @@ def suggest_brief(idea: str, *, client=None, salt: str | None = None) -> str:
         response = chat.responses.create(**request)
     except Exception as exc:
         raise BriefSuggestError(_safe_error(exc, key)) from exc
-    output_text = getattr(response, "output_text", None)
-    if isinstance(output_text, str) and output_text.strip():
-        text = output_text
-    elif isinstance(response, dict):
-        text = text_from_response(response)
-    elif hasattr(response, "model_dump"):
-        text = text_from_response(response.model_dump())
-    else:
-        text = ""
+    try:
+        text = _text_from_client_response(response, key=key)
+    except BriefSuggestError as exc:
+        raise BriefSuggestError(_safe_error(exc, key)) from exc
     brief = parse_brief_text(text)
     if not brief:
         raise BriefSuggestError("The model returned an empty brief.")

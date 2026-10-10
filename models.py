@@ -31,7 +31,6 @@ DEVELOPMENT_MODEL = "gpt-6-astra"
 WRITER_MODEL = "gpt-6-astra"
 ART_MODEL = "gpt-6-astra"
 EDITOR_MODEL = "gpt-6-1-sol"
-BRIEF_MODEL = "gpt-5.5"
 
 # Stills. Kind -> model. Ratios, reference limits, and request fields are in
 # image_model_card.py, checked against the KIE and vendor docs on 2026-10-09.
@@ -113,7 +112,7 @@ def kie_responses_client(*, api_key: str | None = None, http_client=None) -> Ope
         base_url=KIE_RESPONSES_BASE,
         http_client=http_client,
         max_retries=0,
-        timeout=60.0,
+        timeout=120.0,
     )
 
 
