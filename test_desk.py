@@ -69,6 +69,19 @@ class DeskPageTest(unittest.TestCase):
             urllib.request.urlopen(f"http://127.0.0.1:{self.port}/media?id=../.env", timeout=5)
         self.assertEqual(caught.exception.code, 404)
 
+    def test_reachable_off_loopback(self):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("10.255.255.255", 1))
+            host = probe.getsockname()[0]
+        finally:
+            probe.close()
+        if host.startswith("127."):
+            self.skipTest("no routable address")
+        with urllib.request.urlopen(f"http://{host}:{self.port}/", timeout=5) as res:
+            page = res.read()
+        self.assertIn(b'id="stage"', page)
+
     def test_library_rejects_escape(self):
         from desk import library_file
 

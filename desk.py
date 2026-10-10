@@ -20,6 +20,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
+import socket
+import subprocess
 import threading
 import traceback
 import urllib.parse
@@ -488,8 +491,42 @@ class DeskServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
+class DeskServerV6(DeskServer):
+    """One socket for IPv4 and IPv6, so a port forward can dial the pod address."""
+
+    address_family = socket.AF_INET6
+
+    def server_bind(self) -> None:
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
 def bind(port: int) -> DeskServer:
-    return DeskServer(("127.0.0.1", port), DeskHandler)
+    """Listen on every interface.
+
+    A cloud desktop and Cursor's port forward dial the machine address, not
+    127.0.0.1. Binding only the loopback makes that dialer get connection refused
+    while curl on the loopback still succeeds.
+    """
+    try:
+        return DeskServerV6(("::", port), DeskHandler)
+    except OSError:
+        return DeskServer(("0.0.0.0", port), DeskHandler)
+
+
+def _open_browser(url: str) -> None:
+    """Open a window on this display. xdg-open hangs on the xfce helper and never shows the page."""
+    chrome = shutil.which("google-chrome") or shutil.which("google-chrome-stable")
+    if chrome and os.environ.get("DISPLAY"):
+        subprocess.Popen(
+            [chrome, "--new-window", url, "--no-sandbox", "--disable-dev-shm-usage"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return
+    webbrowser.open(url)
 
 
 def serve(port: int = 7860, open_browser: bool = True) -> None:
@@ -507,7 +544,7 @@ def serve(port: int = 7860, open_browser: bool = True) -> None:
     url = f"http://127.0.0.1:{bound}"
     print(f"Screenwriter desk at {url}", flush=True)
     if open_browser:
-        webbrowser.open(url)
+        _open_browser(url)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
