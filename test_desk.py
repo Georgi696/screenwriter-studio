@@ -69,6 +69,14 @@ class DeskPageTest(unittest.TestCase):
             urllib.request.urlopen(f"http://127.0.0.1:{self.port}/media?id=../.env", timeout=5)
         self.assertEqual(caught.exception.code, 404)
 
+    def test_ipv4_wildcard_is_in_the_listen_table(self):
+        self.assertEqual(self.httpd.server_address[0], "0.0.0.0")
+        needle = f"00000000:{self.port:04X}"
+        with open("/proc/net/tcp", encoding="ascii") as handle:
+            rows = handle.readlines()[1:]
+        listening = any(row.split()[1] == needle and row.split()[3] == "0A" for row in rows)
+        self.assertTrue(listening, f"{needle} not listening in /proc/net/tcp")
+
     def test_reachable_off_loopback(self):
         probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:

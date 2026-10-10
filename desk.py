@@ -21,7 +21,6 @@ import asyncio
 import json
 import os
 import shutil
-import socket
 import subprocess
 import threading
 import traceback
@@ -491,27 +490,15 @@ class DeskServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
-class DeskServerV6(DeskServer):
-    """One socket for IPv4 and IPv6, so a port forward can dial the pod address."""
-
-    address_family = socket.AF_INET6
-
-    def server_bind(self) -> None:
-        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-        super().server_bind()
-
-
 def bind(port: int) -> DeskServer:
-    """Listen on every interface.
+    """Listen on 0.0.0.0.
 
-    A cloud desktop and Cursor's port forward dial the machine address, not
-    127.0.0.1. Binding only the loopback makes that dialer get connection refused
-    while curl on the loopback still succeeds.
+    Cursor's preview scans the IPv4 listen table and dials the machine address.
+    A 127.0.0.1 socket refuses that dial. An IPv6 socket never shows up in the
+    scan, so the preview browser has nothing on 127.0.0.1 and reports connection
+    refused. An IPv4 wildcard socket is visible to the scan and accepts the dial.
     """
-    try:
-        return DeskServerV6(("::", port), DeskHandler)
-    except OSError:
-        return DeskServer(("0.0.0.0", port), DeskHandler)
+    return DeskServer(("0.0.0.0", port), DeskHandler)
 
 
 def _open_browser(url: str) -> None:
