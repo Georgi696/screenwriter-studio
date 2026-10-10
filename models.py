@@ -31,6 +31,7 @@ DEVELOPMENT_MODEL = "gpt-6-astra"
 WRITER_MODEL = "gpt-6-astra"
 ART_MODEL = "gpt-6-astra"
 EDITOR_MODEL = "gpt-6-1-sol"
+BRIEF_MODEL = "gpt-5.5"
 
 # Stills. Kind -> model. Ratios, reference limits, and request fields are in
 # image_model_card.py, checked against the KIE and vendor docs on 2026-10-09.

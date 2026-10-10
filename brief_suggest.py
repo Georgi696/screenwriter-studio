@@ -13,7 +13,7 @@ import re
 import secrets
 
 from budget import CLIP_SECONDS, shot_budget
-from models import DEVELOPMENT_MODEL, kie_responses_client, load_kie_api_key
+from models import BRIEF_MODEL, kie_responses_client, load_kie_api_key
 
 MISSING_KEY = (
     "KIE_API_KEY is not set. Add it to `.env` in the repo root. "
@@ -105,7 +105,7 @@ def build_input(idea: str, *, salt: str) -> str:
 def build_request(idea: str, *, salt: str | None = None) -> dict:
     """Body fields for `responses.create` on the KIE chat client."""
     return {
-        "model": DEVELOPMENT_MODEL,
+        "model": BRIEF_MODEL,
         "instructions": instructions(),
         "input": build_input(idea, salt=salt or secrets.token_hex(4)),
         "max_output_tokens": 1200,
