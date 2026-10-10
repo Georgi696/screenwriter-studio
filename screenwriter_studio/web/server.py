@@ -40,6 +40,8 @@ from screenwriter_studio.models import (
     WRITER_MODEL,
 )
 from screenwriter_studio.studio import ScreenwriterStudio
+from screenwriter_studio.images.generator import run_batch
+from screenwriter_studio.images.review import validate_decision
 from screenwriter_studio.paths import WORKSPACE_ROOT
 from screenwriter_studio.events import StudioEvent
 
@@ -91,7 +93,20 @@ def _restore() -> None:
         _board.running = False
         _board.active = _board.edge = None
         _board.returning = False
-        _board.note = "Previous run was interrupted. Saved still jobs can be resumed from the command line."
+        _board.note = "Previous run was interrupted. Use Resume saved image work in Stills, or resume from the command line."
+    # The manifest is authoritative if a checkpoint reached disk before the last UI event.
+    if _board.folder:
+        folder = Path(_board.folder)
+        if not folder.is_absolute():
+            folder = WORKSPACE_ROOT / folder
+        try:
+            folder.resolve().relative_to(PRODUCTIONS.resolve())
+            spec = json.loads((folder / "images/jobs.json").read_text())
+            manifest = json.loads((folder / "images/manifest.json").read_text())
+            if spec.get("inspection") and isinstance(manifest.get("images"), list):
+                _board.images = manifest["images"]
+        except (OSError, ValueError):
+            pass
     hub.revision = _board.revision
 
 
@@ -128,8 +143,8 @@ def public_view() -> dict:
         for image, raw in zip(payload["images"], _board.images):
             item = dict(image)
             path = str(raw.get("path") or "")
-            if raw.get("state") == "done" and _safe_image(path, _board.folder) is not None:
-                item["src"] = "/media?id=" + urllib.parse.quote(str(raw.get("id") or ""), safe="")
+            if raw.get("state") in {"done", "review", "inspecting"} and _safe_image(path, _board.folder) is not None:
+                item["src"] = "/media?id=" + urllib.parse.quote(str(raw.get("id") or ""), safe="") + "&v=" + str(raw.get("repairs", 0))
             else:
                 item["src"] = ""
             images.append(item)
@@ -304,10 +319,10 @@ def _finish(serial: int, note: str | None) -> None:
         _replace(_board)
 
 
-async def _drive(serial: int, idea: str, pages_only: bool, dry_run: bool, max_shots: int | None = None) -> None:
+async def _drive(serial: int, idea: str, pages_only: bool, dry_run: bool, max_shots: int | None = None, inspection_mode: str = "manual") -> None:
     studio = ScreenwriterStudio()
     try:
-        async for chunk in studio.run(idea, pages_only=pages_only, dry_run=dry_run, max_shots=max_shots):
+        async for chunk in studio.run(idea, pages_only=pages_only, dry_run=dry_run, max_shots=max_shots, inspection_mode=inspection_mode):
             if not _current(serial):
                 return
             _apply(serial, chunk)
@@ -345,7 +360,7 @@ def clear_session() -> None:
         future.cancel()
 
 
-def start_crew(idea: str, pages_only: bool, dry_run: bool, max_shots: int | None = None) -> None:
+def start_crew(idea: str, pages_only: bool, dry_run: bool, max_shots: int | None = None, inspection_mode: str = "manual") -> None:
     global _future, _run_serial
     loop = _ensure_loop()
     with _lock:
@@ -361,7 +376,52 @@ def start_crew(idea: str, pages_only: bool, dry_run: bool, max_shots: int | None
         _replace(board)
     if _future is not None and not _future.done():
         _future.cancel()
-    _future = asyncio.run_coroutine_threadsafe(_drive(serial, idea, pages_only, dry_run, max_shots), loop)
+    _future = asyncio.run_coroutine_threadsafe(_drive(serial, idea, pages_only, dry_run, max_shots, inspection_mode), loop)
+
+
+async def _resume_images(serial, out, spec, decision):
+    cancel = threading.Event()
+    def update(record):
+        _apply(serial, StudioEvent("image", f"Image {record['id']}: {record.get('state', 'working')}", image=record))
+    try:
+        manifest = await asyncio.to_thread(run_batch, spec, out, resume=True, decision=decision,
+                                         on_record=update, cancel=cancel,
+                                         on_start=lambda r: update({**r, "phase": "start"}))
+        _finish(serial, "Stills complete." if manifest.get("status") == "complete" else
+                "Stills paused. Review the image cards or resume saved tasks.")
+    except asyncio.CancelledError:
+        cancel.set()
+        _finish(serial, "Image work cancelled; progress is saved.")
+        raise
+    except Exception as exc:
+        _finish(serial, scrub(str(exc), _secret()))
+
+
+def resume_images(data):
+    global _future, _run_serial
+    loop = _ensure_loop()
+    with _lock:
+        if _board.running:
+            raise ValueError("Wait for the current run to finish before reviewing images.")
+        folder = Path(_board.folder)
+        if not folder.is_absolute():
+            folder = WORKSPACE_ROOT / folder
+        out = folder / "images"
+        if not _board.folder or not _under(out, PRODUCTIONS):
+            raise ValueError("No saved image production is selected.")
+        spec = json.loads((out / "jobs.json").read_text())
+        if not spec.get("inspection"):
+            raise ValueError("This production predates image inspection. Resume it using the command line.")
+        decision = data if data else None
+        if decision:
+            saved = json.loads((out / "manifest.json").read_text())
+            validate_decision({r["id"]: r for r in saved["images"]}, decision)
+        _run_serial += 1
+        serial = _run_serial
+        _board.running = True
+        _board.note = "Continuing saved image work."
+        _replace(_board)
+        _future = asyncio.run_coroutine_threadsafe(_resume_images(serial, out, spec, decision), loop)
 
 
 def _content_type(path: Path) -> str:
@@ -440,11 +500,19 @@ class DeskHandler(BaseHTTPRequestHandler):
             clear_session()
             self._json(200, {"ok": True})
             return
-        if parsed.path not in {"/api/run", "/api/brief/suggest"}:
+        if parsed.path not in {"/api/run", "/api/brief/suggest", "/api/images/review"}:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return
         data = self._read_json()
         if data is None:
+            return
+        if parsed.path == "/api/images/review":
+            try:
+                resume_images(data)
+            except (ValueError, OSError) as exc:
+                self._json(409, {"error": scrub(str(exc), _secret())})
+                return
+            self._json(202, {"ok": True})
             return
         idea = data.get("idea") if isinstance(data.get("idea"), str) else ""
         if parsed.path == "/api/brief/suggest":
@@ -454,7 +522,11 @@ class DeskHandler(BaseHTTPRequestHandler):
         if max_shots is not None and (type(max_shots) is not int or not 1 <= max_shots <= 240):
             self._json(400, {"error": "Shot limit must be an integer between 1 and 240."})
             return
-        start_crew(idea.strip() or DEFAULT_IDEA, bool(data.get("pages_only")), bool(data.get("dry_run")), max_shots)
+        mode = data.get("inspection_mode", "manual")
+        if mode not in ("manual", "auto"):
+            self._json(400, {"error": "Inspection mode must be manual or auto."})
+            return
+        start_crew(idea.strip() or DEFAULT_IDEA, bool(data.get("pages_only")), bool(data.get("dry_run")), max_shots, mode)
         self._json(202, {"ok": True})
 
     def _local_request(self, mutating: bool = False) -> bool:

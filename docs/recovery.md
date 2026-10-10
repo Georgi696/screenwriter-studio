@@ -77,3 +77,32 @@ remain in the production directory.
   model calls. It writes `manifest.preview.json`, leaving the paid manifest intact.
 - **Tests cannot bind a port:** the desk tests require permission to open an
   ephemeral loopback listener. They do not call a generation provider.
+
+## Image review decisions
+
+New studio plans default to manual image inspection. A paused review is not a
+failed generation: resuming alone does not approve changes or submit repairs.
+Use the current desk's Stills cards, or read `inspection` and `repair_job.prompt`
+in `images/manifest.json`, then submit the exact current `review_id`:
+
+```bash
+images=../productions/last-train/images
+python -m screenwriter_studio.images.generator "$images/jobs.json" \
+  --out "$images" --resume --image s01 --review-id REVIEW_TOKEN --decision repair
+```
+
+Use `keep` to accept the current image without repairing it, or `inspect` to pay
+for another inspection without generating an image. `repair` executes the saved
+proposal; stale/repeated decisions are rejected before submission. A decision
+also resumes any eligible downstream jobs. Exit code 2 means image work remains
+paused; exit code 1 indicates an error in an uninspected legacy batch or command.
+
+Repair files use `.repair-1` and `.repair-2` suffixes. `history` keeps previous
+versions and reviews; the current `path` identifies the selected version.
+If a repair times out, resume the same plan: its saved task is polled instead of
+creating another repair. Explicit provider failures may still be retried on
+resume and incur charges. An interrupted inspection itself may be called again.
+A rejected, incomplete, or unsupported vision response never auto-approves an
+image. Keep the plan unchanged when resuming; its fingerprint includes the
+review mode and production context. Starting a new desk session clears the
+selected production; older productions can still be resumed using the CLI.

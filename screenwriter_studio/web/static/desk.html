@@ -55,6 +55,12 @@
     <textarea id="idea" name="idea" placeholder="A 30-second vertical film about someone who keeps a seat on the last bus."></textarea>
     <button class="help" id="help-idea" type="button">What is this?</button>
     <p class="help-copy" id="help-idea-copy" hidden>This is the brief the crew turns into a logline, Fountain pages, and stills. Suggest a story writes one if the box is empty. Strengthen this rewrites a note you already typed. Example: a 30-second vertical film about someone who keeps a seat on the last bus.</p>
+    <label for="inspection-mode">Image inspection</label>
+    <select id="inspection-mode">
+      <option value="manual">Manual — approve proposed repairs</option>
+      <option value="auto">Auto — up to two repairs per image</option>
+    </select>
+    <p class="help-copy">Every image is inspected for accuracy. Manual shows findings and changes before you approve a repair. Inspection and repairs use additional credits. Uncertain images pause in either mode.</p>
     <label for="max-shots">Maximum shots (optional)</label>
     <input id="max-shots" type="number" min="1" max="240" step="1" placeholder="Automatic">
     <p class="lead">Set a higher limit for faster cuts. Each shot needs a keyframe; character and location references are additional images.</p>
@@ -127,6 +133,7 @@
       <button class="chip" type="button" data-filter="keyframe">Keyframes</button>
       <button class="chip" type="button" data-filter="waiting">Waiting</button>
     </div>
+    <button type="button" id="resume-images" class="ghost">Resume saved image work</button>
     <div id="image-bay"></div>
   </div>
   <div id="lower">

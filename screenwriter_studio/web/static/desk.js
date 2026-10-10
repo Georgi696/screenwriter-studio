@@ -148,7 +148,7 @@ function applyStillFilter() {
       const state = frame.dataset.state || "";
       const waitingSlot = ghost && !col.classList.contains("has-jobs");
       let show = !ghost;
-      if (stillFilter === "waiting") show = waitingSlot || state === "running";
+      if (stillFilter === "waiting") show = waitingSlot || ["running", "review", "blocked", "inspecting"].includes(state);
       else if (stillFilter !== "all") show = !ghost && kind.includes(stillFilter);
       frame.hidden = !show;
       if (show) visible += 1;
@@ -438,7 +438,7 @@ function ensureColumn(bay, model, kinds) {
 function ensureFrame(col, id) {
   const domId = "frame-" + String(id).replace(/[^A-Za-z0-9_-]/g, "_");
   const found = document.getElementById(domId);
-  if (found) return found;
+  if (found) { col.querySelector(".slots").appendChild(found); return found; }
   const frame = document.createElement("figure");
   frame.id = domId;
   frame.className = "frame";
@@ -473,7 +473,7 @@ function applyFrameState(frame, image) {
     img.hidden = true;
     hold.hidden = false;
     hold.textContent = "Working";
-  } else if (image.state === "done") {
+  } else if (["done", "review", "inspecting"].includes(image.state)) {
     frame.classList.add("is-done", "printed");
     showDone(frame, image);
   } else if (image.state === "planned") {
@@ -481,6 +481,10 @@ function applyFrameState(frame, image) {
     img.hidden = true;
     hold.hidden = false;
     hold.textContent = "Planned — no image generated";
+  } else if (image.state === "blocked") {
+    img.hidden = true;
+    hold.hidden = false;
+    hold.textContent = "Waiting for approved references: " + (image.blocked_by || []).join(", ");
   } else if (image.state === "failed") {
     frame.classList.add("is-failed");
     img.hidden = true;
@@ -489,7 +493,69 @@ function applyFrameState(frame, image) {
   }
 }
 
+async function reviewImage(data) {
+  try {
+    const res = await fetch("/api/images/review", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(data)});
+    const reply = await res.json();
+    if (!res.ok) throw new Error(reply.error || "Could not continue image work");
+    toast("Image work queued");
+  } catch (error) { toast(error.message); }
+}
+
+function renderInspection(frame, image, running) {
+  let panel = frame.querySelector(".image-review");
+  const signature = JSON.stringify([image.inspection, image.review_id, image.state, running]);
+  if (panel && panel.dataset.signature === signature) return;
+  if (panel) panel.remove();
+  if (!image.inspection || !image.inspection.summary) return;
+  panel = document.createElement("div");
+  panel.className = "image-review";
+  panel.dataset.signature = signature;
+  const heading = document.createElement("strong");
+  heading.textContent = image.state === "done" ? (image.decision === "human accepted" ? "Kept by you" : "Accepted") : "Needs your review";
+  panel.appendChild(heading);
+  if (image.src) {
+    const view = document.createElement("button"); view.type = "button"; view.className = "ghost"; view.textContent = "View full image";
+    view.addEventListener("click", () => { showReaderImage(image.id, image.src); setView("reader", true); });
+    panel.appendChild(view);
+  }
+  const line = (text) => { const p = document.createElement("p"); p.textContent = text; panel.appendChild(p); };
+  line(image.inspection.summary);
+  for (const [label, items] of [["Finding", image.inspection.findings], ["Proposed change", image.inspection.changes], ["Preserve", image.inspection.preserve]]) {
+    for (const text of items || []) line(label + ": " + text);
+  }
+  if (image.inspection.uncertainty) line("Uncertain: " + image.inspection.uncertainty);
+  line("Repairs used: " + (image.repairs || 0) + " / 2. Previous versions remain in the production folder.");
+  if (image.repair_prompt && image.state === "review") {
+    const details = document.createElement("details");
+    const title = document.createElement("summary"); title.textContent = "Exact repair instructions";
+    const text = document.createElement("pre"); text.textContent = image.repair_prompt;
+    details.append(title, text); panel.appendChild(details);
+    line("Repair model: " + image.repair_model + ". Approval spends credits on one repair and its inspection.");
+  }
+  if (image.repair_unavailable) line(image.repair_unavailable);
+  if (image.state === "review") {
+    for (const [action, label] of [["repair", "Approve these changes"], ["keep", "Keep this image"], ["inspect", "Inspect again (uses credits)"]]) {
+      if (action === "repair" && !image.repair_prompt) continue;
+      const button = document.createElement("button"); button.type = "button";
+      button.className = action === "repair" ? "go" : "ghost";
+      button.textContent = label; button.disabled = running;
+      button.addEventListener("click", async () => {
+        panel.querySelectorAll("button").forEach(b => { b.disabled = true; });
+        await reviewImage({id: image.id, review_id: image.review_id, action});
+        panel.querySelectorAll("button").forEach(b => { b.disabled = Boolean(last && last.running); });
+        panel.dataset.signature = "";
+        fetch("/api/status").then(r => r.json()).then(apply).catch(() => {});
+      });
+      panel.appendChild(button);
+    }
+  }
+  frame.appendChild(panel);
+}
+
 function syncImages(state) {
+  document.getElementById("resume-images").disabled = state.running || !(state.images || []).length;
   const bay = document.getElementById("image-bay");
   const before = bay.querySelectorAll(".frame[data-job]").length;
   for (const agent of state.image_agents || []) ensureColumn(bay, agent.model, agent.kinds);
@@ -504,7 +570,8 @@ function syncImages(state) {
     const caption = image.error ? image.id + " · " + image.kind + " — " + image.error : image.id + " · " + image.kind;
     setText(frame.querySelector("figcaption"), caption);
     if (frame.dataset.state !== (image.state || "")) applyFrameState(frame, image);
-    else if (image.state === "done") showDone(frame, image);
+    else if (["done", "review", "inspecting"].includes(image.state)) showDone(frame, image);
+    renderInspection(frame, image, state.running);
   }
   bay.querySelectorAll(".model-col").forEach((col) => {
     const jobs = col.querySelectorAll(".frame[data-job]");
@@ -690,6 +757,7 @@ async function startRun() {
         idea: document.getElementById("idea").value,
         pages_only: document.getElementById("pages").checked,
         dry_run: document.getElementById("dry").checked,
+        inspection_mode: document.getElementById("inspection-mode").value,
         max_shots: document.getElementById("max-shots").value ? Number(document.getElementById("max-shots").value) : null
       })
     });
@@ -1224,6 +1292,7 @@ document.getElementById("new-session").addEventListener("click", async () => {
     document.getElementById("pages").checked = false;
     document.getElementById("dry").checked = false;
     document.getElementById("max-shots").value = "";
+    document.getElementById("inspection-mode").value = "manual";
     resetReader();
     openPath = null;
     setView("brief");
@@ -1268,3 +1337,5 @@ setInterval(() => {
   if (streamOK) return;
   fetch("/api/status").then((res) => res.json()).then(apply).catch(() => {});
 }, 1000);
+
+document.getElementById("resume-images").addEventListener("click", () => reviewImage({}));

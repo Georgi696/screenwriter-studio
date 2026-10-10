@@ -678,3 +678,19 @@
   }
 
   #library-search-status { margin: 8px 0; }
+
+/* Review notes use normal document flow so long proposals remain readable. */
+.image-review { padding: 12px; border-top: 1px solid var(--line, #ccc); font-size: 13px; }
+.image-review p { margin: 8px 0; overflow-wrap: anywhere; }
+.image-review pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.image-review button { display: block; width: 100%; margin-top: 8px; }
+#inspection-mode { width: 100%; padding: 10px; }
+#resume-images { margin: 12px 0; }
+
+.slots:has(.image-review) { grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); align-items: start; }
+.frame:has(.image-review) .cell { aspect-ratio: 16 / 10; }
+.frame:has(.image-review) .cell img { object-fit: contain; }
+.frame[data-state="review"] { border-color: var(--accent); }
+.image-review details { padding: 10px 0; }
+.image-review summary { cursor: pointer; font-weight: 600; }
+#inspection-mode { font: inherit; color: inherit; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }

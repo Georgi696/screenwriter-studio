@@ -6,6 +6,7 @@ from pathlib import Path
 
 from screenwriter_studio.budget import select_stills
 from screenwriter_studio.images.generator import run_batch, waves
+from screenwriter_studio.models import ART_MODEL
 from screenwriter_studio.schemas import Development, Screenplay, StillPackage
 
 
@@ -36,9 +37,13 @@ def render_stills(
     on_record: Callable[[dict], None] | None = None,
     on_start: Callable[[dict], None] | None = None,
     cancel=None,
+    inspection_mode: str = "manual",
+    inspection_context: dict | None = None,
 ) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     spec = {
+        "inspection": {"mode": inspection_mode, "model": ART_MODEL},
+        "inspection_context": inspection_context or {},
         "aspect_ratio": package.aspect_ratio,
         "resolution": package.resolution,
         "jobs": [job.model_dump() for job in package.jobs],

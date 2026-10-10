@@ -330,8 +330,13 @@ def _destination(out: Path, job: dict) -> Path:
 
 
 def run_batch(spec: dict, out: Path, *, dry_run: bool = False, resume: bool = False,
-              on_record=None, on_start=None, cancel=None) -> dict:
+              on_record=None, on_start=None, cancel=None, decision=None) -> dict:
     """Checkpoint submissions and results; resume never repeats a successful job."""
+    settings = spec.get("inspection")
+    if settings is not None and (not isinstance(settings, dict) or settings.get("mode") not in ("manual", "auto")):
+        raise ValueError("Inspection mode must be manual or auto.")
+    if decision and (not settings or dry_run or not resume):
+        raise ValueError("Review decisions require resuming an inspected batch.")
     jobs = spec.get("jobs") or []
     if not jobs:
         raise ValueError("jobs.json has no jobs")
@@ -339,11 +344,19 @@ def run_batch(spec: dict, out: Path, *, dry_run: bool = False, resume: bool = Fa
     if any(not isinstance(value, str) or not value.strip() for value in ids) or len(ids) != len(set(ids)):
         raise ValueError("every job needs a unique string id")
     paths = [_destination(out, job) for job in jobs]
+    if settings:
+        paths += [_destination(out, {"id": job["id"], "filename": f"{dest.stem}.repair-{n}{dest.suffix}"})
+                  for job in jobs for dest in [_destination(out, job)] for n in (1, 2)]
     if len({str(path.resolve()) for path in paths}) != len(paths):
         raise ValueError("Job filenames collide after sanitization.")
     ordered = waves(jobs)  # Validate the whole graph before spending credits.
     aspect = str(spec.get("aspect_ratio") or "16:9")
     resolution = str(spec.get("resolution") or "1K")
+    if settings:
+        for job in jobs:
+            model, _ = choose(job, aspect, resolution)
+            if len(_ref_list(job)) > card_for(model).max_images:
+                raise ValueError(f"{job['id']}: reference count exceeds the selected model's limit.")
     fingerprint = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
     out.mkdir(parents=True, exist_ok=True)
     with (out / ".generation.lock").open("a") as lock:
@@ -352,11 +365,11 @@ def run_batch(spec: dict, out: Path, *, dry_run: bool = False, resume: bool = Fa
         except BlockingIOError as exc:
             raise RuntimeError("This image folder already has a running batch.") from exc
         return _run_locked(spec, out, ordered, aspect, resolution, fingerprint,
-                           dry_run, resume, on_record, on_start, cancel)
+                           dry_run, resume, on_record, on_start, cancel, decision)
 
 
 def _run_locked(spec, out, ordered, aspect, resolution, fingerprint,
-                dry_run, resume, on_record, on_start, cancel):
+                dry_run, resume, on_record, on_start, cancel, decision):
     manifest_path = out / ("manifest.preview.json" if dry_run else "manifest.json")
     records: dict[str, dict] = {}
     if manifest_path.exists() and not dry_run:
@@ -390,6 +403,15 @@ def _run_locked(spec, out, ordered, aspect, resolution, fingerprint,
         if on_record:
             on_record(record)
 
+    if spec.get("inspection") and not dry_run:
+        from screenwriter_studio.images.review import run_reviewed
+        run_reviewed(spec, out, ordered, records, api_key, checkpoint, keep,
+                     on_start, cancel, decision)
+        manifest["status"] = ("complete" if len(records) == len(spec["jobs"]) and
+                              all(r.get("state") == "done" for r in records.values()) else "paused")
+        checkpoint()
+        return manifest
+
     checkpoint()
     for wave in ordered:
         if cancel is not None and cancel.is_set():
@@ -420,11 +442,16 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True, help="folder for the images")
     parser.add_argument("--dry-run", action="store_true", help="choose models and write no images")
     parser.add_argument("--resume", action="store_true", help="Reuse completed stills, poll saved tasks, and retry terminal failures")
+    parser.add_argument("--review-id", help="Exact review_id from manifest.json")
+    parser.add_argument("--image", help="Image ID for a review decision")
+    parser.add_argument("--decision", choices=["keep", "repair", "inspect"])
     args = parser.parse_args()
+    if any((args.decision, args.image, args.review_id)) and not all((args.decision, args.image, args.review_id)):
+        parser.error("--decision, --image and --review-id must be supplied together")
 
     spec = json.loads(args.jobs.read_text(encoding="utf-8"))
     try:
-        manifest = run_batch(spec, args.out, dry_run=args.dry_run, resume=args.resume)
+        manifest = run_batch(spec, args.out, dry_run=args.dry_run, resume=args.resume, decision=({"id": args.image, "review_id": args.review_id, "action": args.decision} if args.decision else None))
     except (ValueError, RuntimeError, SystemExit) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -434,6 +461,9 @@ def main() -> int:
         status = "FAIL " + record["error"] if record.get("error") else record.get("model", "")
         print(f"{record['id']}: {status} -> {record.get('path', '')}")
     print(f"manifest: {args.out / ('manifest.preview.json' if args.dry_run else 'manifest.json')}")
+    if manifest.get("status") == "paused":
+        print("Paused: review findings and repair_job in manifest.json. Resume with --image ID --review-id TOKEN --decision keep|repair|inspect.")
+        return 2
     return 1 if failed else 0
 
 

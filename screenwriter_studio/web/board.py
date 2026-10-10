@@ -88,7 +88,7 @@ def apply_event(board: Board, event: StudioEvent) -> None:
         record["state"] = (
             "failed" if record.get("error") else
             "running" if record.get("phase") == "start" else
-            "planned" if record.get("dry_run") else "done"
+            "planned" if record.get("dry_run") else record.get("state") or "done"
         )
         _upsert_image(board, record)
         board.done.add("art")
@@ -152,6 +152,14 @@ def client_payload(board: Board, secret: str = "") -> dict:
                 "model": scrub(str(image.get("model") or ""), secret),
                 "error": scrub(str(image.get("error") or ""), secret),
                 "state": image.get("state") or "",
+                "review_id": image.get("review_id", ""),
+                "inspection": json.loads(scrub(json.dumps(image.get("inspection", {})), secret)),
+                "repair_prompt": scrub(image.get("repair_job", {}).get("prompt", ""), secret),
+                "repair_model": image.get("repair_job", {}).get("model", ""),
+                "repair_unavailable": scrub(image.get("repair_unavailable", ""), secret),
+                "decision": image.get("decision", ""),
+                "repairs": image.get("repairs", 0),
+                "blocked_by": image.get("blocked_by", []),
             }
         )
     return {

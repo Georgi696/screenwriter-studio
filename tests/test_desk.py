@@ -174,7 +174,26 @@ class DeskPageTest(unittest.TestCase):
         from unittest import mock
         with mock.patch("screenwriter_studio.web.server.start_crew") as start:
             self._post_json("/api/run", {"idea": "test", "max_shots": 6})
-            start.assert_called_once_with("test", False, False, 6)
+            start.assert_called_once_with("test", False, False, 6, "manual")
+
+    def test_inspection_mode_and_review_route(self):
+        with mock.patch("screenwriter_studio.web.server.start_crew") as start:
+            self._post_json("/api/run", {"idea": "test", "inspection_mode": "auto"})
+            start.assert_called_once_with("test", False, False, None, "auto")
+        for mode in ("off", None, [], True):
+            with mock.patch("screenwriter_studio.web.server.start_crew") as start:
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    self._post_json("/api/run", {"inspection_mode": mode})
+                self.assertEqual(caught.exception.code, 400)
+                start.assert_not_called()
+        decision = {"id": "s01", "review_id": "version-token", "action": "repair"}
+        with mock.patch("screenwriter_studio.web.server.resume_images") as resume:
+            self._post_json("/api/images/review", decision)
+            resume.assert_called_once_with(decision)
+        with mock.patch("screenwriter_studio.web.server.resume_images", side_effect=ValueError("Stale review")):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self._post_json("/api/images/review", decision)
+            self.assertEqual(caught.exception.code, 409)
 
     def test_invalid_shot_limit_does_not_start_run(self):
         from unittest import mock

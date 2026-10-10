@@ -19,11 +19,12 @@ def _parse() -> argparse.Namespace:
     parser.add_argument("--aspect", default=None, help="Lock 16:9, 9:16, or 1:1")
     parser.add_argument("--runtime", type=int, default=None, help="Lock runtime in seconds")
     parser.add_argument("--max-shots", type=int, default=None, help="Maximum shots/keyframes; default is one per 8 seconds")
+    parser.add_argument("--inspection", choices=["manual", "auto"], default="manual", help="Inspect every still; manual approves repairs, auto allows up to two")
     parser.add_argument("--ui", action="store_true", help="Open the game desk")
     return parser.parse_args()
 
 
-async def _stream(idea: str, pages_only: bool, dry_run: bool, aspect: str | None, runtime: int | None, max_shots: int | None = None) -> None:
+async def _stream(idea: str, pages_only: bool, dry_run: bool, aspect: str | None, runtime: int | None, max_shots: int | None = None, inspection_mode: str = "manual") -> None:
     studio = ScreenwriterStudio()
     async for chunk in studio.run(
         idea,
@@ -32,6 +33,7 @@ async def _stream(idea: str, pages_only: bool, dry_run: bool, aspect: str | None
         aspect_ratio=aspect,
         runtime_seconds=runtime,
         max_shots=max_shots,
+        inspection_mode=inspection_mode,
     ):
         print(chunk.text, end="", flush=True)
 
@@ -46,7 +48,7 @@ def main() -> int:
         print("Pass an idea, or run with --ui.", file=sys.stderr)
         return 2
     else:
-        asyncio.run(_stream(args.idea, args.pages_only, args.dry_run, args.aspect, args.runtime, args.max_shots))
+        asyncio.run(_stream(args.idea, args.pages_only, args.dry_run, args.aspect, args.runtime, args.max_shots, args.inspection))
 
     return 0
 

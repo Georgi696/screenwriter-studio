@@ -10,7 +10,7 @@ and publishing are future stages.
 ## Workflow
 
 ```text
-Brief → Development → Screenplay + shot list → Script review → Art plan → Stills
+Brief → Development → Screenplay + shot list → Script review → Art plan → Stills → Image inspection
                               ↑                     │
                               └── up to two rewrites┘
 ```
@@ -62,6 +62,7 @@ python -m screenwriter_studio \
 | `--runtime 30` | Lock the total duration in seconds; supported range is 6–720. |
 | `--aspect 9:16` | Lock `9:16`, `16:9`, or `1:1`. |
 | `--max-shots 6` | Set the maximum shot/keyframe count. Also available in the desk. |
+| `--inspection manual` | Inspect images and approve proposed repairs yourself (default). Use `auto` for up to two repairs per image. |
 | `--pages-only` | Stop after screenplay review, before art planning and stills. |
 | `--dry-run` | Develop and review the film, then save a still plan without generating images. |
 
@@ -76,6 +77,40 @@ any model calls, use the standalone image command described below.
 
 The original `python run.py …` and `python generate_stills.py …` commands remain
 available as compatibility launchers.
+
+## Image accuracy review
+
+Choose **Manual** or **Auto** in the brief form before starting a production.
+Both inspect the actual generated image against the brief, locked development,
+shot list, image prompt, and supplied reference images. Checks cover action,
+identity, wardrobe, props, composition, continuity and obvious visual defects.
+Minor cosmetic imperfections should pass; this is an accuracy check, not a
+promise of perfect images.
+
+- **Manual (default):** usable images pass. Others pause in the Stills tab with
+  findings, proposed changes, details to preserve, and expandable exact repair
+  instructions. View the full image, then choose **Approve these changes**,
+  **Keep this image**, or **Inspect again**. No repair starts without approval.
+- **Auto:** clear defects trigger targeted repairs, each followed by inspection.
+  Uncertainty, inspection errors, or the two-repair limit pause for human review.
+
+Both modes allow at most two repair versions per image. Unapproved references
+block dependent shots. Originals and repair versions stay on disk; the manifest
+records findings, decisions, task IDs and history. **Keep this image** explicitly
+accepts the current version, even if the inspector found issues. Approving or
+keeping an image also resumes eligible downstream image work.
+
+Inspection uses paid vision calls through the existing KIE Responses client and
+art model; repairs incur image-generation charges too. Provider vision support
+must be available for the configured model. If unavailable, the workflow pauses
+for human review. A normal image preview (`--dry-run`) never inspects images.
+The request format follows the [OpenAI image-input documentation](https://developers.openai.com/api/docs/guides/images-vision);
+KIE compatibility is tested with mocked responses, not live paid calls.
+
+After interruption, use **Resume saved image work** in Stills. This continues the
+current production, without rerunning the screenplay. Legacy jobs without an
+`inspection` setting keep their existing generation behavior. Modes are saved
+in the plan; changing the brief selector only affects new productions.
 
 ## Saved work
 
@@ -156,6 +191,8 @@ screenwriter_studio/
 ├── images/
 │   ├── catalog.py       # image capabilities and request constraints
 │   ├── service.py       # plan validation and workflow adapter
+│   ├── inspection.py    # visual verdicts against actual images and requirements
+│   ├── review.py        # approval, reference gates and bounded versioned repairs
 │   └── generator.py     # submission, polling, checkpoints, and downloads
 └── web/
     ├── server.py        # local HTTP routes and event streaming

@@ -50,12 +50,16 @@ def _still_line(record: dict) -> str:
         return f"**Still** {record['id']} ({kind}) started on {record.get('model')}.\n\n"
     if record.get("dry_run"):
         return f"- {record['id']} ({kind}) planned on {record.get('model')}; no image generated.\n\n"
+    if record.get("state") == "review":
+        return f"- {record['id']}: awaiting review — {record.get('inspection', {}).get('summary', '')}\n\n"
+    if record.get("state") == "blocked":
+        return f"- {record['id']}: waiting for approved references.\n\n"
     if record.get("error"):
         return f"- {record['id']} ({kind}) failed: {record['error']}\n\n"
     return f"- {record['id']} ({kind}) — {record.get('model')} — `{record.get('path')}`\n\n"
 
 
-async def _stream_stills(package: StillPackage, images: Path, *, dry_run: bool):
+async def _stream_stills(package: StillPackage, images: Path, *, dry_run: bool, inspection_mode="manual", inspection_context=None):
     """Yield each still as it starts and again when the file is ready."""
     events: queue.Queue[dict] = queue.Queue()
     cancel = threading.Event()
@@ -72,6 +76,8 @@ async def _stream_stills(package: StillPackage, images: Path, *, dry_run: bool):
             package,
             images,
             dry_run=dry_run,
+            inspection_mode=inspection_mode,
+            inspection_context=inspection_context,
             on_record=on_record,
             on_start=on_start,
             cancel=cancel,
@@ -101,6 +107,9 @@ async def _stream_stills(package: StillPackage, images: Path, *, dry_run: bool):
         yield StudioEvent("failed", f"**Stills stopped:** {exc}\n\n")
         return
 
+    if manifest.get("status") == "paused":
+        yield StudioEvent("complete", "Stills paused for image review. Open Stills to see findings and approve changes.\n\n")
+        return
     failed = sum(bool(record.get("error")) for record in manifest["images"])
     if failed:
         yield StudioEvent("failed", f"{failed} still job(s) failed. Resume the saved jobs to retry.\n\n")
@@ -137,7 +146,10 @@ class ScreenwriterStudio:
         aspect_ratio: str | None = None,
         runtime_seconds: int | None = None,
         max_shots: int | None = None,
+        inspection_mode: str = "manual",
     ):
+        if inspection_mode not in {"manual", "auto"}:
+            raise ValueError("Inspection mode must be manual or auto.")
         if runtime_seconds is not None and not 6 <= runtime_seconds <= 720:
             raise ValueError("Runtime must be between 6 and 720 seconds.")
         if aspect_ratio is not None and aspect_ratio not in {"16:9", "9:16", "1:1"}:
@@ -224,7 +236,11 @@ class ScreenwriterStudio:
         validate_still_package(package, development, screenplay)
         images = folder / "images"
         yield StudioEvent("stills", "**Stills** is calling KIE.ai.\n\n")
-        async for line in _stream_stills(package, images, dry_run=dry_run):
+        async for line in _stream_stills(package, images, dry_run=dry_run,
+                inspection_mode=inspection_mode, inspection_context={
+                    "brief": idea, "development": development.model_dump(),
+                    "shots": [shot.model_dump() for shot in screenplay.shots],
+                }):
             yield line
 
     async def _develop(self, idea: str, lock_block: str) -> Development:
