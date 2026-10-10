@@ -1,4 +1,4 @@
-"""Compatibility launcher. Prefer `python -m screenwriter_studio`."""
+"""Run the studio with `python -m screenwriter_studio`."""
 
 from screenwriter_studio.cli import main
 

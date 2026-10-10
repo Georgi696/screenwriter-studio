@@ -1,14 +1,10 @@
 """Screenwriter — Fountain pages and a shot list from a locked development brief."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
 
 from agents import Agent
 
-from models import writer_chat
-from schemas import KieOutput, Screenplay
+from screenwriter_studio.models import writer_chat
+from screenwriter_studio.schemas import KieOutput, Screenplay
 
 INSTRUCTIONS = """\
 You are the screenwriter. Development has locked the logline, beats, runtime, ratio, and cast.

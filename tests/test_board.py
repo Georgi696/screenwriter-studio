@@ -1,11 +1,32 @@
 """Board moves. No API calls, no desk server."""
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-from events import StudioEvent
+from screenwriter_studio.events import StudioEvent
 
-from board import Board, apply_event, client_payload, scrub, token_glyph, token_station
+from screenwriter_studio.web.board import Board, apply_event, client_payload, scrub, token_glyph, token_station
+
+
+class SessionLocationTest(unittest.TestCase):
+    def test_legacy_snapshot_is_read_and_next_save_uses_state_directory(self):
+        from screenwriter_studio.web import board
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            old = root / "desk_status.json"
+            old.write_text(json.dumps({"brief": "Last train", "revision": 7}))
+            new = root / ".state/desk_status.json"
+            with patch.object(board, "PROJECT_ROOT", root), patch.object(board, "STATUS_PATH", new):
+                restored = board.board_from(board.load_status())
+                self.assertEqual(restored.brief, "Last train")
+                board.save_status(restored)
+                self.assertEqual(board.load_status()["revision"], 8)
+                self.assertTrue(new.is_file())
+                self.assertEqual(json.loads(old.read_text())["revision"], 7)
 
 
 class ScrubTest(unittest.TestCase):

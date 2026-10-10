@@ -1,117 +1,190 @@
-# Screenwriter studio
+# Screenwriter Studio
 
-A crew that does what the screenwriter skill does: lock a short, write it, send it back if it fails the checklist, then generate the stills.
+An AI-assisted pre-production desk for short films intended for social media.
+Turn an idea into a developed story, a reviewed screenplay, a timed shot list,
+and reference-linked character, location, and keyframe stills.
 
-**Pattern.** A fixed crew, plus an editor pass before any image call. The manager in `studio.py` is code, because the order does not change from piece to piece. Chat and stills both go to KIE.ai. The only credential is `KIE_API_KEY`.
+The current workflow ends at stills. Video generation, sound, editing, captions,
+and publishing are future stages.
 
-Every agent uses the same `KIE_API_KEY`. Chat models go to `POST https://api.kie.ai/codex/v1/responses`. Gemini chat models on KIE are chat-only and do not return the Agents SDK schema, so the crew uses Responses models that document `json_schema`. The model for each role is set in `models.py`.
-
-| Agent | Model | Delivers |
-|---|---|---|
-| Development | `gpt-6-astra` | Logline, beats, style bible |
-| Screenwriter | `gpt-6-astra` | Fountain pages, shot list |
-| Art director | `gpt-6-astra` | Still prompts and a `kind` per image |
-| Script editor | `gpt-6-1-sol` | Pass, or a list of fixes. Up to two rewrites |
-| Stills | per image, same key | Files in `productions/<slug>/images/` |
-
-The stills step picks the image model from `kind`: Nano Banana 2.1 (`nano-banana-2-1`) for characters, locations, and keyframes; GPT Image 2.5 Sunburst (`gpt-image-2-5-sunburst-text-to-image`) when text must be readable; Seedream 5 Pro (`seedream/5-pro-text-to-image`) for a photoreal product; GPT Image 2.5 Sunburst image-to-image (`gpt-image-2-5-sunburst-image-to-image`) for a single-image edit.
-
-## Run
-
-From this repository's root, install the tested dependencies with Python 3.12:
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-```
-
-Set `KIE_API_KEY` in the environment or in `.env` (see `.env.example`). Then:
-
-```bash
-.venv/bin/python run.py "a 30-second vertical short about a dented thermos" --runtime 30 --aspect 9:16 --max-shots 6
-.venv/bin/python run.py "idea" --pages-only
-.venv/bin/python run.py "idea" --dry-run
-.venv/bin/python run.py --ui
-```
-
-The desk binds only to `127.0.0.1`; it no longer opens an automatic public tunnel.
-Open the printed address on the same computer. Cross-origin requests and untrusted
-Host headers are rejected. Remote use requires a separately authenticated gateway.
-
-`--dry-run` plans stills but **still makes paid chat calls**. `--pages-only` also
-uses paid chat. To preview an already saved still plan without any model calls:
-
-```bash
-.venv/bin/python generate_stills.py ../productions/<slug>/images/jobs.json --out ../productions/<slug>/images --dry-run
-```
-
-## Production gates
-
-- The default keyframe limit is one per eight seconds, increased where necessary
-  to make the requested runtime feasible. `--max-shots` (also in the desk) overrides
-  it. This is a count limit, not a currency budget or fixed pacing rule.
-- Shots are 3–15 seconds; their durations must total the locked runtime exactly.
-  Shot numbers must be unique and sequential. These checks run in Python in
-  addition to the editorial review.
-- After two unsuccessful rewrites, the draft stays rejected. Shots are never
-  silently removed and a rejected draft is never automatically approved.
-- Every screenplay draft and editorial verdict is saved. The art plan is saved
-  before validation; invalid plans spend no image credits. Keyframes must cover
-  every shot, with IDs `s01`, `s02`, etc. Dependencies must exist and be acyclic.
-- The desk consumes structured events, so activity wording cannot change state.
-  A partially failed image batch is reported as failed, not complete.
-
-## Output and recovery
-
-Productions retain the existing layout: `productions/` is a sibling of this
-checkout (for example `../productions/` when running the commands above).
+## Workflow
 
 ```text
-productions/<slug>/
-├── 00_development.json
-├── drafts/                 # numbered screenplays and verdicts
-├── 01_screenplay.json       # structured shots, preserved for later editing
-├── 01_script.fountain
-├── 02_shots.md
-├── 03_still_plan.json
-├── verdict.json
-└── images/
-    ├── jobs.json
-    ├── manifest.json        # incrementally saved task IDs and results
-    ├── manifest.preview.json # created by dry-run only
-    └── s01.png
+Brief → Development → Screenplay + shot list → Script review → Art plan → Stills
+                              ↑                     │
+                              └── up to two rewrites┘
 ```
 
-Resume an interrupted or partially failed **still batch**:
+Python controls the sequence. Each creative agent returns a structured result,
+and the script must pass both editorial review and deterministic checks before
+image generation starts. A failed draft stays failed; the studio never deletes
+shots to manufacture an approval.
+
+The local browser desk provides a brief editor, live crew progress, a still
+viewer, an activity log, and a library of saved production documents.
+
+## Quick start
+
+Requires **Python 3.12** on **macOS or Linux**, plus a KIE.ai API key. Node.js is
+needed only for the Markdown-renderer test; the desk has no frontend build step.
+
+Run these commands from this repository's root:
 
 ```bash
-.venv/bin/python generate_stills.py ../productions/<slug>/images/jobs.json --out ../productions/<slug>/images --resume
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+cp -n .env.example .env
 ```
 
-Completed images are reused. Saved tasks are polled without resubmission;
-failed downloads reuse their saved result URL. Explicit provider failures can
-be submitted again by `--resume`, which may incur new charges. A changed plan
-requires a new output folder; legacy manifests without a plan fingerprint
-are not automatically resumed. The folder is locked while generating to prevent
-concurrent duplicate batches (macOS/Linux).
-
-If a submission response was lost before its task ID was recorded, resume stops
-that job rather than risking a duplicate charge. Check the provider's job history:
-if the job exists, record its `task_id` and set its manifest state to `polling`;
-remove that job's manifest entry only if the provider confirms no job was created.
-Leave the plan fingerprint unchanged.
-
-Cancelling the desk prevents further queued work once cancellation is observed.
-Already submitted provider jobs may continue and remain billable; their saved
-IDs can be resumed. Restarting the desk marks its old active run interrupted.
-Script/art stages do not yet resume automatically; their saved drafts and plans
-remain available for inspection.
-
-## Tests
+Set `KIE_API_KEY` in `.env`, then open the desk:
 
 ```bash
-.venv/bin/python -B -m unittest discover -v
+python -m screenwriter_studio --ui
 ```
 
-Tests use mocked providers and spend no generation credits. Desk tests bind an
-ephemeral loopback port; the Markdown-preview test also requires Node.js.
+Open the printed `http://127.0.0.1:…` address on the same computer. The desk is
+local-only and does not create a public tunnel.
+
+## Run a production
+
+A 30-second vertical short with a maximum of six shots:
+
+```bash
+python -m screenwriter_studio \
+  "A night-shift cleaner tries to return a violin before the last train leaves." \
+  --runtime 30 --aspect 9:16 --max-shots 6
+```
+
+| Option | Behaviour |
+| --- | --- |
+| `--ui` | Open the local browser desk. |
+| `--runtime 30` | Lock the total duration in seconds; supported range is 6–720. |
+| `--aspect 9:16` | Lock `9:16`, `16:9`, or `1:1`. |
+| `--max-shots 6` | Set the maximum shot/keyframe count. Also available in the desk. |
+| `--pages-only` | Stop after screenplay review, before art planning and stills. |
+| `--dry-run` | Develop and review the film, then save a still plan without generating images. |
+
+The default shot limit is one per eight seconds, adjusted when necessary to make
+the runtime feasible. It is a generation-count limit, not a fixed editing rhythm
+or a monetary budget. Character and location references are additional images.
+Shots can last 3–15 seconds and must add up exactly to the locked runtime.
+
+**Chat and image generation are paid calls.** Both `--pages-only` and the studio's
+`--dry-run` still use paid chat models. To check an existing still plan without
+any model calls, use the standalone image command described below.
+
+The original `python run.py …` and `python generate_stills.py …` commands remain
+available as compatibility launchers.
+
+## Saved work
+
+Productions stay in `../productions/`, beside this checkout. This preserves the
+location used by earlier versions. For example:
+
+```text
+workspace/
+├── screenwriter_studio/          # this repository
+└── productions/
+    └── last-train/
+        ├── 00_development.json
+        ├── drafts/              # each screenplay draft and review verdict
+        ├── 01_screenplay.json    # structured screenplay and shots
+        ├── 01_script.fountain
+        ├── 02_shots.md
+        ├── 03_still_plan.json
+        ├── verdict.json
+        └── images/
+            ├── jobs.json
+            ├── manifest.json    # saved task IDs, progress, results, and errors
+            ├── manifest.preview.json  # created by image dry-run only
+            └── s01.png
+```
+
+Later stages create their files only when reached. Keyframes use shot IDs such as
+`s01` and `s02`; reference dependencies determine their generation order.
+Incomplete coverage, duplicate IDs, and missing or circular references are
+rejected before image submission.
+
+The desk's session snapshot lives in `.state/desk_status.json` and is ignored by
+Git. An existing root-level `desk_status.json` can still be read; the next save
+uses `.state/`. Production files are not moved during this reorganisation.
+
+## Preview or resume stills
+
+Set the folder to an existing production:
+
+```bash
+images=../productions/last-train/images
+```
+
+Preview its saved image plan without spending credits:
+
+```bash
+python -m screenwriter_studio.images.generator "$images/jobs.json" \
+  --out "$images" --dry-run
+```
+
+Resume an interrupted or partially failed image batch:
+
+```bash
+python -m screenwriter_studio.images.generator "$images/jobs.json" \
+  --out "$images" --resume
+```
+
+Resume reuses completed images, polls saved tasks, and retries downloads from
+saved result URLs. Explicitly failed provider jobs may be submitted again and
+incur new charges. Script and art stages do not yet resume automatically.
+
+See [recovery and troubleshooting](docs/recovery.md) for changed plans, legacy
+manifests, cancellation, and uncertain submissions.
+
+## Project layout
+
+```text
+screenwriter_studio/
+├── __main__.py          # python -m screenwriter_studio
+├── cli.py               # command-line options and output
+├── studio.py            # workflow orchestration and editorial loop
+├── schemas.py           # structured creative handoffs
+├── budget.py            # shot and still count policies
+├── events.py            # typed workflow events
+├── paths.py             # shared workspace and session locations
+├── models.py            # KIE clients, credentials, and model routing
+├── playbooks.py         # writing guidance by production type
+├── crew/                # development, writer, editor, and art agents
+├── images/
+│   ├── catalog.py       # image capabilities and request constraints
+│   ├── service.py       # plan validation and workflow adapter
+│   └── generator.py     # submission, polling, checkpoints, and downloads
+└── web/
+    ├── server.py        # local HTTP routes and event streaming
+    ├── board.py         # desk state and persistence
+    ├── brief.py         # story suggestions
+    └── static/          # desk.html, desk.css, and desk.js
+
+tests/                   # offline regressions and shared fixtures
+docs/                    # operational guidance
+run.py                   # compatibility launcher
+generate_stills.py       # compatibility launcher
+requirements.txt         # tested dependency versions
+```
+
+Use package-qualified imports throughout the application. The crew defines
+creative behaviour; `studio.py` owns execution order. The image generator owns
+provider jobs and recovery. The web layer renders structured events rather than
+inferring state from activity text. Model IDs live in `models.py` and image
+capabilities in `images/catalog.py`.
+
+## Development checks
+
+With the virtual environment activated, run from the repository root:
+
+```bash
+python -B -m unittest discover -s tests -t . -v
+node --check screenwriter_studio/web/static/desk.js
+```
+
+Tests mock the generation providers and spend no credits. HTTP tests use a
+temporary session directory and an ephemeral loopback port. No KIE key is
+required to run the suite.

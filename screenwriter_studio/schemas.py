@@ -11,8 +11,6 @@ from typing import Any, Literal
 from agents import AgentOutputSchema
 from pydantic import BaseModel, Field
 
-from models import ART_MODEL, DEVELOPMENT_MODEL, EDITOR_MODEL, WRITER_MODEL
-
 StillKind = Literal[
     "character",
     "location",

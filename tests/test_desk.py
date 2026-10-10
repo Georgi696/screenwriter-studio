@@ -6,15 +6,31 @@ import re
 import socket
 import subprocess
 import threading
+import tempfile
+from unittest import mock
 import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
 
+from screenwriter_studio.paths import PROJECT_ROOT
+from screenwriter_studio.web.server import STATIC
+
 
 class DeskPageTest(unittest.TestCase):
     def setUp(self):
-        from desk import bind
+        from screenwriter_studio.web.server import bind, Hub
+        from screenwriter_studio.web.board import Board
+
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        for replacement in [
+            mock.patch("screenwriter_studio.web.board.STATUS_PATH", Path(state.name) / "desk_status.json"),
+            mock.patch("screenwriter_studio.web.server._board", Board()),
+            mock.patch("screenwriter_studio.web.server.hub", Hub()),
+        ]:
+            replacement.start()
+            self.addCleanup(replacement.stop)
 
         self.httpd = bind(0)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -46,9 +62,19 @@ class DeskPageTest(unittest.TestCase):
         self.assertIn('id="new-session"', page)
         self.assertIn('id="suggest"', page)
         self.assertIn("Suggest a story", page)
-        self.assertIn("Strengthen this", page)
-        self.assertIn("/api/brief/suggest", page)
-        self.assertNotIn("import gradio", Path("run.py").read_text(encoding="utf-8"))
+        self.assertIn("Strengthen this", self._get("/static/desk.js").decode())
+        self.assertIn("/api/brief/suggest", self._get("/static/desk.js").decode())
+        self.assertNotIn("import gradio", (PROJECT_ROOT / "run.py").read_text(encoding="utf-8"))
+
+    def test_static_assets_are_served_and_private_paths_are_not(self):
+        for name, mime in [("desk.css", "text/css"), ("desk.js", "text/javascript")]:
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/static/{name}", timeout=5) as response:
+                self.assertIn(mime, response.headers["Content-Type"])
+                self.assertEqual(response.read(), (STATIC / name).read_bytes())
+        for path in ["/static/../server.py", "/static/../../.state/desk_status.json"]:
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self._get(path)
+            self.assertEqual(caught.exception.code, 404)
 
     def test_status_has_no_key_and_no_image_paths(self):
         status = json.loads(self._get("/api/status").decode("utf-8"))
@@ -103,7 +129,7 @@ class DeskPageTest(unittest.TestCase):
             f"http://127.0.0.1:{self.port}/api/run", data=b"{}",
             headers={"Content-Type": "application/json", "Origin": "https://attacker.example"},
         )
-        with mock.patch("desk.start_crew") as start:
+        with mock.patch("screenwriter_studio.web.server.start_crew") as start:
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 urllib.request.urlopen(request, timeout=5)
             self.assertEqual(caught.exception.code, 403)
@@ -111,28 +137,28 @@ class DeskPageTest(unittest.TestCase):
 
     def test_run_passes_custom_shot_limit(self):
         from unittest import mock
-        with mock.patch("desk.start_crew") as start:
+        with mock.patch("screenwriter_studio.web.server.start_crew") as start:
             self._post_json("/api/run", {"idea": "test", "max_shots": 6})
             start.assert_called_once_with("test", False, False, 6)
 
     def test_invalid_shot_limit_does_not_start_run(self):
         from unittest import mock
         for value in [True, 0, 241, 1.5, "6"]:
-            with mock.patch("desk.start_crew") as start:
+            with mock.patch("screenwriter_studio.web.server.start_crew") as start:
                 with self.assertRaises(urllib.error.HTTPError) as caught:
                     self._post_json("/api/run", {"max_shots": value})
                 self.assertEqual(caught.exception.code, 400)
                 start.assert_not_called()
 
     def test_library_rejects_escape(self):
-        from desk import library_file
+        from screenwriter_studio.web.server import library_file
 
         self.assertIsNone(library_file("../.env"))
         self.assertIsNone(library_file("/etc/passwd"))
         self.assertIsNone(library_file("foo/../../.env"))
 
     def test_clear_log_keeps_the_session_and_new_session_resets_it(self):
-        from board import STATUS_PATH
+        from screenwriter_studio.web.board import STATUS_PATH
 
         original = STATUS_PATH.read_bytes() if STATUS_PATH.is_file() else None
         try:
@@ -173,7 +199,7 @@ class DeskPageTest(unittest.TestCase):
     def test_suggest_route_returns_the_brief_and_does_not_start_the_crew(self):
         from unittest import mock
 
-        with mock.patch("desk.suggest_brief", return_value="A 30-second 9:16 film about Nia.") as call:
+        with mock.patch("screenwriter_studio.web.server.suggest_brief", return_value="A 30-second 9:16 film about Nia.") as call:
             body = json.loads(self._post_json("/api/brief/suggest", {"idea": "nia and a ferry"}).decode("utf-8"))
         self.assertEqual(body["brief"], "A 30-second 9:16 film about Nia.")
         call.assert_called_once_with("nia and a ferry")
@@ -183,10 +209,10 @@ class DeskPageTest(unittest.TestCase):
     def test_suggest_route_reports_a_missing_key(self):
         from unittest import mock
 
-        from brief_suggest import BriefSuggestError
+        from screenwriter_studio.web.brief import BriefSuggestError
 
         message = "KIE_API_KEY is not set. Add it to `.env` in the repo root."
-        with mock.patch("desk.suggest_brief", side_effect=BriefSuggestError(message)):
+        with mock.patch("screenwriter_studio.web.server.suggest_brief", side_effect=BriefSuggestError(message)):
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 self._post_json("/api/brief/suggest", {"idea": ""})
         self.assertEqual(caught.exception.code, 503)
@@ -195,10 +221,10 @@ class DeskPageTest(unittest.TestCase):
 
     def test_restore_marks_abandoned_run_interrupted(self):
         from unittest import mock
-        import desk
+        import screenwriter_studio.web.server as desk
         original = desk._board
         try:
-            with mock.patch("desk.load_status", return_value={"running": True, "active": "writer"}):
+            with mock.patch("screenwriter_studio.web.server.load_status", return_value={"running": True, "active": "writer"}):
                 desk._restore()
             self.assertFalse(desk._board.running)
             self.assertIsNone(desk._board.active)
@@ -220,7 +246,7 @@ class DeskPageTest(unittest.TestCase):
 
 
 def _reader_renderer_js() -> str:
-    html = Path("desk.html").read_text(encoding="utf-8")
+    html = (STATIC / "desk.js").read_text(encoding="utf-8")
     start = html.index("function escapeText(")
     end = html.index("function highlightJson(")
     return html[start:end]

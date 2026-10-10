@@ -4,50 +4,12 @@ import asyncio
 import json
 import unittest
 
-from budget import CLIP_SECONDS, shot_budget
-from playbooks import PLAYBOOKS
-from schemas import Beat, CharacterLock, Development, Screenplay, Shot
-from studio import editor_user_message, writer_user_message
+from screenwriter_studio.budget import shot_budget
+from screenwriter_studio.playbooks import PLAYBOOKS
+from screenwriter_studio.studio import editor_user_message, writer_user_message
 
 
-def _piece() -> tuple[Development, Screenplay]:
-    development = Development(
-        title="Hall",
-        slug="hall",
-        job_type="narrative",
-        runtime_seconds=30,
-        aspect_ratio="16:9",
-        language="English",
-        tone="quiet",
-        audience="adults",
-        logline="When the light fails, Maya must cross the hall before dawn.",
-        beats=[
-            Beat(name="Hook", timecode="0:00", action="Maya waits at the door."),
-            Beat(name="Turn", timecode="0:10", action="The light goes out."),
-            Beat(name="Button", timecode="0:20", action="She reaches the far door."),
-        ],
-        look="one window",
-        palette="grey",
-        lighting="practical",
-        characters=[CharacterLock(name="Maya", description="A woman of 40 with short black hair.")],
-        locations=["hall"],
-        invented=[],
-    )
-    screenplay = Screenplay(
-        fountain="Title: Hall\n\nINT. HALL - NIGHT\n\nMaya waits.\n",
-        shots=[
-            Shot(
-                number=1,
-                duration_seconds=8,
-                framing="wide",
-                action="Maya waits at the door.",
-                audio="room tone",
-                notes="",
-            )
-        ],
-        notes=[],
-    )
-    return development, screenplay
+from tests.fixtures import _piece
 
 
 class WriterPromptTest(unittest.TestCase):
@@ -98,7 +60,7 @@ class EditorPromptTest(unittest.TestCase):
 
 class MissingKeyTest(unittest.TestCase):
     def test_run_stops_before_any_model_call(self):
-        import studio
+        import screenwriter_studio.studio as studio
 
         original = studio.load_kie_api_key
         studio.load_kie_api_key = lambda: ""

@@ -19,32 +19,29 @@ import asyncio
 import json
 import queue
 import re
-import sys
 import threading
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
 
 from agents import Runner, set_tracing_disabled
 from dotenv import load_dotenv
 
-from art_agent import art_agent
-from budget import shot_budget
-from events import StudioEvent
-from image_model_card import art_director_card
-from development_agent import development_agent
-from editor_agent import editor_agent
-from playbooks import PLAYBOOKS
-from models import load_kie_api_key
-from schemas import Development, Screenplay, ScriptVerdict, StillPackage
-from stills import validate_still_package, render_stills
-from writer_agent import writer_agent
+from screenwriter_studio.crew.art import art_agent
+from screenwriter_studio.budget import shot_budget
+from screenwriter_studio.events import StudioEvent
+from screenwriter_studio.images.catalog import art_director_card
+from screenwriter_studio.crew.development import development_agent
+from screenwriter_studio.crew.editor import editor_agent
+from screenwriter_studio.playbooks import PLAYBOOKS
+from screenwriter_studio.paths import WORKSPACE_ROOT
+from screenwriter_studio.models import load_kie_api_key
+from screenwriter_studio.schemas import Development, Screenplay, ScriptVerdict, StillPackage
+from screenwriter_studio.images.service import validate_still_package, render_stills
+from screenwriter_studio.crew.writer import writer_agent
 
 load_dotenv(override=True)
 set_tracing_disabled(True)
 
 MAX_REWRITES = 2
-REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _still_line(record: dict) -> str:
@@ -118,13 +115,13 @@ def _slug(value: str) -> str:
 
 
 def _project_dir(slug: str) -> Path:
-    base = REPO_ROOT / "productions" / _slug(slug)
+    base = WORKSPACE_ROOT / "productions" / _slug(slug)
     occupied = base.exists() and any(base.iterdir())
     if not occupied:
         return base
     number = 2
     while True:
-        candidate = REPO_ROOT / "productions" / f"{_slug(slug)}-{number}"
+        candidate = WORKSPACE_ROOT / "productions" / f"{_slug(slug)}-{number}"
         if not candidate.exists() or not any(candidate.iterdir()):
             return candidate
         number += 1
@@ -183,7 +180,7 @@ class ScreenwriterStudio:
             f"**{development.title}** · {development.job_type} · "
             f"{development.runtime_seconds}s · {development.aspect_ratio}\n\n"
             f"{development.logline}\n\n"
-            f"Folder: `{folder.relative_to(REPO_ROOT)}`\n\n", folder=str(folder.relative_to(REPO_ROOT))
+            f"Folder: `{folder.relative_to(WORKSPACE_ROOT)}`\n\n", folder=str(folder.relative_to(WORKSPACE_ROOT))
         )
 
         yield StudioEvent("writing", "**Screenwriter** is writing the pages.\n\n")
@@ -211,7 +208,7 @@ class ScreenwriterStudio:
         (folder / "01_script.fountain").write_text(screenplay.fountain.rstrip() + "\n", encoding="utf-8")
         (folder / "02_shots.md").write_text(_shots_markdown(screenplay), encoding="utf-8")
         (folder / "verdict.json").write_text(verdict.model_dump_json(indent=2) + "\n", encoding="utf-8")
-        yield StudioEvent("pages", f"Pages: `{(folder / '01_script.fountain').relative_to(REPO_ROOT)}`\n\n")
+        yield StudioEvent("pages", f"Pages: `{(folder / '01_script.fountain').relative_to(WORKSPACE_ROOT)}`\n\n")
 
         if not verdict.passed:
             yield StudioEvent("failed", "The editor did not pass the draft. Stills were not generated.\n\n")

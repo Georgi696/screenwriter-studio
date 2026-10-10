@@ -1,16 +1,12 @@
 """Stills desk — writes jobs.json and calls KIE.ai. No model choice here; the generator routes."""
 
 import json
-import sys
 from collections.abc import Callable
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from budget import select_stills
-from generate_stills import run_batch
-from schemas import Development, Screenplay, StillPackage
-from generate_stills import waves
+from screenwriter_studio.budget import select_stills
+from screenwriter_studio.images.generator import run_batch, waves
+from screenwriter_studio.schemas import Development, Screenplay, StillPackage
 
 
 def validate_still_package(package: StillPackage, development: Development, screenplay: Screenplay) -> None:

@@ -14,8 +14,8 @@ import json
 import re
 import secrets
 
-from budget import CLIP_SECONDS, shot_budget
-from models import DEVELOPMENT_MODEL, kie_responses_client, load_kie_api_key
+from screenwriter_studio.budget import CLIP_SECONDS, shot_budget
+from screenwriter_studio.models import DEVELOPMENT_MODEL, kie_responses_client, load_kie_api_key
 
 MISSING_KEY = (
     "API key is not set. Add KIE_API_KEY to `.env` in the repo root. "

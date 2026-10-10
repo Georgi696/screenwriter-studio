@@ -2,7 +2,7 @@
 
 import unittest
 
-from budget import select_stills, shot_budget
+from screenwriter_studio.budget import select_stills, shot_budget
 
 
 class ShotBudgetTest(unittest.TestCase):

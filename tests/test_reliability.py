@@ -8,11 +8,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
-import generate_stills as generator
-from schemas import Beat, Screenplay, ScriptVerdict, Shot, StillJob, StillPackage
-from stills import validate_still_package
-from studio import ScreenwriterStudio, _script_issues, _stream_stills, art_user_message, editor_user_message, writer_user_message
-from test_prompts import _piece
+import screenwriter_studio.images.generator as generator
+from screenwriter_studio.schemas import Beat, Screenplay, ScriptVerdict, StillJob, StillPackage
+from screenwriter_studio.images.service import validate_still_package
+from screenwriter_studio.studio import ScreenwriterStudio, _script_issues, _stream_stills, art_user_message, editor_user_message, writer_user_message
+from tests.fixtures import _piece
 
 
 class ScriptGateTest(unittest.TestCase):
@@ -27,7 +27,7 @@ class ScriptGateTest(unittest.TestCase):
         development, screenplay = _piece()
         result = Mock()
         result.final_output_as.return_value = ScriptVerdict(passed=True, issues=[])
-        with patch("studio.Runner.run", new=AsyncMock(return_value=result)):
+        with patch("screenwriter_studio.studio.Runner.run", new=AsyncMock(return_value=result)):
             verdict = asyncio.run(ScreenwriterStudio()._edit(development, screenplay))
         self.assertFalse(verdict.passed)
         self.assertTrue(verdict.issues)
@@ -44,7 +44,7 @@ class ScriptGateTest(unittest.TestCase):
         async def collect():
             return [event async for event in studio.run("hall")]
 
-        with tempfile.TemporaryDirectory() as temp, patch("studio.REPO_ROOT", Path(temp)), patch("studio.load_kie_api_key", return_value="fake"):
+        with tempfile.TemporaryDirectory() as temp, patch("screenwriter_studio.studio.WORKSPACE_ROOT", Path(temp)), patch("screenwriter_studio.studio.load_kie_api_key", return_value="fake"):
             events = asyncio.run(collect())
             folder = Path(temp) / "productions/hall"
             self.assertFalse(json.loads((folder / "verdict.json").read_text())["passed"])
@@ -79,7 +79,7 @@ class ScriptGateTest(unittest.TestCase):
     def test_invalid_input_stops_before_chat_calls(self):
         async def run():
             return [event async for event in ScreenwriterStudio().run("hall", runtime_seconds=30, max_shots=1)]
-        with patch("studio.Runner.run", new=AsyncMock()) as call:
+        with patch("screenwriter_studio.studio.Runner.run", new=AsyncMock()) as call:
             with self.assertRaises(ValueError):
                 asyncio.run(run())
             call.assert_not_awaited()
@@ -88,7 +88,7 @@ class ScriptGateTest(unittest.TestCase):
         package = StillPackage(aspect_ratio="16:9", resolution="1K", jobs=[])
         async def run():
             return [event async for event in _stream_stills(package, Path("unused"), dry_run=False)]
-        with patch("studio.render_stills", return_value={"images": [{"id": "s01", "error": "failed"}]}):
+        with patch("screenwriter_studio.studio.render_stills", return_value={"images": [{"id": "s01", "error": "failed"}]}):
             events = asyncio.run(run())
         self.assertEqual(events[-1].kind, "failed")
 
@@ -108,7 +108,7 @@ class ScriptGateTest(unittest.TestCase):
         async def collect():
             return [event async for event in studio.run("hall", max_shots=6, dry_run=True)]
 
-        with tempfile.TemporaryDirectory() as temp, patch("studio.REPO_ROOT", Path(temp)), patch("studio.load_kie_api_key", return_value="fake"), patch("studio.Runner.run", new=AsyncMock(return_value=result)), patch.object(generator, "_request") as request:
+        with tempfile.TemporaryDirectory() as temp, patch("screenwriter_studio.studio.WORKSPACE_ROOT", Path(temp)), patch("screenwriter_studio.studio.load_kie_api_key", return_value="fake"), patch("screenwriter_studio.studio.Runner.run", new=AsyncMock(return_value=result)), patch.object(generator, "_request") as request:
             events = asyncio.run(collect())
             request.assert_not_called()
             self.assertEqual(events[-1].kind, "complete")

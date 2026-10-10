@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
 
-from events import StudioEvent
+from screenwriter_studio.events import StudioEvent
 
-STATUS_PATH = Path(__file__).resolve().parent / "desk_status.json"
+from screenwriter_studio.paths import PROJECT_ROOT, STATE_DIR
+
+STATUS_PATH = STATE_DIR / "desk_status.json"
 
 _CREW = {"development", "writer", "editor", "art"}
 
@@ -171,10 +172,13 @@ def client_payload(board: Board, secret: str = "") -> dict:
 
 
 def load_status() -> dict | None:
-    if not STATUS_PATH.is_file():
+    path = STATUS_PATH
+    if not path.is_file():
+        path = PROJECT_ROOT / "desk_status.json"
+    if not path.is_file():
         return None
     try:
-        data = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
@@ -217,6 +221,7 @@ def save_status(board: Board, secret: str = "") -> None:
         "log": [scrub(line, secret) for line in board.log],
         "images": images,
     }
+    STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
     temporary = STATUS_PATH.with_suffix(".tmp")
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     temporary.replace(STATUS_PATH)

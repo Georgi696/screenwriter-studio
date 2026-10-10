@@ -6,7 +6,7 @@ from unittest import mock
 
 import httpx
 
-from brief_suggest import (
+from screenwriter_studio.web.brief import (
     BriefSuggestError,
     brief_from_body,
     brief_from_response,
@@ -15,7 +15,7 @@ from brief_suggest import (
     spark_for,
     suggest_brief,
 )
-from models import DEVELOPMENT_MODEL, kie_responses_client
+from screenwriter_studio.models import DEVELOPMENT_MODEL, kie_responses_client
 
 
 def _fake_response(text: str) -> dict:
@@ -121,7 +121,7 @@ class HttpTest(unittest.TestCase):
         captured: dict = {}
         fenced = '```json\n{"brief": "A 30-second 9:16 comedy. **Nia** wants the last ferry."}\n```'
         client = self._client(fenced, captured)
-        with mock.patch("brief_suggest.load_kie_api_key", return_value="unit-test-key"):
+        with mock.patch("screenwriter_studio.web.brief.load_kie_api_key", return_value="unit-test-key"):
             brief = suggest_brief("", client=client, salt="00000001")
         self.assertEqual(brief, "A 30-second 9:16 comedy. Nia wants the last ferry.")
         self.assertTrue(captured["url"].endswith("/responses"))
@@ -134,7 +134,7 @@ class HttpTest(unittest.TestCase):
     def test_mocked_http_keeps_the_users_note_in_the_prompt(self):
         captured: dict = {}
         client = self._client("A 60-second 16:9 film about the dented thermos.", captured)
-        with mock.patch("brief_suggest.load_kie_api_key", return_value="unit-test-key"):
+        with mock.patch("screenwriter_studio.web.brief.load_kie_api_key", return_value="unit-test-key"):
             brief = suggest_brief("  the dented thermos  ", client=client, salt="keep")
         self.assertIn("dented thermos", brief)
         self.assertIn("the dented thermos", captured["body"]["input"])
@@ -146,7 +146,7 @@ class HttpTest(unittest.TestCase):
 
         client = mock.Mock()
         client.responses.create = create
-        with mock.patch("brief_suggest.load_kie_api_key", return_value=""):
+        with mock.patch("screenwriter_studio.web.brief.load_kie_api_key", return_value=""):
             with self.assertRaises(BriefSuggestError) as caught:
                 suggest_brief("", client=client)
         self.assertIn("API key is not set", str(caught.exception))
@@ -154,7 +154,7 @@ class HttpTest(unittest.TestCase):
     def test_errors_drop_the_key(self):
         client = mock.Mock()
         client.responses.create.side_effect = RuntimeError("rejected unit-test-key")
-        with mock.patch("brief_suggest.load_kie_api_key", return_value="unit-test-key"):
+        with mock.patch("screenwriter_studio.web.brief.load_kie_api_key", return_value="unit-test-key"):
             with self.assertRaises(BriefSuggestError) as caught:
                 suggest_brief("a thermos", client=client)
         self.assertNotIn("unit-test-key", str(caught.exception))
@@ -239,7 +239,7 @@ class EventStreamHttpTest(unittest.TestCase):
 
     def test_event_stream_content_type_fills_the_brief(self):
         client = self._stream_client(_SSE_WITH_BRIEF)
-        with mock.patch("brief_suggest.load_kie_api_key", return_value="unit-test-key"):
+        with mock.patch("screenwriter_studio.web.brief.load_kie_api_key", return_value="unit-test-key"):
             brief = suggest_brief(
                 "ww3, action, military style explosions, gun fire, destruction, frankfurt, germany",
                 client=client,
@@ -251,7 +251,7 @@ class EventStreamHttpTest(unittest.TestCase):
 
     def test_event_stream_failure_is_not_a_brief(self):
         client = self._stream_client(_SSE_OUT_OF_ROOM)
-        with mock.patch("brief_suggest.load_kie_api_key", return_value="unit-test-key"):
+        with mock.patch("screenwriter_studio.web.brief.load_kie_api_key", return_value="unit-test-key"):
             with self.assertRaises(BriefSuggestError) as caught:
                 suggest_brief("frankfurt", client=client, salt="diag")
         self.assertIn("ran out of room", str(caught.exception))
@@ -279,7 +279,7 @@ class EventStreamHttpTest(unittest.TestCase):
             api_key="unit-test-key",
             http_client=httpx.Client(transport=httpx.MockTransport(handler)),
         )
-        with mock.patch("brief_suggest.load_kie_api_key", return_value="unit-test-key"):
+        with mock.patch("screenwriter_studio.web.brief.load_kie_api_key", return_value="unit-test-key"):
             with self.assertRaises(BriefSuggestError) as caught:
                 suggest_brief("frankfurt", client=client)
         self.assertIn("model overloaded", str(caught.exception))

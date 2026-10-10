@@ -1,18 +1,7 @@
-"""Game desk: one HTML file, the stdlib HTTP server, and server-sent events.
+"""Local production desk: static assets, HTTP routes, and server-sent events.
 
-Gradio rebuilt the whole board, and inlined each still as base64, on a timer.
-This process pushes a small JSON snapshot when the revision changes. The page
-patches the token, the station states, and the image slots, so motion is not
-restarted on every chunk.
-
-Chosen over Gradio, Phaser, Three, and a vendored UI kit because it adds no
-dependency and no build. The shape is the one in
-https://workwarrior.org/2026/04/22/the-browser-ui-no-npm-required/
-(ThreadingHTTPServer, a static page, SSE). The client only touches nodes that
-changed, which is the point of https://thryft.dev/ (patch the DOM, do not swap
-the document, or CSS animations restart). https://github.com/eumemic/morph is
-the same SSE-and-stable-id idea with View Transitions, and it is a runtime
-this one board does not need.
+The browser patches crew, activity, and image nodes from structured snapshots.
+No frontend build or third-party web framework is required.
 """
 
 from __future__ import annotations
@@ -29,8 +18,8 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from brief_suggest import BriefSuggestError, suggest_brief
-from board import (
+from screenwriter_studio.web.brief import BriefSuggestError, suggest_brief
+from screenwriter_studio.web.board import (
     Board,
     apply_event,
     board_from,
@@ -39,7 +28,7 @@ from board import (
     save_status,
     scrub,
 )
-from models import (
+from screenwriter_studio.models import (
     ART_MODEL,
     DEVELOPMENT_MODEL,
     EDIT_MODEL,
@@ -50,11 +39,13 @@ from models import (
     SEEDREAM_MODEL,
     WRITER_MODEL,
 )
-from studio import REPO_ROOT, ScreenwriterStudio
-from events import StudioEvent
+from screenwriter_studio.studio import ScreenwriterStudio
+from screenwriter_studio.paths import WORKSPACE_ROOT
+from screenwriter_studio.events import StudioEvent
 
-PAGE = Path(__file__).resolve().parent / "desk.html"
-PRODUCTIONS = REPO_ROOT / "productions"
+STATIC = Path(__file__).resolve().parent / "static"
+PAGE = STATIC / "desk.html"
+PRODUCTIONS = WORKSPACE_ROOT / "productions"
 DOCUMENT_SUFFIXES = {".json", ".md", ".fountain", ".txt"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 DEFAULT_IDEA = "A 30-second vertical film about someone who keeps a seat on the last bus."
@@ -170,7 +161,7 @@ def _production_roots(folder: str) -> list[Path]:
     if folder:
         candidate = Path(folder)
         if not candidate.is_absolute():
-            candidate = REPO_ROOT / folder
+            candidate = WORKSPACE_ROOT / folder
         if candidate.is_dir():
             roots.append(candidate.resolve())
     return roots
@@ -401,6 +392,12 @@ class DeskHandler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         if route in {"/", "/index.html"}:
             self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+            return
+        assets = {"/static/desk.css": ("desk.css", "text/css; charset=utf-8"),
+                  "/static/desk.js": ("desk.js", "text/javascript; charset=utf-8")}
+        if route in assets:
+            filename, content_type = assets[route]
+            self._send(200, (STATIC / filename).read_bytes(), content_type)
             return
         if route == "/api/status":
             self._json(200, public_view())

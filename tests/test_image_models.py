@@ -3,9 +3,9 @@
 import unittest
 from pathlib import Path
 
-from art_agent import art_agent
-from generate_stills import build_payload, choose, run_job
-from image_model_card import (
+from screenwriter_studio.crew.art import art_agent
+from screenwriter_studio.images.generator import build_payload, choose, run_job
+from screenwriter_studio.images.catalog import (
     CHECKED,
     EDIT_CARD,
     GPT_CARD,
@@ -13,48 +13,10 @@ from image_model_card import (
     SEEDREAM_CARD,
     art_director_card,
 )
-from schemas import Beat, CharacterLock, Development, Screenplay, Shot
-from studio import art_user_message
+from screenwriter_studio.studio import art_user_message
 
 
-def _piece() -> tuple[Development, Screenplay]:
-    development = Development(
-        title="Hall",
-        slug="hall",
-        job_type="narrative",
-        runtime_seconds=30,
-        aspect_ratio="16:9",
-        language="English",
-        tone="quiet",
-        audience="adults",
-        logline="When the light fails, Maya must cross the hall before dawn.",
-        beats=[
-            Beat(name="Hook", timecode="0:00", action="Maya waits at the door."),
-            Beat(name="Turn", timecode="0:10", action="The light goes out."),
-            Beat(name="Button", timecode="0:20", action="She reaches the far door."),
-        ],
-        look="natural",
-        palette="grey",
-        lighting="one window",
-        characters=[CharacterLock(name="Maya", description="A woman of 40 with short black hair.")],
-        locations=["hall"],
-        invented=[],
-    )
-    screenplay = Screenplay(
-        fountain="Title: Hall\n\nINT. HALL - NIGHT\n\nMaya waits.\n",
-        shots=[
-            Shot(
-                number=1,
-                duration_seconds=8,
-                framing="wide",
-                action="Maya waits at the door.",
-                audio="room tone",
-                notes="",
-            )
-        ],
-        notes=[],
-    )
-    return development, screenplay
+from tests.fixtures import _piece
 
 
 class ArtDirectorCardTest(unittest.TestCase):

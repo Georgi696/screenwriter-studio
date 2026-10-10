@@ -1,14 +1,10 @@
 """Script editor — checklist gate. Sends the draft back when a rule fails."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
 
 from agents import Agent
 
-from models import editor_chat
-from schemas import ScriptVerdict
+from screenwriter_studio.models import editor_chat
+from screenwriter_studio.schemas import ScriptVerdict
 
 INSTRUCTIONS = """\
 You are the script editor. You do not rewrite. You pass or you send the draft back.

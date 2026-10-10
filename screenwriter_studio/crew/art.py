@@ -1,15 +1,11 @@
 """Art director — still prompts and kinds. Does not call the image API."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
 
 from agents import Agent
 
-from image_model_card import art_director_card
-from models import art_chat
-from schemas import KieOutput, StillPackage
+from screenwriter_studio.images.catalog import art_director_card
+from screenwriter_studio.models import art_chat
+from screenwriter_studio.schemas import KieOutput, StillPackage
 
 INSTRUCTIONS = """\
 You are the art director. You write the still jobs. You do not generate images and you do not pick model names.

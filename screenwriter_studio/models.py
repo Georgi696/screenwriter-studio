@@ -19,7 +19,7 @@ from agents import OpenAIResponsesModel
 from dotenv import load_dotenv
 from openai import AsyncOpenAI, OpenAI
 
-from image_model_card import EDIT_MODEL, GPT_IMAGE_MODEL, NANO_BANANA_MODEL, SEEDREAM_MODEL
+from screenwriter_studio.images.catalog import EDIT_MODEL, GPT_IMAGE_MODEL, NANO_BANANA_MODEL, SEEDREAM_MODEL
 
 KIE_API_ROOT = "https://api.kie.ai"
 KIE_RESPONSES_BASE = f"{KIE_API_ROOT}/codex/v1"

@@ -1,14 +1,10 @@
 """Development — locks the logline, beats, and style bible before any pages exist."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
 
 from agents import Agent
 
-from models import development_chat
-from schemas import Development, KieOutput
+from screenwriter_studio.models import development_chat
+from screenwriter_studio.schemas import Development, KieOutput
 
 INSTRUCTIONS = """\
 You are the development lead on a short-form production. You do not write the screenplay.

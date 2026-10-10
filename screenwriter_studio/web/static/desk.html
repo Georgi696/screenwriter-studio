@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screenwriter Studio</title>
+<link rel="stylesheet" href="/static/desk.css">
+</head>
+<body data-view="brief">
+<aside>
+  <p class="eyebrow">Library</p>
+  <p class="aside-title">Productions</p>
+  <p class="aside-note">Scripts and stills on this computer.</p>
+  <label class="search">Search files
+    <input id="library-search" type="search" placeholder="Name or scene">
+  </label>
+  <button class="side" id="open-folder" type="button">Open folder</button>
+  <input id="folder-picker" type="file" hidden webkitdirectory multiple>
+  <div id="opened-folder"></div>
+  <nav id="library"></nav>
+</aside>
+<main>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Desk</p>
+      <h1>Screenwriter Studio</h1>
+    </div>
+    <div class="stats">
+      <span class="stat" id="stat-steps">0 of 5 done</span>
+      <span class="stat" id="stat-stills">0 stills</span>
+      <span class="stat" id="stat-loop">Editor loop ready</span>
+      <button class="ghost" id="new-session" type="button">New session</button>
+      <button class="ghost" id="toggle-library" type="button">Hide library</button>
+    </div>
+  </header>
+  <div class="tabs">
+    <div class="tablist" role="tablist" aria-label="Desk">
+      <button class="tab is-on" type="button" role="tab" data-tab="brief" aria-selected="true">Brief</button>
+      <button class="tab" type="button" role="tab" data-tab="pipeline" aria-selected="false">Pipeline <span class="count" id="count-pipeline">0</span></button>
+      <button class="tab" type="button" role="tab" data-tab="stills" aria-selected="false">Stills <span class="count" id="count-stills">0</span></button>
+      <button class="tab" type="button" role="tab" data-tab="activity" aria-selected="false">Activity <span class="count" id="count-activity">0</span></button>
+      <button class="tab" type="button" role="tab" data-tab="reader" aria-selected="false">Reader</button>
+      <span id="tab-glider"></span>
+    </div>
+    <button class="ghost is-on" id="follow" type="button">Follow crew</button>
+  </div>
+  <form id="brief-form">
+    <div class="panel-head">
+      <h2>Start with the brief.</h2>
+      <p class="lead">The crew develops the idea, writes the pages, and the editor can send them back twice. Stills are made last.</p>
+    </div>
+    <label for="idea">Brief</label>
+    <textarea id="idea" name="idea" placeholder="A 30-second vertical film about someone who keeps a seat on the last bus."></textarea>
+    <button class="help" id="help-idea" type="button">What is this?</button>
+    <p class="help-copy" id="help-idea-copy" hidden>This is the brief the crew turns into a logline, Fountain pages, and stills. Suggest a story writes one if the box is empty. Strengthen this rewrites a note you already typed. Example: a 30-second vertical film about someone who keeps a seat on the last bus.</p>
+    <label for="max-shots">Maximum shots (optional)</label>
+    <input id="max-shots" type="number" min="1" max="240" step="1" placeholder="Automatic">
+    <p class="lead">Set a higher limit for faster cuts. Each shot needs a keyframe; character and location references are additional images.</p>
+    <div class="options">
+      <div class="option">
+        <label class="check"><input id="pages" type="checkbox"> Pages only</label>
+        <button class="help" id="help-pages" type="button">What is this?</button>
+        <p class="help-copy" id="help-pages-copy" hidden>The script editor still reads the draft and can send it back. The run stops before any image is generated.</p>
+      </div>
+      <div class="option">
+        <label class="check"><input id="dry" type="checkbox"> Plan stills (chat charges apply)</label>
+        <button class="help" id="help-dry" type="button">What is this?</button>
+        <p class="help-copy" id="help-dry-copy" hidden>The crew still makes paid chat calls to develop, write, review, and plan the stills. No image credits are spent. This is not a free offline run.</p>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="go" id="run" type="submit">Start production</button>
+      <button class="ghost" id="suggest" type="button">Suggest a story</button>
+      <button class="ghost" id="sample" type="button">Use sample</button>
+      <button class="ghost" id="clear-brief" type="button">Clear</button>
+      <button class="ghost" id="copy-brief" type="button">Copy brief</button>
+    </div>
+  </form>
+  <div id="stage">
+    <canvas id="dust" hidden></canvas>
+    <div id="hud">
+      <div>
+        <p class="kicker">Status</p>
+        <p id="note">Waiting for a brief.</p>
+        <p id="folder" hidden></p>
+        <p id="plaque" hidden></p>
+      </div>
+      <span id="live" hidden><i></i>Live</span>
+    </div>
+    <div id="pips" aria-hidden="true">
+      <span class="pip"></span><span class="pip"></span><span class="pip"></span>
+      <span class="pip"></span><span class="pip"></span><span class="pip"></span>
+    </div>
+    <div id="track">
+      <div class="station is-idle" data-station="brief">
+        <div class="piece"><span class="mark">B</span><strong>Brief</strong><span class="model">The idea</span><span class="status">Waiting</span></div>
+      </div>
+      <div class="station is-idle" data-station="development">
+        <div class="piece"><span class="mark">1</span><strong>Development</strong><span class="model"></span><span class="status">Waiting</span></div>
+      </div>
+      <div class="station is-idle" data-station="writer">
+        <div class="piece"><span class="mark">2</span><strong>Screenwriter</strong><span class="model"></span><span class="status">Waiting</span></div>
+      </div>
+      <div class="station is-idle" data-station="editor">
+        <div class="piece"><span class="mark">3</span><strong>Script editor</strong><span class="model"></span><span class="status">Waiting</span></div>
+      </div>
+      <div class="station is-idle" data-station="art">
+        <div class="piece"><span class="mark">4</span><strong>Art director</strong><span class="model"></span><span class="status">Waiting</span></div>
+      </div>
+    </div>
+    <div id="token" aria-hidden="true"></div>
+    <div id="return-slot">
+      <div id="return-rail">
+        <div class="rail-line"></div>
+        <div id="return-token" aria-hidden="true"></div>
+      </div>
+      <p id="return-label">Editor loop, up to two rewrites</p>
+    </div>
+    <div id="landing" data-station="images"><span>Stills</span></div>
+    <p class="bay-label">Grouped by the model that made them.</p>
+    <div id="still-tools" class="toolbar">
+      <button class="chip is-on" type="button" data-filter="all">All</button>
+      <button class="chip" type="button" data-filter="character">Characters</button>
+      <button class="chip" type="button" data-filter="location">Locations</button>
+      <button class="chip" type="button" data-filter="keyframe">Keyframes</button>
+      <button class="chip" type="button" data-filter="waiting">Waiting</button>
+    </div>
+    <div id="image-bay"></div>
+  </div>
+  <div id="lower">
+    <section id="activity-pane">
+      <div class="toolbar">
+        <h2>Activity</h2>
+        <button class="ghost" id="copy-log" type="button">Copy log</button>
+        <button class="ghost" id="log-end" type="button">Latest</button>
+        <button class="ghost" id="clear-log" type="button">Clear</button>
+      </div>
+      <div id="log" aria-live="polite"></div>
+    </section>
+    <section id="reader-pane">
+      <div class="toolbar">
+        <h2 id="reader-title">Reader</h2>
+        <button class="ghost" id="preview-reader" type="button" hidden aria-pressed="false">Preview</button>
+        <button class="ghost" id="copy-reader" type="button">Copy text</button>
+      </div>
+      <p class="aside-note" id="reader-hint">Choose a document or an image from the library.</p>
+      <div id="reader-preview" hidden></div>
+      <pre id="reader-text" hidden></pre>
+      <img id="reader-image" alt="" hidden>
+    </section>
+  </div>
+</main>
+<p id="toast" hidden></p>
+<noscript>Turn on JavaScript to run the crew and open the library.</noscript>
+<script src="/static/desk.js" defer></script>
+</body>
+</html>
