@@ -1,5 +1,6 @@
 """The game desk serves HTML, not Gradio. No crew run, no image credits."""
 
+import io
 import json
 import os
 import re
@@ -15,6 +16,40 @@ from pathlib import Path
 
 from screenwriter_studio.paths import PROJECT_ROOT
 from screenwriter_studio.web.server import STATIC
+
+
+class DeskDisconnectTest(unittest.TestCase):
+    def test_reset_while_reading_request_is_quiet(self):
+        from screenwriter_studio.web.server import DeskHandler
+
+        request = mock.Mock()
+        request.makefile.return_value.readline.side_effect = ConnectionResetError(54, "Connection reset by peer")
+        handler = DeskHandler(request, ("127.0.0.1", 12345), mock.Mock())
+        self.assertTrue(handler.close_connection)
+        request.makefile.return_value.close.assert_called_once()
+
+    def test_disconnect_while_writing_response_is_quiet(self):
+        from screenwriter_studio.web.server import DeskHandler
+
+        for error in (BrokenPipeError, ConnectionResetError):
+            with self.subTest(error=error):
+                request = mock.Mock()
+                request.makefile.return_value = io.BytesIO(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+                request.sendall.side_effect = error()
+                server = mock.Mock(server_address=("127.0.0.1", 80))
+                handler = DeskHandler(request, ("127.0.0.1", 12345), server)
+                self.assertTrue(handler.close_connection)
+                request.sendall.assert_called_once()
+
+    def test_unexpected_errors_still_propagate(self):
+        from screenwriter_studio.web.server import DeskHandler
+
+        for error in (RuntimeError, OSError):
+            with self.subTest(error=error):
+                request = mock.Mock()
+                request.makefile.return_value.readline.side_effect = error("unexpected failure")
+                with self.assertRaises(error):
+                    DeskHandler(request, ("127.0.0.1", 12345), mock.Mock())
 
 
 class DeskPageTest(unittest.TestCase):

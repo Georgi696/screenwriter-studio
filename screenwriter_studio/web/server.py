@@ -381,6 +381,14 @@ class DeskHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
     server_version = "ScreenwriterDesk"
 
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except (ConnectionResetError, BrokenPipeError):
+            # Browsers can abandon a connection before sending a request or
+            # while receiving a response, including during page reloads.
+            self.close_connection = True
+
     def log_message(self, fmt: str, *args) -> None:
         return
 
