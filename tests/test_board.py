@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from screenwriter_studio.events import StudioEvent
 
-from screenwriter_studio.web.board import Board, apply_event, client_payload, scrub, token_glyph, token_station
+from screenwriter_studio.web.board import Board, apply_event, board_from, client_payload, scrub, token_glyph, token_station
 
 
 class SessionLocationTest(unittest.TestCase):
@@ -108,6 +108,20 @@ class TokenTest(unittest.TestCase):
         self.assertEqual(board.images[-1]["state"], "failed")
         apply_event(board, StudioEvent("image", "Preview", image={"id": "s02", "dry_run": True}))
         self.assertEqual(board.images[-1]["state"], "planned")
+
+    def test_greenlit_overrides_the_editor_and_moves_to_art(self):
+        board = Board()
+        apply_event(board, StudioEvent("pages", "Pages"))
+        apply_event(board, StudioEvent("failed", "The editor did not pass the draft. Stills were not generated."))
+        apply_event(board, StudioEvent("greenlit", "Proceeding with the saved draft."))
+        self.assertEqual(board.overridden, {"editor"})
+        self.assertNotIn("editor", board.done)
+        self.assertIn("writer", board.done)
+        self.assertEqual(token_station(board), "art")
+        self.assertEqual(token_glyph(board), "shot")
+        self.assertEqual(client_payload(board)["overridden"], ["editor"])
+        restored = board_from({"overridden": ["editor", "nope"]})
+        self.assertEqual(restored.overridden, {"editor"})
 
     def test_missing_key_stops_the_board(self):
         board = Board()

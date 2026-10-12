@@ -5,6 +5,7 @@ from agents import Agent
 
 from screenwriter_studio.images.catalog import art_director_card
 from screenwriter_studio.models import art_chat
+from screenwriter_studio.playbooks import CAMERA_COVERAGE
 from screenwriter_studio.schemas import KieOutput, StillPackage
 
 INSTRUCTIONS = """\
@@ -25,6 +26,9 @@ Use `product` or `packshot` only for a photoreal object with no cast reference. 
 Do not use `edit`. End frames, sheets, and variants are extra images, and this pass does not generate them.
 
 Prompts are prose, 60-180 words, in this order: medium, subject, action, setting, composition, light, palette, camera, constraints.
+Write the shot's camera placement into each keyframe prompt as a concrete angle, height, and distance. Character and location jobs stay neutral references; the coverage rule is for keyframes. max_keyframes is the shot budget.
+
+""" + CAMERA_COVERAGE + """
 Paste each character description verbatim into every keyframe that contains them.
 Put the aspect ratio in the prompt as well as in the aspect_ratio field.
 resolution is 1K unless the brief asked for a final.

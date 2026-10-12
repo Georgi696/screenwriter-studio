@@ -56,8 +56,9 @@ function setText(el, text) {
 function setMode(el, mode) {
   if (!el || el.dataset.mode === mode) return;
   el.dataset.mode = mode;
-  el.classList.remove("is-working", "is-done", "is-idle");
-  el.classList.add(mode === "working" ? "is-working" : mode === "done" ? "is-done" : "is-idle");
+  el.classList.remove("is-working", "is-done", "is-idle", "is-skipped");
+  const klass = { working: "is-working", done: "is-done", skipped: "is-skipped" }[mode] || "is-idle";
+  el.classList.add(klass);
 }
 
 function stationEl(id) {
@@ -332,6 +333,9 @@ function paintCrew(state) {
     if (state.active === id) {
       mode = "working";
       label = "Working";
+    } else if ((state.overridden || []).includes(id)) {
+      mode = "skipped";
+      label = "Overridden";
     } else if (done.has(id)) {
       mode = "done";
       label = "Done";
@@ -367,19 +371,39 @@ function moveToken(station, animate) {
   token.style.transform = "translate(" + Math.round(x) + "px, " + Math.round(y) + "px)";
 }
 
+function stationRow() {
+  return [...document.querySelectorAll("#track .station")];
+}
+
+function stationsStacked() {
+  const row = stationRow();
+  if (row.length < 2) return false;
+  const first = row[0].getBoundingClientRect();
+  const last = row[row.length - 1].getBoundingClientRect();
+  return last.top > first.bottom - 8;
+}
+
 function placeRail() {
   const slot = document.getElementById("return-slot");
-  const writer = stationEl("writer");
-  const editor = stationEl("editor");
   const rail = document.getElementById("return-rail");
-  if (!writer || !editor) return;
+  const row = stationRow();
+  if (!slot || !rail || row.length < 2) return;
   const slotBox = slot.getBoundingClientRect();
-  const writerBox = writer.getBoundingClientRect();
-  const editorBox = editor.getBoundingClientRect();
-  const width = editorBox.right - writerBox.left;
-  if (width < 20) return;
-  rail.style.marginLeft = Math.max(0, writerBox.left - slotBox.left) + "px";
+  const first = row[0].getBoundingClientRect();
+  const last = row[row.length - 1].getBoundingClientRect();
+  const width = Math.max(0, last.right - first.left);
+  if (width < 20 || first.width < 20) return;
+  rail.style.marginLeft = Math.max(0, first.left - slotBox.left) + "px";
   rail.style.width = width + "px";
+}
+
+function pointOnRail(id) {
+  const rail = document.getElementById("return-rail").getBoundingClientRect();
+  if (rail.width < 20) return 0;
+  if (stationsStacked()) return id === "writer" ? 0 : Math.max(0, rail.width - 8);
+  const box = stationEl(id).getBoundingClientRect();
+  const x = box.left + box.width / 2 - rail.left - 4;
+  return Math.max(0, Math.min(rail.width - 8, x));
 }
 
 function playReturn(instant) {
@@ -387,11 +411,11 @@ function playReturn(instant) {
   const token = document.getElementById("return-token");
   rail.classList.add("is-live");
   token.classList.add("no-anim");
-  token.style.left = instant ? "0px" : "calc(100% - 8px)";
+  token.style.left = (instant ? pointOnRail("writer") : pointOnRail("editor")) + "px";
   if (instant) return;
   void token.offsetWidth;
   token.classList.remove("no-anim");
-  token.style.left = "0px";
+  token.style.left = pointOnRail("writer") + "px";
 }
 
 function parkReturn() {
@@ -399,7 +423,15 @@ function parkReturn() {
   const token = document.getElementById("return-token");
   rail.classList.remove("is-live");
   token.classList.add("no-anim");
-  token.style.left = "calc(100% - 8px)";
+  token.style.left = pointOnRail("editor") + "px";
+}
+
+function paintProgress(state) {
+  const rail = document.getElementById("return-rail");
+  const total = stationRow().length || 1;
+  const done = document.querySelectorAll("#track .station.is-done").length;
+  rail.style.setProperty("--progress", String(done / total));
+  rail.classList.toggle("is-running", !!(state.running || state.active));
 }
 
 function columnFor(bay, model) {
@@ -505,7 +537,7 @@ async function reviewImage(data) {
 
 function renderInspection(frame, image, running) {
   let panel = frame.querySelector(".image-review");
-  const signature = JSON.stringify([image.inspection, image.review_id, image.state, running]);
+  const signature = JSON.stringify([image.inspection, image.review_id, image.repair_prompt, image.state, running]);
   if (panel && panel.dataset.signature === signature) return;
   if (panel) panel.remove();
   if (!image.inspection || !image.inspection.summary) return;
@@ -536,22 +568,42 @@ function renderInspection(frame, image, running) {
   }
   if (image.repair_unavailable) line(image.repair_unavailable);
   if (image.state === "review") {
-    for (const [action, label] of [["repair", "Approve these changes"], ["keep", "Keep this image"], ["inspect", "Inspect again (uses credits)"]]) {
-      if (action === "repair" && !image.repair_prompt) continue;
+    const actions = document.createElement("div");
+    actions.className = "review-actions";
+    const addChoice = (parent, action, label) => {
       const button = document.createElement("button"); button.type = "button";
       button.className = action === "repair" ? "go" : "ghost";
-      button.textContent = label; button.disabled = running;
+      button.dataset.action = action;
+      button.textContent = label;
+      button.disabled = Boolean(running) && action !== "keep";
       button.addEventListener("click", async () => {
         panel.querySelectorAll("button").forEach(b => { b.disabled = true; });
         await reviewImage({id: image.id, review_id: image.review_id, action});
-        panel.querySelectorAll("button").forEach(b => { b.disabled = Boolean(last && last.running); });
+        panel.querySelectorAll("button").forEach(b => {
+          const spends = b.dataset.action === "repair" || b.dataset.action === "inspect";
+          b.disabled = spends ? Boolean(last && last.running) : false;
+        });
         panel.dataset.signature = "";
         fetch("/api/status").then(r => r.json()).then(apply).catch(() => {});
       });
-      panel.appendChild(button);
-    }
+      parent.appendChild(button);
+    };
+    if (image.repair_prompt) addChoice(actions, "repair", "Approve these changes");
+    addChoice(actions, "keep", "Abort");
+    panel.appendChild(actions);
+    line("Abort keeps the current image and spends no credits.");
+    addChoice(panel, "inspect", "Inspect again (uses credits)");
   }
   frame.appendChild(panel);
+}
+
+function syncProceed(state) {
+  const button = document.getElementById("proceed");
+  const note = document.getElementById("proceed-note");
+  const show = !!state.can_proceed && !state.running;
+  button.hidden = !show;
+  note.hidden = !show;
+  button.disabled = !show;
 }
 
 function syncImages(state) {
@@ -635,7 +687,9 @@ function paint(state, prev) {
     document.getElementById("return-token").dataset.ready = "1";
   }
   syncImages(state);
+  syncProceed(state);
   placeRail();
+  paintProgress(state);
   const first = !prev;
   moveToken(state.station || "brief", !first);
   token.classList.toggle("is-hidden", !!state.returning);
@@ -1190,7 +1244,9 @@ document.getElementById("idea").addEventListener("keydown", (event) => {
 for (const name of ["idea", "pages", "dry"]) {
   document.getElementById("help-" + name).addEventListener("click", () => {
     const copy = document.getElementById("help-" + name + "-copy");
+    const button = document.getElementById("help-" + name);
     copy.hidden = !copy.hidden;
+    button.setAttribute("aria-expanded", copy.hidden ? "false" : "true");
   });
 }
 document.querySelectorAll(".tab").forEach((tab) => {
@@ -1339,3 +1395,32 @@ setInterval(() => {
 }, 1000);
 
 document.getElementById("resume-images").addEventListener("click", () => reviewImage({}));
+document.getElementById("proceed").addEventListener("click", proceedDraft);
+
+async function proceedDraft() {
+  const button = document.getElementById("proceed");
+  button.disabled = true;
+  follow = true;
+  document.getElementById("follow").classList.add("is-on");
+  setView("pipeline");
+  try {
+    const res = await fetch("/api/proceed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        dry_run: document.getElementById("dry").checked,
+        inspection_mode: document.getElementById("inspection-mode").value
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast(data.error || "Could not continue this draft.");
+      button.disabled = false;
+      return;
+    }
+    toast("Continuing with the saved draft");
+  } catch (error) {
+    toast("Could not continue this draft.");
+    button.disabled = false;
+  }
+}

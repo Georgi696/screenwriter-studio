@@ -3,11 +3,13 @@
 import argparse
 import asyncio
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+from screenwriter_studio.paths import WORKSPACE_ROOT
 from screenwriter_studio.studio import ScreenwriterStudio
 
 
@@ -21,6 +23,11 @@ def _parse() -> argparse.Namespace:
     parser.add_argument("--max-shots", type=int, default=None, help="Maximum shots/keyframes; default is one per 8 seconds")
     parser.add_argument("--inspection", choices=["manual", "auto"], default="manual", help="Inspect every still; manual approves repairs, auto allows up to two")
     parser.add_argument("--ui", action="store_true", help="Open the game desk")
+    parser.add_argument(
+        "--proceed",
+        metavar="FOLDER",
+        help="Continue a saved production into stills, including one the editor did not pass",
+    )
     return parser.parse_args()
 
 
@@ -38,12 +45,30 @@ async def _stream(idea: str, pages_only: bool, dry_run: bool, aspect: str | None
         print(chunk.text, end="", flush=True)
 
 
+async def _proceed(folder: str, dry_run: bool, inspection_mode: str) -> None:
+    path = Path(folder)
+    if not path.is_absolute():
+        path = WORKSPACE_ROOT / folder
+    studio = ScreenwriterStudio()
+    async for chunk in studio.proceed(path, dry_run=dry_run, inspection_mode=inspection_mode):
+        print(chunk.text, end="", flush=True)
+
+
 def main() -> int:
     args = _parse()
     if args.ui:
         from screenwriter_studio.web.server import serve
 
         serve()
+    elif args.proceed:
+        if args.idea:
+            print("Pass either an idea or --proceed, not both.", file=sys.stderr)
+            return 2
+        try:
+            asyncio.run(_proceed(args.proceed, args.dry_run, args.inspection))
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 2
     elif not args.idea:
         print("Pass an idea, or run with --ui.", file=sys.stderr)
         return 2

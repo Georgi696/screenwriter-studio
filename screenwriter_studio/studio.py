@@ -24,6 +24,7 @@ from pathlib import Path
 
 from agents import Runner, set_tracing_disabled
 from dotenv import load_dotenv
+from pydantic import ValidationError
 
 from screenwriter_studio.crew.art import art_agent
 from screenwriter_studio.budget import shot_budget
@@ -31,7 +32,7 @@ from screenwriter_studio.events import StudioEvent
 from screenwriter_studio.images.catalog import art_director_card
 from screenwriter_studio.crew.development import development_agent
 from screenwriter_studio.crew.editor import editor_agent
-from screenwriter_studio.playbooks import PLAYBOOKS
+from screenwriter_studio.playbooks import CAMERA_COVERAGE, PLAYBOOKS
 from screenwriter_studio.paths import WORKSPACE_ROOT
 from screenwriter_studio.models import load_kie_api_key
 from screenwriter_studio.schemas import Development, Screenplay, ScriptVerdict, StillPackage
@@ -116,6 +117,28 @@ async def _stream_stills(package: StillPackage, images: Path, *, dry_run: bool, 
         return
     label = "Dry run: models chosen, no images downloaded." if dry_run else "Stills are in `images/`."
     yield StudioEvent("complete", label + "\n\n")
+
+
+def _folder_label(folder: Path) -> str:
+    try:
+        return folder.resolve().relative_to(WORKSPACE_ROOT.resolve()).as_posix()
+    except ValueError:
+        return folder.as_posix()
+
+
+def _image_work_started(folder: Path) -> bool:
+    images = folder / "images"
+    return (images / "jobs.json").is_file() or (images / "manifest.json").is_file()
+
+
+def _load_saved(folder: Path) -> tuple[Development, Screenplay, ScriptVerdict]:
+    try:
+        development = Development.model_validate_json((folder / "00_development.json").read_text(encoding="utf-8"))
+        screenplay = Screenplay.model_validate_json((folder / "01_screenplay.json").read_text(encoding="utf-8"))
+        verdict = ScriptVerdict.model_validate_json((folder / "verdict.json").read_text(encoding="utf-8"))
+    except (OSError, ValidationError, json.JSONDecodeError) as exc:
+        raise ValueError("This folder does not have a saved development, screenplay, and verdict.") from exc
+    return development, screenplay, verdict
 
 
 def _slug(value: str) -> str:
@@ -223,24 +246,91 @@ class ScreenwriterStudio:
         yield StudioEvent("pages", f"Pages: `{(folder / '01_script.fountain').relative_to(WORKSPACE_ROOT)}`\n\n")
 
         if not verdict.passed:
-            yield StudioEvent("failed", "The editor did not pass the draft. Stills were not generated.\n\n")
+            yield StudioEvent(
+                "failed",
+                "The editor did not pass the draft. Use Proceed with this draft to continue into stills.\n\n",
+            )
             return
 
         if pages_only:
             yield StudioEvent("complete", "Pages only. Stills were not requested.\n\n")
             return
 
+        async for event in self._produce(
+            folder, development, screenplay, idea, dry_run=dry_run, inspection_mode=inspection_mode
+        ):
+            yield event
+
+    async def proceed(
+        self,
+        folder: Path,
+        *,
+        dry_run: bool = False,
+        inspection_mode: str = "manual",
+        brief: str = "",
+    ):
+        """Continue a saved production into art and stills.
+
+        The editor is not asked again. A failed verdict stays on disk, and
+        greenlight.json records that the saved draft was continued.
+        """
+        if inspection_mode not in {"manual", "auto"}:
+            raise ValueError("Inspection mode must be manual or auto.")
+        development, screenplay, verdict = _load_saved(folder)
+        if _image_work_started(folder):
+            raise ValueError("Image work is already saved. Resume it instead of starting again.")
+        if not load_kie_api_key():
+            yield StudioEvent(
+                "failed",
+                "KIE_API_KEY is not set. Add it to `.env` in the repo root. "
+                "Keys are created at https://kie.ai/api-key\n",
+            )
+            return
+
+        label = _folder_label(folder)
+        (folder / "greenlight.json").write_text(
+            json.dumps(
+                {
+                    "proceeded": True,
+                    "editor_passed": verdict.passed,
+                    "note": "Continued with the saved draft.",
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if verdict.passed:
+            yield StudioEvent("approved", "Continuing from the saved pages.\n\n", folder=label)
+        else:
+            yield StudioEvent(
+                "greenlit",
+                "Proceeding with the saved draft. The editor did not pass it.\n\n",
+                folder=label,
+            )
+        async for event in self._produce(
+            folder, development, screenplay, brief, dry_run=dry_run, inspection_mode=inspection_mode
+        ):
+            yield event
+
+    async def _produce(self, folder, development, screenplay, brief, *, dry_run, inspection_mode):
         yield StudioEvent("art", "**Art director** is writing the still jobs.\n\n")
         package = await self._art(development, screenplay)
         (folder / "03_still_plan.json").write_text(package.model_dump_json(indent=2) + "\n", encoding="utf-8")
         validate_still_package(package, development, screenplay)
         images = folder / "images"
         yield StudioEvent("stills", "**Stills** is calling KIE.ai.\n\n")
-        async for line in _stream_stills(package, images, dry_run=dry_run,
-                inspection_mode=inspection_mode, inspection_context={
-                    "brief": idea, "development": development.model_dump(),
-                    "shots": [shot.model_dump() for shot in screenplay.shots],
-                }):
+        async for line in _stream_stills(
+            package,
+            images,
+            dry_run=dry_run,
+            inspection_mode=inspection_mode,
+            inspection_context={
+                "brief": brief,
+                "development": development.model_dump(),
+                "shots": [shot.model_dump() for shot in screenplay.shots],
+            },
+        ):
             yield line
 
     async def _develop(self, idea: str, lock_block: str) -> Development:
@@ -316,6 +406,7 @@ def writer_user_message(
                 json.dumps(lock, separators=(",", ":")),
                 "Issues:\n" + "\n".join(f"- {issue}" for issue in issues),
                 "Previous screenplay and shots:\n" + previous.model_dump_json(),
+                CAMERA_COVERAGE,
             ]
         )
     return "\n\n".join(
@@ -325,9 +416,11 @@ def writer_user_message(
             (
                 f"Shot budget: {budget} shots maximum for {development.runtime_seconds} seconds "
                 f"(a configurable still-generation limit). Each shot becomes one generated image. "
-                f"Do not write more than {budget} shots."
+                f"Do not write more than {budget} shots. "
+                "Vary the cameras on those shots. Do not add shots to get a new angle."
             ),
             "Playbook:\n" + playbook,
+            CAMERA_COVERAGE,
         ]
     )
 
@@ -362,6 +455,10 @@ def art_user_message(development: Development, screenplay: Screenplay) -> str:
     }
     return (
         "Write the still jobs for this locked piece.\n\n"
+        "Write each keyframe's camera as a concrete angle, height, and distance. "
+        "Vary those cameras across the supplied shots. Do not add keyframes.\n\n"
+        + CAMERA_COVERAGE
+        + "\n"
         + art_director_card()
         + "\nLocked piece:\n"
         + json.dumps(payload, indent=2)

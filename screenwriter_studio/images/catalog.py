@@ -85,7 +85,8 @@ NANO_CARD = ImageModel(
     field_quality="",
     one_k_only=(),
     prompt_rules=(
-        "Write a specific prose description: subject, purpose, and camera. "
+        "Write a specific prose description: subject, purpose, and a concrete camera angle, height, and subject distance. "
+        "Cinematic or dynamic alone is not a camera. "
         "Google's templates also name the aspect ratio in the prompt; the aspect_ratio field sets the frame. "
         "There is no negative_prompt field: describe the scene that should appear. "
         "A complex scene can be ordered in steps. "

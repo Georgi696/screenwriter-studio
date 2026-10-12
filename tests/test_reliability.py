@@ -4,6 +4,7 @@ import asyncio
 import json
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
@@ -53,6 +54,64 @@ class ScriptGateTest(unittest.TestCase):
         self.assertEqual(studio._write.await_count, 3)
         studio._art.assert_not_awaited()
         self.assertEqual(events[-1].kind, "failed")
+
+    def test_proceed_continues_a_rejected_draft_without_another_rewrite(self):
+        development, screenplay = _piece()
+        package = StillPackage(aspect_ratio="16:9", resolution="1K", jobs=[
+            StillJob(id="s01", kind="keyframe", prompt="A quiet hallway.")
+        ])
+        studio = ScreenwriterStudio()
+        studio._develop = AsyncMock()
+        studio._write = AsyncMock()
+        studio._edit = AsyncMock()
+        studio._art = AsyncMock(return_value=package)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            folder = root / "productions" / "hall"
+            folder.mkdir(parents=True)
+            (folder / "00_development.json").write_text(development.model_dump_json(), encoding="utf-8")
+            (folder / "01_screenplay.json").write_text(screenplay.model_dump_json(), encoding="utf-8")
+            (folder / "verdict.json").write_text(
+                ScriptVerdict(passed=False, issues=["Shot 1 has two actions."]).model_dump_json(),
+                encoding="utf-8",
+            )
+
+            async def collect():
+                return [event async for event in studio.proceed(folder, dry_run=True, brief="hall")]
+
+            with patch("screenwriter_studio.studio.WORKSPACE_ROOT", root), patch("screenwriter_studio.studio.load_kie_api_key", return_value="fake"), patch("screenwriter_studio.studio.render_stills", return_value={"images": [], "status": "complete"}):
+                events = asyncio.run(collect())
+            saved = json.loads((folder / "verdict.json").read_text())
+            greenlight = json.loads((folder / "greenlight.json").read_text())
+        studio._develop.assert_not_awaited()
+        studio._write.assert_not_awaited()
+        studio._edit.assert_not_awaited()
+        studio._art.assert_awaited()
+        self.assertFalse(saved["passed"])
+        self.assertFalse(greenlight["editor_passed"])
+        self.assertEqual([event.kind for event in events], ["greenlit", "art", "stills", "complete"])
+
+    def test_proceed_refuses_a_folder_that_already_has_image_jobs(self):
+        development, screenplay = _piece()
+        studio = ScreenwriterStudio()
+        studio._art = AsyncMock()
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp) / "hall"
+            folder.mkdir()
+            (folder / "00_development.json").write_text(development.model_dump_json(), encoding="utf-8")
+            (folder / "01_screenplay.json").write_text(screenplay.model_dump_json(), encoding="utf-8")
+            (folder / "verdict.json").write_text(ScriptVerdict(passed=False, issues=["no"]).model_dump_json(), encoding="utf-8")
+            images = folder / "images"
+            images.mkdir()
+            (images / "jobs.json").write_text("{}", encoding="utf-8")
+
+            async def collect():
+                return [event async for event in studio.proceed(folder)]
+
+            with self.assertRaisesRegex(ValueError, "Resume"):
+                asyncio.run(collect())
+        studio._art.assert_not_awaited()
 
     def test_schema_can_represent_shortest_and_longest_runtime(self):
         development, screenplay = _piece()
@@ -242,6 +301,17 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(result["task_id"], "existing-child")
         self.assertEqual(result["state"], "polling")
         self.assertIn("reference", result["error"])
+
+    def test_stuck_provider_poll_cannot_hold_the_batch(self):
+        def hang(*args, **kwargs):
+            time.sleep(5)
+            return {"code": 200, "data": {"taskId": "task-1"}}
+
+        started = time.monotonic()
+        with patch.object(generator, "_request", side_effect=hang), patch.object(generator, "REQUEST_TIMEOUT", 0.2), patch.object(generator, "POLL_INTERVAL", 0):
+            result = generator.run_batch(self.spec, self.out)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertIn("timed out", result["images"][0]["error"].lower())
 
     def test_same_folder_cannot_run_concurrently(self):
         import fcntl

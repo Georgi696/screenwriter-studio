@@ -31,6 +31,7 @@ class Board:
     running: bool = False
     revision: int = 0
     log: list[str] = field(default_factory=list)
+    overridden: set[str] = field(default_factory=set)
 
 
 def scrub(text: str, secret: str) -> str:
@@ -65,12 +66,25 @@ def apply_event(board: Board, event: StudioEvent) -> None:
         "writing": ("writer", "dev-writer", {"development"}),
         "reviewing": ("editor", "writer-editor", {"writer"}),
         "approved": (None, "editor-art", {"writer", "editor"}),
-        "art": ("art", "editor-art", {"development", "writer", "editor"}),
+        "art": ("art", "editor-art", {"development", "writer"}),
         "stills": (None, "art-images", {"art"}),
     }
     if kind in stages:
         board.active, board.edge, done = stages[kind]
+        done = set(done)
+        if "editor" in board.overridden:
+            done.discard("editor")
         board.done.update(done)
+        board.returning = False
+        if kind == "approved":
+            board.overridden.discard("editor")
+            board.done.add("editor")
+    elif kind == "greenlit":
+        board.active = None
+        board.edge = "editor-art"
+        board.done.update({"development", "writer"})
+        board.done.discard("editor")
+        board.overridden.add("editor")
         board.returning = False
     elif kind in {"rejected", "rewriting"}:
         board.active = "writer" if kind == "rewriting" else "editor"
@@ -174,6 +188,7 @@ def client_payload(board: Board, secret: str = "") -> dict:
         "note": scrub(board.note, secret),
         "log": [scrub(line, secret) for line in board.log],
         "images": images,
+        "overridden": sorted(board.overridden),
         "station": token_station(board),
         "glyph": token_glyph(board),
     }
@@ -205,6 +220,7 @@ def board_from(data: dict) -> Board:
     board.running = bool(data.get("running"))
     board.revision = int(data.get("revision") or 0)
     board.log = [str(line) for line in (data.get("log") or [])]
+    board.overridden = {item for item in (data.get("overridden") or []) if item in _CREW}
     return board
 
 
@@ -228,6 +244,7 @@ def save_status(board: Board, secret: str = "") -> None:
         "note": scrub(board.note, secret),
         "log": [scrub(line, secret) for line in board.log],
         "images": images,
+        "overridden": sorted(board.overridden),
     }
     STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
     temporary = STATUS_PATH.with_suffix(".tmp")

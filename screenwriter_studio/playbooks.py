@@ -35,6 +35,16 @@ PLAYBOOKS: dict[str, str] = {
     ),
 }
 
+CAMERA_COVERAGE = """\
+Camera coverage, on the shots that already exist:
+- Consecutive shots must not share the same camera height, angle, and subject distance.
+- Use a real mix: wide, medium, and close; high, eye, and low; and, when the scene has more than three shots, at least one shot from a different axis (side, rear, overhead, or ground).
+- Action should feel like the camera moved: a low angle into a charge, a high angle on a collapse, a tight insert, an over-shoulder. Not a row of front-facing masters.
+- Name a concrete angle, height, and distance. Cinematic or dynamic alone is not a camera.
+- Vary the cameras on the shots that already exist. Do not add shots. Do not exceed the shot budget.
+- Camera variety is framing, not extra action inside the shot. A shot stays one continuous action.
+"""
+
 AI_VIDEO_RULES = """\
 AI video constraints:
 - One shot is one continuous action inside one clip. Budget one shot per 8 seconds: a 60s piece is at most 7 shots, a 30s spot at most 3. Do not fill the runtime with 3-second fragments.

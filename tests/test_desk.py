@@ -96,9 +96,16 @@ class DeskPageTest(unittest.TestCase):
         self.assertIn('id="clear-log"', page)
         self.assertIn('id="new-session"', page)
         self.assertIn('id="suggest"', page)
+        self.assertIn('id="proceed"', page)
+        self.assertIn("Proceed with this draft", page)
+        self.assertEqual(page.count('aria-label="What is this?"'), 3)
+        self.assertEqual(page.count(">?</button>"), 3)
+        self.assertNotIn(">What is this?</button>", page)
         self.assertIn("Suggest a story", page)
         self.assertIn("Strengthen this", self._get("/static/desk.js").decode())
-        self.assertIn("/api/brief/suggest", self._get("/static/desk.js").decode())
+        script = self._get("/static/desk.js").decode()
+        self.assertIn("/api/brief/suggest", script)
+        self.assertIn("/api/proceed", script)
         self.assertNotIn("import gradio", (PROJECT_ROOT / "run.py").read_text(encoding="utf-8"))
 
     def test_static_assets_are_served_and_private_paths_are_not(self):
@@ -116,6 +123,8 @@ class DeskPageTest(unittest.TestCase):
         self.assertIn("station", status)
         self.assertIn("note", status)
         self.assertIn("log", status)
+        self.assertIn("can_proceed", status)
+        self.assertFalse(status["can_proceed"])
         blob = json.dumps(status)
         key = os.environ.get("KIE_API_KEY", "")
         if key:
@@ -194,6 +203,54 @@ class DeskPageTest(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 self._post_json("/api/images/review", decision)
             self.assertEqual(caught.exception.code, 409)
+
+    def test_proceed_route_continues_saved_pages_and_rejects_a_blank_desk(self):
+        with mock.patch("screenwriter_studio.web.server.proceed_saved") as proceed:
+            self._post_json("/api/proceed", {"dry_run": True, "inspection_mode": "auto"})
+            proceed.assert_called_once_with(True, "auto")
+        for mode in ("off", None, [], True):
+            with mock.patch("screenwriter_studio.web.server.proceed_saved") as proceed:
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    self._post_json("/api/proceed", {"inspection_mode": mode})
+                self.assertEqual(caught.exception.code, 400)
+                proceed.assert_not_called()
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/proceed",
+            data=b"{}",
+            headers={"Content-Type": "application/json", "Origin": "https://attacker.example"},
+        )
+        with mock.patch("screenwriter_studio.web.server.proceed_saved") as proceed:
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(caught.exception.code, 403)
+            proceed.assert_not_called()
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self._post_json("/api/proceed", {})
+        self.assertEqual(caught.exception.code, 409)
+
+    def test_saved_pages_can_proceed_until_image_jobs_exist(self):
+        import screenwriter_studio.web.server as desk
+        from screenwriter_studio.schemas import ScriptVerdict
+        from tests.fixtures import _piece
+
+        development, screenplay = _piece()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            folder = root / "productions" / "hall"
+            folder.mkdir(parents=True)
+            (folder / "00_development.json").write_text(development.model_dump_json(), encoding="utf-8")
+            (folder / "01_screenplay.json").write_text(screenplay.model_dump_json(), encoding="utf-8")
+            (folder / "verdict.json").write_text(
+                ScriptVerdict(passed=False, issues=["Shot 1 has two actions."]).model_dump_json(),
+                encoding="utf-8",
+            )
+            with mock.patch.object(desk, "PRODUCTIONS", root / "productions"), mock.patch.object(desk, "WORKSPACE_ROOT", root):
+                self.assertTrue(desk.can_proceed("productions/hall"))
+                self.assertFalse(desk.can_proceed("../.env"))
+                images = folder / "images"
+                images.mkdir()
+                (images / "jobs.json").write_text("{}", encoding="utf-8")
+                self.assertFalse(desk.can_proceed("productions/hall"))
 
     def test_invalid_shot_limit_does_not_start_run(self):
         from unittest import mock
@@ -397,6 +454,243 @@ class MarkdownPreviewTest(unittest.TestCase):
                 "text": "",
             },
         )
+
+
+class ReviewCardAbortTest(unittest.TestCase):
+    def test_abort_sits_beside_approve_and_posts_keep(self):
+        script = (STATIC / "desk.js").read_text(encoding="utf-8")
+        css = (STATIC / "desk.css").read_text(encoding="utf-8")
+        self.assertNotIn("Keep this image", script)
+        self.assertNotRegex(css, r"\.model-col\.has-jobs \.ghost\s*\{")
+        self.assertRegex(css, r"\.model-col\.has-jobs \.frame\.ghost\s*\{[^}]*display:\s*none")
+        self.assertRegex(css, r"\.image-review \.review-actions \{[^}]*display:\s*flex;")
+        actions_rule = re.search(r"\.image-review \.review-actions button \{([^}]*)\}", css)
+        self.assertIsNotNone(actions_rule)
+        actions_body = actions_rule.group(1)
+        self.assertRegex(actions_body, r"display:\s*inline-flex")
+        self.assertNotRegex(actions_body, r"display\s*:\s*none")
+        self.assertIn("cursor: pointer", actions_body)
+        self.assertRegex(actions_body, r"padding:\s*[^;]+")
+        self.assertRegex(actions_body, r"width:\s*auto")
+        ghost_rule = re.search(r"\.image-review \.review-actions button\.ghost \{([^}]*)\}", css)
+        self.assertIsNotNone(ghost_rule)
+        self.assertRegex(ghost_rule.group(1), r"border:\s*1px solid")
+        self.assertNotRegex(ghost_rule.group(1), r"display\s*:\s*none")
+        self.assertNotRegex(ghost_rule.group(1), r"visibility\s*:\s*hidden")
+        for match in re.finditer(r"([^{}]+)\{([^{}]+)\}", css):
+            selector, decls = match.group(1), match.group(2)
+            if not re.search(r"display\s*:\s*none", decls):
+                continue
+            self.assertNotIn(".image-review", selector)
+            if ".ghost" in selector:
+                self.assertIn(".frame.ghost", re.sub(r"\s+", "", selector))
+        start = script.index("function renderInspection(")
+        end = script.index("\nfunction syncProceed(")
+        driver = script[start:end] + r"""
+const posted = [];
+let last = null;
+function reviewImage(data) { posted.push(data); return Promise.resolve(); }
+function fetch() { return Promise.resolve({ json() { return Promise.resolve({}); } }); }
+function apply() {}
+function showReaderImage() {}
+function setView() {}
+class El {
+  constructor(tag) {
+    this.tag = tag; this.className = ""; this.children = []; this.parent = null;
+    this.dataset = {}; this.disabled = false; this.listeners = {}; this._text = "";
+  }
+  set textContent(value) { this._text = String(value); }
+  get textContent() { return this._text; }
+  appendChild(child) { child.parent = this; this.children.push(child); return child; }
+  append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
+  remove() {
+    if (!this.parent) return;
+    this.parent.children = this.parent.children.filter((child) => child !== this);
+    this.parent = null;
+  }
+  addEventListener(type, fn) { (this.listeners[type] || (this.listeners[type] = [])).push(fn); }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  querySelectorAll(selector) {
+    const out = [];
+    const walk = (node) => {
+      for (const child of node.children) {
+        if (selector.startsWith(".") ? child.className.split(/\s+/).includes(selector.slice(1)) : child.tag === selector) out.push(child);
+        walk(child);
+      }
+    };
+    walk(this);
+    return out;
+  }
+}
+const document = { createElement(tag) { return new El(tag); } };
+function paragraphs(frame) {
+  const out = [];
+  const walk = (node) => { if (node.tag === "p") out.push(node.textContent); node.children.forEach(walk); };
+  walk(frame);
+  return out;
+}
+function row(frame) {
+  const actions = frame.querySelector(".review-actions");
+  if (!actions) return [];
+  return actions.children.map((button) => ({ text: button.textContent, className: button.className, action: button.dataset.action, disabled: button.disabled }));
+}
+function buttons(frame) {
+  return frame.querySelectorAll("button").map((button) => ({
+    tag: button.tag,
+    type: button.type || "",
+    text: button.textContent,
+    className: button.className,
+    action: button.dataset.action || "",
+  }));
+}
+async function click(frame, action) {
+  const button = frame.querySelectorAll("button").find((item) => item.dataset.action === action);
+  posted.length = 0;
+  for (const fn of button.listeners.click) await fn();
+  return posted.slice();
+}
+function marked(frame) {
+  return frame.querySelectorAll("button").filter((button) => button.dataset.action).map((button) => ({
+    text: button.textContent, action: button.dataset.action, disabled: button.disabled
+  }));
+}
+async function render(image, running) {
+  const frame = new El("figure");
+  renderInspection(frame, image, running);
+  return { row: row(frame), paragraphs: paragraphs(frame), buttons: buttons(frame), marked: marked(frame), frame };
+}
+const proposed = {
+  id: "actor", review_id: "version-token", state: "review", src: "/media?id=actor",
+  repair_prompt: "Edit the coat.", repair_model: "gpt-image-2-5-sunburst-image-to-image", repairs: 0,
+  inspection: { summary: "Wrong wardrobe", findings: ["Blue coat"], changes: ["Make it red"], preserve: ["Face"] }
+};
+const declined = { ...proposed, repair_prompt: "", repair_unavailable: "No executable repair is available." };
+const kept = { ...proposed, state: "done", decision: "human accepted" };
+const waiting = {
+  id: "plate", review_id: "version-token", state: "review", src: "/media?id=plate", repairs: 0,
+  inspection: { summary: "Inspection unavailable. Human review required.", findings: [], changes: [], preserve: [], uncertainty: "1 validation error" }
+};
+(async () => {
+  const proposedFrame = await render(proposed, false);
+  const declinedFrame = await render(declined, false);
+  const keptFrame = await render(kept, false);
+  const busy = await render(proposed, true);
+  const waitingFrame = await render(waiting, true);
+  process.stdout.write(JSON.stringify({
+    proposed: { row: proposedFrame.row, paragraphs: proposedFrame.paragraphs, buttons: proposedFrame.buttons, abort: await click(proposedFrame.frame, "keep"), approve: await click(proposedFrame.frame, "repair") },
+    declined: { row: declinedFrame.row, paragraphs: declinedFrame.paragraphs, buttons: declinedFrame.buttons, abort: await click(declinedFrame.frame, "keep") },
+    kept: keptFrame.row,
+    busy: busy.row,
+    waiting: { marked: waitingFrame.marked, abort: await click(waitingFrame.frame, "keep") },
+  }));
+})();
+"""
+        proc = subprocess.run(["node", "-"], input=driver, text=True, capture_output=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual(
+            result["proposed"]["row"],
+            [
+                {"text": "Approve these changes", "className": "go", "action": "repair", "disabled": False},
+                {"text": "Abort", "className": "ghost", "action": "keep", "disabled": False},
+            ],
+        )
+        self.assertIn("Approval spends credits on one repair and its inspection.", " ".join(result["proposed"]["paragraphs"]))
+        helper = "Abort keeps the current image and spends no credits."
+        for label in ("proposed", "declined"):
+            card = result[label]
+            self.assertIn(helper, card["paragraphs"])
+            abort = [button for button in card["buttons"] if button["text"] == "Abort"]
+            self.assertEqual(
+                abort,
+                [{"tag": "button", "type": "button", "text": "Abort", "className": "ghost", "action": "keep"}],
+                f"{label} rendered the helper sentence without an Abort button",
+            )
+        self.assertEqual(result["proposed"]["abort"], [{"id": "actor", "review_id": "version-token", "action": "keep"}])
+        self.assertEqual(result["proposed"]["approve"], [{"id": "actor", "review_id": "version-token", "action": "repair"}])
+        self.assertEqual(result["declined"]["row"], [{"text": "Abort", "className": "ghost", "action": "keep", "disabled": False}])
+        self.assertNotIn("Approval spends credits", " ".join(result["declined"]["paragraphs"]))
+        self.assertIn("Abort keeps the current image and spends no credits.", result["declined"]["paragraphs"])
+        self.assertEqual(result["declined"]["abort"], [{"id": "actor", "review_id": "version-token", "action": "keep"}])
+        self.assertEqual(result["kept"], [])
+        self.assertEqual(
+            result["busy"],
+            [
+                {"text": "Approve these changes", "className": "go", "action": "repair", "disabled": True},
+                {"text": "Abort", "className": "ghost", "action": "keep", "disabled": False},
+            ],
+        )
+        self.assertEqual(
+            result["waiting"]["marked"],
+            [
+                {"text": "Abort", "action": "keep", "disabled": False},
+                {"text": "Inspect again (uses credits)", "action": "inspect", "disabled": True},
+            ],
+        )
+        self.assertEqual(result["waiting"]["abort"], [{"id": "plate", "review_id": "version-token", "action": "keep"}])
+
+
+class KeepWhileRunningTest(unittest.TestCase):
+    def test_abort_keeps_saved_review_without_a_provider_call(self):
+        import screenwriter_studio.web.server as desk
+        from screenwriter_studio.web.board import Board
+
+        png = b"\x89PNG\r\n\x1a\n" + b"saved"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            images = root / "productions" / "hall" / "images"
+            images.mkdir(parents=True)
+            plate = images / "plate.png"
+            plate.write_bytes(png)
+            spec = {
+                "inspection": {"mode": "manual"},
+                "aspect_ratio": "16:9",
+                "resolution": "1K",
+                "jobs": [
+                    {"id": "plate", "kind": "location", "prompt": "A street"},
+                    {"id": "shot", "kind": "keyframe", "prompt": "The street", "references": ["plate"]},
+                ],
+            }
+            (images / "jobs.json").write_text(json.dumps(spec), encoding="utf-8")
+            manifest = {
+                "images": [
+                    {
+                        "id": "plate",
+                        "kind": "location",
+                        "state": "review",
+                        "review_id": "version-token",
+                        "path": str(plate),
+                        "url": "https://example.test/plate.png",
+                        "inspection": {
+                            "verdict": "review",
+                            "summary": "Inspection unavailable. Human review required.",
+                            "findings": [],
+                            "changes": [],
+                            "preserve": [],
+                            "uncertainty": "1 validation error for Inspection. Uncertain images or proposed changes require review.",
+                        },
+                    },
+                    {"id": "shot", "kind": "keyframe", "state": "blocked", "blocked_by": ["plate"]},
+                ]
+            }
+            (images / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            board = Board()
+            board.running = True
+            board.folder = "productions/hall"
+            board.note = "Continuing saved image work."
+            board.images = [dict(image) for image in manifest["images"]]
+            with tempfile.TemporaryDirectory() as state, mock.patch.object(desk, "_board", board), mock.patch.object(desk, "PRODUCTIONS", root / "productions"), mock.patch.object(desk, "WORKSPACE_ROOT", root), mock.patch("screenwriter_studio.web.board.STATUS_PATH", Path(state) / "desk_status.json"), mock.patch("screenwriter_studio.web.server.run_batch") as batch:
+                desk.resume_images({"id": "plate", "review_id": "version-token", "action": "keep"})
+                batch.assert_not_called()
+            saved = json.loads((images / "manifest.json").read_text(encoding="utf-8"))
+            kept = saved["images"][0]
+            self.assertEqual(kept["state"], "done")
+            self.assertEqual(kept["decision"], "human accepted")
+            self.assertEqual(plate.read_bytes(), png)
+            self.assertEqual(saved["images"][1]["state"], "planned")
+            self.assertNotIn("blocked_by", saved["images"][1])
+            self.assertFalse(board.running)
+            self.assertEqual(board.images[0]["state"], "done")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 import json
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -72,12 +73,58 @@ class ReviewTest(unittest.TestCase):
             self.run_batch(resume=True, decision=self.decision(actor, 'repair'))
         self.assertEqual(self.generate.call_count, before)
 
+    def test_resume_of_broken_last_image_returns_and_keep_needs_no_provider(self):
+        self.spec["jobs"] = [self.spec["jobs"][0]]
+        self.inspect.return_value = {**ACCEPT, "uncertainty": "visible through the smoke."}
+        first = self.run_batch()
+        image = first["images"][0]
+        self.assertEqual(image["state"], "review")
+        self.assertEqual(image["inspection"]["summary"], "Inspection unavailable. Human review required.")
+        self.assertIn("require review", image["inspection"]["uncertainty"])
+        self.assertTrue(Path(image["path"]).is_file())
+        original = Path(image["path"]).read_bytes()
+        gate = threading.Event()
+
+        def block(*args, **kwargs):
+            gate.wait(5)
+            raise AssertionError("resume waited on a provider while review was already saved")
+
+        self.inspect.side_effect = block
+        self.generate.side_effect = block
+        started = time.monotonic()
+        paused = self.run_batch(resume=True)
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(paused["status"], "paused")
+        self.assertEqual(paused["images"][0]["state"], "review")
+        self.assertEqual(Path(image["path"]).read_bytes(), original)
+        manifest = json.loads((self.out / "manifest.json").read_text(encoding="utf-8"))
+        manifest["images"][0]["review_id"] = ""
+        (self.out / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        self.generate.side_effect = None
+        self.inspect.side_effect = None
+        self.inspect.return_value = ACCEPT
+        before = self.generate.call_count
+        kept = self.run_batch(resume=True, decision={"id": image["id"], "review_id": "", "action": "keep"})
+        self.assertEqual(self.generate.call_count, before)
+        self.assertEqual(kept["status"], "complete")
+        self.assertEqual(kept["images"][0]["state"], "done")
+        self.assertEqual(kept["images"][0]["decision"], "human accepted")
+        self.assertEqual(Path(image["path"]).read_bytes(), original)
+
     def test_keep_unblocks_without_repair(self):
         actor = self.run_batch()['images'][0]
+        original = Path(actor['path']).read_bytes()
+        repair_prompt = actor['repair_job']['prompt']
         self.inspect.return_value = ACCEPT
         result = self.run_batch(resume=True, decision=self.decision(actor, 'keep'))
+        kept = result['images'][0]
         self.assertEqual(self.generate.call_count, 2)
-        self.assertEqual(result['images'][0]['decision'], 'human accepted')
+        self.assertEqual(kept['decision'], 'human accepted')
+        self.assertEqual(kept['state'], 'done')
+        self.assertEqual(kept.get('repairs', 0), 0)
+        self.assertEqual(Path(actor['path']).read_bytes(), original)
+        prompts = [call.args[1]['input']['prompt'] for call in self.generate.call_args_list]
+        self.assertNotIn(repair_prompt, prompts)
         self.assertEqual(result['images'][1]['references'], [actor['url']])
 
     def test_auto_repairs_stop_at_two_and_do_not_unblock_references(self):

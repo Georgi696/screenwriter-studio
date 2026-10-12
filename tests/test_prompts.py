@@ -5,8 +5,10 @@ import json
 import unittest
 
 from screenwriter_studio.budget import shot_budget
-from screenwriter_studio.playbooks import PLAYBOOKS
-from screenwriter_studio.studio import editor_user_message, writer_user_message
+from screenwriter_studio.crew.art import art_agent
+from screenwriter_studio.crew.writer import writer_agent
+from screenwriter_studio.playbooks import CAMERA_COVERAGE, PLAYBOOKS
+from screenwriter_studio.studio import art_user_message, editor_user_message, writer_user_message
 
 
 from tests.fixtures import _piece
@@ -23,9 +25,11 @@ class WriterPromptTest(unittest.TestCase):
                 (
                     f"Shot budget: {budget} shots maximum for {development.runtime_seconds} seconds "
                     f"(a configurable still-generation limit). Each shot becomes one generated image. "
-                    f"Do not write more than {budget} shots."
+                    f"Do not write more than {budget} shots. "
+                    "Vary the cameras on those shots. Do not add shots to get a new angle."
                 ),
                 "Playbook:\n" + PLAYBOOKS["narrative"],
+                CAMERA_COVERAGE,
             ]
         )
         self.assertEqual(writer_user_message(development, None, None), expected)
@@ -42,7 +46,36 @@ class WriterPromptTest(unittest.TestCase):
         self.assertIn("Maya waits.", message)
         self.assertIn('"shot_budget":3', message)
         self.assertIn(development.logline, message)
+        self.assertIn("Consecutive shots must not share the same camera height, angle, and subject distance.", message)
         self.assertLess(len(message), len(writer_user_message(development, None, None)))
+
+
+class CameraCoverageTest(unittest.TestCase):
+    def test_writer_and_art_prompts_require_angle_variety(self):
+        development, screenplay = _piece()
+        required = (
+            "Consecutive shots must not share the same camera height, angle, and subject distance.",
+            "wide, medium, and close",
+            "high, eye, and low",
+            "different axis (side, rear, overhead, or ground)",
+            "a low angle into a charge, a high angle on a collapse, a tight insert, an over-shoulder",
+            "Cinematic or dynamic alone is not a camera.",
+            "Do not add shots.",
+            "Camera variety is framing, not extra action inside the shot.",
+        )
+        messages = (
+            writer_agent.instructions,
+            writer_user_message(development, None, None),
+            writer_user_message(development, screenplay, ["Hook is late."]),
+            art_agent.instructions,
+            art_user_message(development, screenplay),
+        )
+        for message in messages:
+            for phrase in required:
+                self.assertIn(phrase, message)
+        art_message = art_user_message(development, screenplay)
+        self.assertIn("concrete camera angle, height, and subject distance", art_message)
+        self.assertIn("Do not add keyframes.", art_message)
 
 
 class EditorPromptTest(unittest.TestCase):

@@ -8,7 +8,7 @@ from typing import Literal
 class StudioEvent:
     kind: Literal[
         "development", "developed", "writing", "reviewing", "approved",
-        "rejected", "rewriting", "pages", "art", "stills", "image",
+        "rejected", "rewriting", "greenlit", "pages", "art", "stills", "image",
         "complete", "failed",
     ]
     text: str

@@ -63,7 +63,9 @@ class Development(BaseModel):
 class Shot(BaseModel):
     number: int = Field(ge=1)
     duration_seconds: int = Field(ge=3, le=15)
-    framing: str
+    framing: str = Field(
+        description="Concrete camera height (high, eye, or low), angle, and subject distance (wide, medium, or close). Consecutive shots must not share the same height, angle, and distance"
+    )
     action: str = Field(description="One continuous action. No cuts inside the shot")
     audio: str
     notes: str = Field(description="Continuity, lip-sync, or prop note. Empty string if none")
@@ -85,7 +87,9 @@ class ScriptVerdict(BaseModel):
 class StillJob(BaseModel):
     id: str = Field(description="Short lowercase id, used as the filename")
     kind: StillKind
-    prompt: str
+    prompt: str = Field(
+        description="Prose still prompt. Each keyframe names a concrete camera angle, height, and subject distance, and consecutive keyframes must not share that placement"
+    )
     references: list[str] = Field(
         default_factory=list,
         description="Ids of earlier stills this image must match, or empty",

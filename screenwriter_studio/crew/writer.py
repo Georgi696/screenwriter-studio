@@ -4,6 +4,7 @@
 from agents import Agent
 
 from screenwriter_studio.models import writer_chat
+from screenwriter_studio.playbooks import CAMERA_COVERAGE
 from screenwriter_studio.schemas import KieOutput, Screenplay
 
 INSTRUCTIONS = """\
@@ -33,7 +34,9 @@ Shot list, one row per clip:
 - Fragile business (hands exchanging objects, typing, pouring) happens off-screen; show the result.
 - One speaker per shot. American English unless development locked another language.
 - Notes carry continuity: which character, which wardrobe, what the next shot must match.
+- The framing column is the camera. Follow the coverage rule below. Do not add a shot to get a new angle.
 
+""" + CAMERA_COVERAGE + """
 If you are given a rejected draft and a list of issues, rewrite the whole piece so those issues are gone.
 Do not mention the notes inside the Fountain text.
 `notes` is at most two items: one default you still had to invent, or one alternative worth trying.

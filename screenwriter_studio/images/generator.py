@@ -55,6 +55,7 @@ CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
 POLL_URL = "https://api.kie.ai/api/v1/jobs/recordInfo"
 POLL_INTERVAL = 4
 MAX_WAIT = 180
+REQUEST_TIMEOUT = 60
 
 POSTER_KINDS = {"poster", "title", "logo", "ui", "text"}
 PRODUCT_KINDS = {"product", "packshot"}
@@ -118,6 +119,26 @@ def build_payload(model: str, prompt: str, aspect: str, resolution: str, ref_url
     return {"model": card.model_id, "input": body}
 
 
+def _within(seconds: float, fn):
+    """Bound a provider call. A socket that ignores its timeout must not hold the batch."""
+    box: dict = {}
+
+    def run() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as exc:
+            box["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        raise TimeoutError(f"Provider request timed out after {seconds}s.")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
 def _request(url: str, api_key: str, payload: dict | None = None, query: dict | None = None) -> dict:
     if query:
         url = url + "?" + urllib.parse.urlencode(query)
@@ -145,7 +166,7 @@ def generate_one(api_key: str, payload: dict, *, task_id: str | None = None,
     if cancel is not None and cancel.is_set():
         raise RuntimeError("Generation cancelled.")
     if task_id is None:
-        created = _request(CREATE_URL, api_key, payload=payload)
+        created = _within(REQUEST_TIMEOUT, lambda: _request(CREATE_URL, api_key, payload=payload))
         if created.get("code") != 200:
             raise JobFailed(f"submit rejected: {created.get('msg') or created}")
         task_id = (created.get("data") or {}).get("taskId")
@@ -161,7 +182,7 @@ def generate_one(api_key: str, payload: dict, *, task_id: str | None = None,
                 raise RuntimeError("Generation cancelled; provider task saved for resume.")
         else:
             time.sleep(POLL_INTERVAL)
-        polled = _request(POLL_URL, api_key, query={"taskId": task_id})
+        polled = _within(REQUEST_TIMEOUT, lambda: _request(POLL_URL, api_key, query={"taskId": task_id}))
         if polled.get("code") != 200:
             raise RuntimeError(f"Polling task {task_id} failed: {polled.get('msg')}")
         data = polled.get("data") or {}
@@ -196,11 +217,15 @@ def _first_url(result_json) -> str:
 
 
 def download(url: str, dest: Path) -> None:
-    req = urllib.request.Request(url, headers={"User-Agent": "screenwriter-stills/1.0"})
-    with urllib.request.urlopen(req, timeout=90) as resp:
-        temporary = dest.with_suffix(dest.suffix + ".part")
-        temporary.write_bytes(resp.read())
-        temporary.replace(dest)
+    def fetch() -> bytes:
+        req = urllib.request.Request(url, headers={"User-Agent": "screenwriter-stills/1.0"})
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            return resp.read()
+
+    payload = _within(90, fetch)
+    temporary = dest.with_suffix(dest.suffix + ".part")
+    temporary.write_bytes(payload)
+    temporary.replace(dest)
 
 
 def waves(jobs: list[dict]) -> list[list[dict]]:
@@ -390,6 +415,14 @@ def _run_locked(spec, out, ordered, aspect, resolution, fingerprint,
     def checkpoint(record=None):
         with mutex:
             if record is not None:
+                previous = records.get(record["id"])
+                if (
+                    isinstance(previous, dict)
+                    and previous.get("state") == "done"
+                    and previous.get("decision") == "human accepted"
+                    and not (record.get("state") == "done" and record.get("decision") == "human accepted")
+                ):
+                    record = previous
                 records[record["id"]] = dict(record)
             manifest["images"] = [records[job["id"]] for job in spec["jobs"] if job["id"] in records]
             temporary = manifest_path.with_suffix(".tmp")

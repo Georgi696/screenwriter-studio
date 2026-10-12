@@ -41,7 +41,7 @@ from screenwriter_studio.models import (
 )
 from screenwriter_studio.studio import ScreenwriterStudio
 from screenwriter_studio.images.generator import run_batch
-from screenwriter_studio.images.review import validate_decision
+from screenwriter_studio.images.review import apply_live_keep, validate_decision
 from screenwriter_studio.paths import WORKSPACE_ROOT
 from screenwriter_studio.events import StudioEvent
 
@@ -158,7 +158,42 @@ def public_view() -> dict:
         payload["image_agents"] = [
             {"model": model, "kinds": kinds} for model, kinds in _image_agents()
         ]
+        payload["can_proceed"] = (not _board.running) and can_proceed(_board.folder)
         return payload
+
+
+def production_path(folder: str) -> Path | None:
+    """A production directory under productions/, or nothing."""
+    if not folder or not isinstance(folder, str):
+        return None
+    path = Path(folder)
+    if not path.is_absolute():
+        path = WORKSPACE_ROOT / folder
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    if not resolved.is_dir() or not _under(resolved, PRODUCTIONS):
+        return None
+    return resolved
+
+
+def can_proceed(folder: str) -> bool:
+    """Saved pages can continue when stills have not been submitted yet."""
+    path = production_path(folder)
+    if path is None:
+        return False
+    needed = ("00_development.json", "01_screenplay.json", "verdict.json")
+    if not all((path / name).is_file() for name in needed):
+        return False
+    images = path / "images"
+    if (images / "jobs.json").is_file() or (images / "manifest.json").is_file():
+        return False
+    try:
+        verdict = json.loads((path / "verdict.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(verdict, dict) and isinstance(verdict.get("passed"), bool)
 
 
 def _under(path: Path, root: Path) -> bool:
@@ -319,24 +354,33 @@ def _finish(serial: int, note: str | None) -> None:
         _replace(_board)
 
 
-async def _drive(serial: int, idea: str, pages_only: bool, dry_run: bool, max_shots: int | None = None, inspection_mode: str = "manual") -> None:
-    studio = ScreenwriterStudio()
+async def _consume(serial: int, stream) -> None:
+    note = None
     try:
-        async for chunk in studio.run(idea, pages_only=pages_only, dry_run=dry_run, max_shots=max_shots, inspection_mode=inspection_mode):
+        async for chunk in stream:
             if not _current(serial):
                 return
             _apply(serial, chunk)
     except asyncio.CancelledError:
-        _finish(serial, "Run cancelled.")
-        return
+        note = "Run cancelled."
     except Exception as exc:
         message = str(exc)
         secret = _secret()
         if not secret or secret not in message:
             traceback.print_exc()
-        _finish(serial, message)
-        return
-    _finish(serial, None)
+        note = message
+    finally:
+        _finish(serial, note)
+
+
+async def _drive(serial: int, idea: str, pages_only: bool, dry_run: bool, max_shots: int | None = None, inspection_mode: str = "manual") -> None:
+    studio = ScreenwriterStudio()
+    await _consume(serial, studio.run(idea, pages_only=pages_only, dry_run=dry_run, max_shots=max_shots, inspection_mode=inspection_mode))
+
+
+async def _drive_saved(serial: int, folder: Path, brief: str, dry_run: bool, inspection_mode: str) -> None:
+    studio = ScreenwriterStudio()
+    await _consume(serial, studio.proceed(folder, dry_run=dry_run, inspection_mode=inspection_mode, brief=brief))
 
 
 def clear_log() -> None:
@@ -383,25 +427,81 @@ async def _resume_images(serial, out, spec, decision):
     cancel = threading.Event()
     def update(record):
         _apply(serial, StudioEvent("image", f"Image {record['id']}: {record.get('state', 'working')}", image=record))
+    note = "Image work stopped; progress is saved."
     try:
         manifest = await asyncio.to_thread(run_batch, spec, out, resume=True, decision=decision,
                                          on_record=update, cancel=cancel,
                                          on_start=lambda r: update({**r, "phase": "start"}))
-        _finish(serial, "Stills complete." if manifest.get("status") == "complete" else
-                "Stills paused. Review the image cards or resume saved tasks.")
+        note = "Stills complete." if manifest.get("status") == "complete" else "Stills paused. Review the image cards or resume saved tasks."
     except asyncio.CancelledError:
         cancel.set()
-        _finish(serial, "Image work cancelled; progress is saved.")
+        note = "Image work cancelled; progress is saved."
         raise
     except Exception as exc:
-        _finish(serial, scrub(str(exc), _secret()))
+        note = scrub(str(exc), _secret())
+    finally:
+        _finish(serial, note)
+
+
+def _keep_without_provider(out: Path, decision: dict) -> None:
+    """Accept a saved review without starting another batch or a provider call."""
+    if apply_live_keep(out, decision) is not None:
+        return
+    saved = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    images = saved.get("images")
+    if not isinstance(images, list):
+        raise ValueError("Saved image manifest is unreadable.")
+    records = {record["id"]: record for record in images if isinstance(record, dict) and isinstance(record.get("id"), str)}
+    updated = dict(validate_decision(records, decision))
+    if not Path(updated.get("path", "")).is_file() or not updated.get("url"):
+        raise ValueError("The reviewed image is missing; it cannot be accepted.")
+    updated.update(state="done", decision="human accepted", error="")
+    records[updated["id"]] = updated
+    for other_id, other in list(records.items()):
+        if other.get("state") != "blocked":
+            continue
+        blocked_by = [
+            ref for ref in (other.get("blocked_by") or [])
+            if not (records.get(ref, {}).get("state") == "done" and records.get(ref, {}).get("decision") == "human accepted")
+        ]
+        if blocked_by == list(other.get("blocked_by") or []):
+            continue
+        other = dict(other)
+        if blocked_by:
+            other["blocked_by"] = blocked_by
+        else:
+            other.pop("blocked_by", None)
+            other["state"] = "planned"
+        records[other_id] = other
+    saved["images"] = [records.get(image.get("id"), image) if isinstance(image, dict) else image for image in images]
+    states = [image.get("state") for image in saved["images"] if isinstance(image, dict)]
+    waiting = any(state in {"review", "inspecting", "polling", "submitting", "running"} for state in states)
+    if states and all(state == "done" for state in states):
+        saved["status"] = "complete"
+        note = "Stills complete."
+    else:
+        saved["status"] = "paused"
+        note = "Stills paused. Review the image cards or resume saved tasks."
+    temporary = out / "manifest.tmp"
+    temporary.write_text(json.dumps(saved, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(out / "manifest.json")
+    with _lock:
+        _board.images = [dict(image) for image in saved["images"] if isinstance(image, dict)]
+        if not waiting:
+            _board.running = False
+            _board.active = _board.edge = None
+            _board.returning = False
+            _board.note = note
+        _replace(_board)
 
 
 def resume_images(data):
     global _future, _run_serial
     loop = _ensure_loop()
     with _lock:
-        if _board.running:
+        decision = data if data else None
+        keep_now = isinstance(decision, dict) and decision.get("action") == "keep"
+        if _board.running and not keep_now:
             raise ValueError("Wait for the current run to finish before reviewing images.")
         folder = Path(_board.folder)
         if not folder.is_absolute():
@@ -412,16 +512,54 @@ def resume_images(data):
         spec = json.loads((out / "jobs.json").read_text())
         if not spec.get("inspection"):
             raise ValueError("This production predates image inspection. Resume it using the command line.")
-        decision = data if data else None
-        if decision:
+        if not keep_now and decision:
             saved = json.loads((out / "manifest.json").read_text())
             validate_decision({r["id"]: r for r in saved["images"]}, decision)
+        if keep_now:
+            held_out, held_decision = out, decision
+        else:
+            _run_serial += 1
+            serial = _run_serial
+            _board.running = True
+            _board.note = "Continuing saved image work."
+            _replace(_board)
+            _future = asyncio.run_coroutine_threadsafe(_resume_images(serial, out, spec, decision), loop)
+            return
+    _keep_without_provider(held_out, held_decision)
+
+
+def _require_proceed(inspection_mode: str) -> None:
+    """Caller holds _lock. Reject a continue that would spend credits on the wrong draft."""
+    if _board.running:
+        raise ValueError("Wait for the current run to finish before continuing this draft.")
+    if inspection_mode not in {"manual", "auto"}:
+        raise ValueError("Inspection mode must be manual or auto.")
+    if not can_proceed(_board.folder):
+        raise ValueError("This draft cannot be continued. Image work that is already saved can be resumed from Stills.")
+
+
+def proceed_saved(dry_run: bool, inspection_mode: str) -> None:
+    """Send the saved pages to the art director. The editor is not asked again."""
+    global _future, _run_serial
+    with _lock:
+        _require_proceed(inspection_mode)
+    loop = _ensure_loop()
+    with _lock:
+        _require_proceed(inspection_mode)
+        folder = production_path(_board.folder)
+        if folder is None:
+            raise ValueError("This draft cannot be continued.")
         _run_serial += 1
         serial = _run_serial
+        brief = _board.brief
         _board.running = True
-        _board.note = "Continuing saved image work."
+        _board.note = "Continuing with the saved draft."
         _replace(_board)
-        _future = asyncio.run_coroutine_threadsafe(_resume_images(serial, out, spec, decision), loop)
+        if _future is not None and not _future.done():
+            _future.cancel()
+        _future = asyncio.run_coroutine_threadsafe(
+            _drive_saved(serial, folder, brief, dry_run, inspection_mode), loop
+        )
 
 
 def _content_type(path: Path) -> str:
@@ -500,7 +638,7 @@ class DeskHandler(BaseHTTPRequestHandler):
             clear_session()
             self._json(200, {"ok": True})
             return
-        if parsed.path not in {"/api/run", "/api/brief/suggest", "/api/images/review"}:
+        if parsed.path not in {"/api/run", "/api/brief/suggest", "/api/images/review", "/api/proceed"}:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return
         data = self._read_json()
@@ -510,6 +648,18 @@ class DeskHandler(BaseHTTPRequestHandler):
             try:
                 resume_images(data)
             except (ValueError, OSError) as exc:
+                self._json(409, {"error": scrub(str(exc), _secret())})
+                return
+            self._json(202, {"ok": True})
+            return
+        if parsed.path == "/api/proceed":
+            mode = data.get("inspection_mode", "manual")
+            if mode not in ("manual", "auto"):
+                self._json(400, {"error": "Inspection mode must be manual or auto."})
+                return
+            try:
+                proceed_saved(bool(data.get("dry_run")), mode)
+            except ValueError as exc:
                 self._json(409, {"error": scrub(str(exc), _secret())})
                 return
             self._json(202, {"ok": True})
