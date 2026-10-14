@@ -3,6 +3,59 @@
 Run the commands below from the repository root with the virtual environment
 activated. Replace `last-train` with your production folder.
 
+## Resume final video
+
+Use **Resume final video** in the desk, or run:
+
+```bash
+python -m screenwriter_studio.videos ../productions/last-train
+```
+
+This reads `videos/jobs.json` and `videos/manifest.json`. Model choices, exact prompts,
+quality, and sound settings are reused. Updated routing rules never switch the model
+of a saved task. Original version-1 Kling plans remain resumable. All screenplay
+shots need completed, approved keyframes; changes to
+the screenplay, keyframes, or video settings invalidate the saved plan. Preserve
+the original production and start a new one for a different version.
+
+| Saved video state | Resume behaviour |
+| --- | --- |
+| Completed clip whose file matches its hash | Reuse it without another provider call. |
+| Saved task ID | Poll that task, without resubmission. |
+| Saved result URL | Retry its download. |
+| Explicit provider failure | Submit a retry and preserve the previous attempt; charges may apply. |
+| Unknown submission outcome | Stop for reconciliation; never automatically resubmit. |
+| All clips complete, assembly interrupted | Run FFmpeg again using the saved clips. |
+| Complete final MP4 | Return the existing final video. |
+
+Stop halts local polling, downloads, and encoding. Provider tasks already submitted
+may still finish and be charged. Only one process can generate video for a given
+production at a time. A file lock is released automatically when that process exits.
+
+If a submission lost its response, find the matching task in your KIE task history
+and attach its ID to the uncertain shot:
+
+```bash
+python -m screenwriter_studio.videos ../productions/last-train \
+  --attach-task s01=YOUR_KIE_TASK_ID
+python -m screenwriter_studio.videos ../productions/last-train
+```
+
+Attach only the task created for that shot and request. If KIE confirms no task
+was created, back up `videos/manifest.json`, then change that clip's `state` from
+`uncertain`/`submitting` to `pending` before resuming. Do not delete a manifest to
+resolve uncertainty: doing so loses the guard against duplicate charges.
+
+An expired result URL can be refreshed by backing up the video manifest and
+removing only that clip's `url` field, keeping its `task_id`. Resume polls the
+existing task again. A completed clip that is shorter than the required shot
+blocks assembly rather than silently stretching the story.
+
+Missing `ffmpeg` or `ffprobe`, invalid keyframe dimensions, and incomplete still
+approval are checked before submitting video jobs. Reinstall FFmpeg or finish
+the still review, then resume. The free `--dry-run` plan needs neither FFmpeg nor
+an API key.
+
 ## Resume a still batch
 
 ```bash

@@ -55,6 +55,7 @@ def select_stills(
     character_count: int,
     location_count: int,
     max_shots: int | None = None,
+    max_images: int | None = None,
 ) -> list[tuple[str, str]]:
     """Keep the stills a runtime budgeted. `jobs` are `(id, kind)`, in generation order."""
     caps = still_caps(
@@ -71,6 +72,8 @@ def select_stills(
             continue
         bucket = still_bucket(kind)
         if bucket is None or counts[bucket] >= caps[bucket]:
+            continue
+        if max_images is not None and len(kept) >= max_images:
             continue
         seen.add(job_id)
         counts[bucket] += 1

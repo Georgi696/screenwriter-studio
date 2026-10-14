@@ -4,7 +4,7 @@ const GLYPHS = {
   shot: '<svg viewBox="0 0 8 8" aria-hidden="true"></svg>',
   frame: '<svg viewBox="0 0 8 8" aria-hidden="true"></svg>'
 };
-const PIPS = ["brief", "development", "writer", "editor", "art", "images"];
+const PIPS = ["brief", "development", "writer", "editor", "approval", "art", "images"];
 const CREW = ["development", "writer", "editor", "art"];
 const SAMPLE = "A 30-second vertical film about someone who keeps a seat on the last bus.";
 
@@ -20,9 +20,20 @@ let follow = true;
 let stillFilter = "all";
 let toastTimer = 0;
 let viewChosen = false;
+let readerOpen = false;
 const localFiles = new Map();
 const LOCAL_DOCS = new Set(["json", "md", "fountain", "txt"]);
 const LOCAL_IMAGES = new Set(["png", "jpg", "jpeg", "webp", "gif"]);
+const REFERENCE_EXT = new Set(["png", "jpg", "jpeg", "webp"]);
+const MAX_REFERENCE_BYTES = 8000000;
+
+let libraryProjects = [];
+let deskFolder = "";
+let referenceKey = "";
+// Path -> "style" (look only) or "lock" (same subject in the shots that show it).
+const selectedRefs = new Map();
+const refInfo = new Map();
+let uploadedRefs = [];
 
 function plain(text) {
   return String(text || "")
@@ -32,6 +43,8 @@ function plain(text) {
 }
 
 const MODEL_NAMES = {
+  "kling-3.0/video": "Kling 3.0",
+  "bytedance/seedance-2-5": "Seedance 2.5",
   "nano-banana-2-1": "Nano Banana",
   "gpt-image-2-5-sunburst-text-to-image": "Sunburst",
   "gpt-image-2-5-sunburst-image-to-image": "Sunburst edit",
@@ -56,8 +69,15 @@ function setText(el, text) {
 function setMode(el, mode) {
   if (!el || el.dataset.mode === mode) return;
   el.dataset.mode = mode;
-  el.classList.remove("is-working", "is-done", "is-idle", "is-skipped");
-  const klass = { working: "is-working", done: "is-done", skipped: "is-skipped" }[mode] || "is-idle";
+  el.classList.remove("is-working", "is-done", "is-idle", "is-skipped", "is-blocked", "is-stopped", "is-awaiting");
+  const klass = {
+    working: "is-working",
+    done: "is-done",
+    skipped: "is-skipped",
+    blocked: "is-blocked",
+    stopped: "is-stopped",
+    awaiting: "is-awaiting"
+  }[mode] || "is-idle";
   el.classList.add(klass);
 }
 
@@ -133,6 +153,7 @@ function setView(name, fromUser) {
 }
 
 function viewFor(state) {
+  if (state.active === "video") return "video";
   if ((state.images || []).some((image) => image.state === "running") || state.station === "images") return "stills";
   if (state.station && state.station !== "brief") return "pipeline";
   return "brief";
@@ -321,6 +342,8 @@ function takeFolder(fileList) {
 
 function paintCrew(state) {
   const done = new Set(state.done || []);
+  const overridden = state.overridden || [];
+  const editorBlocked = !!state.can_proceed && !state.running && !done.has("editor") && !overridden.includes("editor");
   for (const id of CREW) {
     const el = stationEl(id);
     const crew = (state.crew || []).find((item) => item.id === id);
@@ -330,12 +353,18 @@ function paintCrew(state) {
     }
     let mode = "idle";
     let label = "Waiting";
-    if (state.active === id) {
+    if (state.active === id && state.running) {
       mode = "working";
       label = "Working";
-    } else if ((state.overridden || []).includes(id)) {
+    } else if (state.active === id) {
+      mode = "stopped";
+      label = "Stopped";
+    } else if (overridden.includes(id)) {
       mode = "skipped";
       label = "Overridden";
+    } else if (id === "editor" && editorBlocked) {
+      mode = "blocked";
+      label = "Blocked";
     } else if (done.has(id)) {
       mode = "done";
       label = "Done";
@@ -343,8 +372,24 @@ function paintCrew(state) {
     setMode(el, mode);
     setText(el.querySelector(".status"), label);
   }
+  const approval = stationEl("approval");
+  let approvalMode = "idle";
+  let approvalLabel = "Waiting";
+  const artStarted = done.has("art") || state.active === "art" || state.station === "images" || (state.images || []).length > 0;
+  if (done.has("approval")) {
+    approvalMode = "done";
+    approvalLabel = "Approved";
+  } else if (state.can_proceed && !state.running) {
+    approvalMode = "awaiting";
+    approvalLabel = "Your turn";
+  } else if (artStarted) {
+    approvalMode = "skipped";
+    approvalLabel = "Not required";
+  }
+  setMode(approval, approvalMode);
+  setText(approval.querySelector(".status"), approvalLabel);
   const brief = stationEl("brief");
-  const handedOff = state.active === "development" || done.has("development") || ["writer", "editor", "art", "images"].includes(state.station);
+  const handedOff = state.active === "development" || done.has("development") || ["writer", "editor", "approval", "art", "images"].includes(state.station);
   if (state.station === "brief" && state.running) {
     setMode(brief, "working");
     setText(brief.querySelector(".status"), "Working");
@@ -428,10 +473,8 @@ function parkReturn() {
 
 function paintProgress(state) {
   const rail = document.getElementById("return-rail");
-  const total = stationRow().length || 1;
-  const done = document.querySelectorAll("#track .station.is-done").length;
-  rail.style.setProperty("--progress", String(done / total));
-  rail.classList.toggle("is-running", !!(state.running || state.active));
+  if (!rail) return;
+  rail.classList.toggle("is-returning", !!state.returning);
 }
 
 function columnFor(bay, model) {
@@ -553,11 +596,19 @@ function renderInspection(frame, image, running) {
     panel.appendChild(view);
   }
   const line = (text) => { const p = document.createElement("p"); p.textContent = text; panel.appendChild(p); };
-  line(image.inspection.summary);
+  const rawFailure = /traceback|errors\.pydantic\.dev|pydantic|validation error/i;
+  const summary = String(image.inspection.summary || "");
+  const uncertainty = String(image.inspection.uncertainty || "");
+  const unreadable = rawFailure.test(summary) || rawFailure.test(uncertainty);
+  if (unreadable) line("Inspection could not read this image. You can keep it or inspect it again.");
+  else line(summary);
   for (const [label, items] of [["Finding", image.inspection.findings], ["Proposed change", image.inspection.changes], ["Preserve", image.inspection.preserve]]) {
-    for (const text of items || []) line(label + ": " + text);
+    for (const text of items || []) {
+      if (unreadable && rawFailure.test(String(text))) continue;
+      line(label + ": " + text);
+    }
   }
-  if (image.inspection.uncertainty) line("Uncertain: " + image.inspection.uncertainty);
+  if (!unreadable && image.inspection.uncertainty) line("Uncertain: " + image.inspection.uncertainty);
   line("Repairs used: " + (image.repairs || 0) + " / 2. Previous versions remain in the production folder.");
   if (image.repair_prompt && image.state === "review") {
     const details = document.createElement("details");
@@ -588,7 +639,7 @@ function renderInspection(frame, image, running) {
       });
       parent.appendChild(button);
     };
-    if (image.repair_prompt) addChoice(actions, "repair", "Approve these changes");
+    if (image.repair_prompt) addChoice(actions, "repair", "Approve these changes (uses credits)");
     addChoice(actions, "keep", "Abort");
     panel.appendChild(actions);
     line("Abort keeps the current image and spends no credits.");
@@ -597,17 +648,125 @@ function renderInspection(frame, image, running) {
   frame.appendChild(panel);
 }
 
+function savedImageWorkCanResume(state) {
+  const images = state.images || [];
+  if (!images.length) return false;
+  if (images.some((image) => image.state === "review")) return false;
+  const open = new Set(["failed", "planned", "polling", "submitting", "downloading", "running", "inspecting"]);
+  return images.some((image) => open.has(image.state));
+}
+
+function reviewWaiting(state) {
+  return (state.images || []).some((image) => image.state === "review");
+}
+
+function stillsPaused(state) {
+  if (!state || state.running) return false;
+  const images = state.images || [];
+  if (!images.length) return false;
+  return images.some((image) => image.state !== "done");
+}
+
+function openingView(state) {
+  if (state.video && (state.video.saved || state.active === "video")) return "video";
+  const images = state.images || [];
+  if ((state.folder && images.length) || reviewWaiting(state) || stillsPaused(state)) return "stills";
+  const crewStarted = Boolean(
+    (state.done || []).length ||
+    (state.overridden || []).length ||
+    state.folder ||
+    (state.station && state.station !== "brief") ||
+    state.active
+  );
+  if (!images.length && crewStarted) return "pipeline";
+  return "";
+}
+
+function loopLabel(state) {
+  if (state.can_proceed && !state.running) return state.pages_passed ? "Approval waiting" : "Draft needs a decision";
+  if (reviewWaiting(state)) return "Review waiting";
+  if (stillsPaused(state)) return "Stills paused";
+  if (state.returning) return "Rewrite in flight";
+  if ((state.overridden || []).includes("editor")) return "Editor overridden";
+  return "Editor loop ready";
+}
+
+function openStillsReview() {
+  setView("stills", true);
+  requestAnimationFrame(() => {
+    const bay = document.getElementById("image-bay");
+    if (!bay) return;
+    let card = bay.querySelector('.frame[data-state="review"]');
+    if (!card) return;
+    const column = card.closest(".model-col");
+    if (card.hidden || (column && column.hidden)) {
+      stillFilter = "all";
+      document.querySelectorAll("#still-tools .chip").forEach((button) => {
+        button.classList.toggle("is-on", button.dataset.filter === "all");
+      });
+      applyStillFilter();
+      card = bay.querySelector('.frame[data-state="review"]');
+    }
+    if (card) card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  });
+}
+
+function placeCostChoices(besideProceed) {
+  const inspection = document.getElementById("inspection-field");
+  const dry = document.getElementById("dry-option");
+  const slot = document.getElementById("cost-choices");
+  const inspectionHome = document.getElementById("inspection-home");
+  const dryHome = document.getElementById("dry-home");
+  if (!inspection || !dry || !slot || !inspectionHome || !dryHome) return;
+  if (besideProceed) {
+    if (inspection.parentNode !== slot) slot.appendChild(inspection);
+    if (dry.parentNode !== slot) slot.appendChild(dry);
+  } else {
+    if (inspection.parentNode !== inspectionHome) inspectionHome.appendChild(inspection);
+    if (dry.parentNode !== dryHome) dryHome.appendChild(dry);
+  }
+}
+
 function syncProceed(state) {
+  const running = !!state.running;
+  const showProceed = !!state.can_proceed && !running;
+  const showReview = !showProceed && !running && (reviewWaiting(state) || stillsPaused(state));
+  const showResume = showReview && savedImageWorkCanResume(state);
+  placeCostChoices(showProceed);
   const button = document.getElementById("proceed");
+  const abort = document.getElementById("abort-draft");
   const note = document.getElementById("proceed-note");
-  const show = !!state.can_proceed && !state.running;
-  button.hidden = !show;
-  note.hidden = !show;
-  button.disabled = !show;
+  const row = document.getElementById("proceed-row");
+  const review = document.getElementById("review-stills");
+  const resume = document.getElementById("resume-images");
+  const jump = document.getElementById("activity-jump");
+  if (row) row.hidden = !showProceed;
+  button.hidden = !showProceed;
+  note.hidden = !showProceed;
+  button.disabled = !showProceed;
+  const approving = state.pages_passed === true;
+  setText(button, approving ? "Approve pages" : "Proceed with this draft");
+  setText(note, approving
+    ? "The editor passed these pages. Select a step below to read them. Approving starts the art director and stills. Plan stills and image inspection beside this button set the cost."
+    : "Sends these pages to the art director and stills. The editor's verdict stays on file. Plan stills and image inspection beside this button set the cost.");
+  if (abort) {
+    abort.hidden = !showProceed;
+    abort.disabled = !showProceed;
+  }
+  if (review) {
+    review.hidden = !showReview;
+    review.disabled = !showReview;
+  }
+  if (resume) {
+    resume.hidden = !showResume;
+    resume.disabled = !showResume;
+    resume.classList.remove("go");
+    resume.classList.add("ghost");
+  }
+  if (jump) jump.hidden = !reviewWaiting(state);
 }
 
 function syncImages(state) {
-  document.getElementById("resume-images").disabled = state.running || !(state.images || []).length;
   const bay = document.getElementById("image-bay");
   const before = bay.querySelectorAll(".frame[data-job]").length;
   for (const agent of state.image_agents || []) ensureColumn(bay, agent.model, agent.kinds);
@@ -654,6 +813,407 @@ function syncLog(lines) {
   if (atBottom) box.scrollTop = box.scrollHeight;
 }
 
+const STEP_INFO = {
+  brief: { step: "Brief", empty: "Write a brief and start production." },
+  development: { step: "Step 1", empty: "Development starts when the brief is sent." },
+  writer: { step: "Step 2", empty: "The screenwriter starts after development locks the story." },
+  editor: { step: "Step 3", empty: "The script editor reads each draft after it is written." },
+  approval: { step: "Step 4", empty: "Your approval comes after the script editor passes the pages." },
+  art: { step: "Step 5", empty: "The art director writes the still jobs after the pages are approved." }
+};
+let pickedStation = "";
+let detailKey = "";
+let detailTimer = 0;
+let detailSerial = 0;
+
+function autoStation(state) {
+  const station = (state && state.station) || "brief";
+  return station === "images" ? "art" : (STEP_INFO[station] ? station : "brief");
+}
+
+function shownStation() {
+  return pickedStation || autoStation(last);
+}
+
+function make(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = plain(text);
+  return node;
+}
+
+// Sessions saved before lines carried a station are sorted by their opening words.
+const LINE_STATIONS = [
+  [/^\*\*Development\*\*/, "development"],
+  [/^\*\*Screenwriter\*\*|^Pages:/, "writer"],
+  [/^\*\*Script editor\*\*|^The editor (sent|passed)/, "editor"],
+  [/^Proceeding with the saved draft|^You approved/, "approval"],
+  [/^\*\*Art director\*\*/, "art"],
+  [/^\*\*Stills?\*\*|^- |^Image |^Stills /, "images"]
+];
+
+function stationLines(state, id) {
+  const tags = state.log_stations || [];
+  let current = "";
+  return (state.log || []).filter((line, index) => {
+    if (tags[index]) current = tags[index];
+    else {
+      const match = LINE_STATIONS.find(([pattern]) => pattern.test(line));
+      if (match) current = match[1];
+    }
+    return current === id;
+  });
+}
+
+function detailField(host, label, value) {
+  if (!value) return;
+  const row = make("div", "detail-field");
+  row.append(make("span", "", label), make("p", "", value));
+  host.appendChild(row);
+}
+
+function detailList(host, label, items, ordered) {
+  if (!items || !items.length) return;
+  host.appendChild(make("h4", "", label));
+  const list = make(ordered ? "ol" : "ul", "detail-list");
+  for (const item of items) list.appendChild(make("li", "", item));
+  host.appendChild(list);
+}
+
+function detailChips(host, items) {
+  const row = make("div", "detail-chips");
+  for (const item of items.filter(Boolean)) row.appendChild(make("span", "detail-chip", item));
+  if (row.children.length) host.appendChild(row);
+}
+
+function modeChip(id, mode) {
+  const chip = make("span", "detail-chip" + (mode ? " is-" + mode : ""), id);
+  if (mode) chip.title = mode === "style" ? "Style reference: look only" : "Locked reference: same subject";
+  return chip;
+}
+
+const STAGE_OUTPUT = {
+  brief(host, d, state) {
+    const text = d.brief || state.brief || "";
+    if (!text) return false;
+    host.appendChild(make("p", "detail-lede", text));
+    if (d.image_count) detailField(host, "Image limit", d.image_count + " new stills");
+    const refs = d.references || [];
+    if (refs.length) {
+      host.appendChild(make("h4", "", "Reference images"));
+      const row = make("div", "detail-chips");
+      for (const ref of refs) row.appendChild(modeChip((ref.name || ref.id) + " · " + (ref.mode === "style" ? "style" : "lock"), ref.mode));
+      host.appendChild(row);
+    }
+    return true;
+  },
+  development(host, d) {
+    if (!d.title && !d.logline) return false;
+    host.appendChild(make("h4", "detail-title", d.title || "Untitled"));
+    detailChips(host, [d.job_type, d.runtime_seconds ? d.runtime_seconds + "s" : "", d.aspect_ratio, d.tone]);
+    if (d.logline) host.appendChild(make("p", "detail-lede", d.logline));
+    detailField(host, "Look", d.look);
+    detailField(host, "Palette", d.palette);
+    detailField(host, "Lighting", d.lighting);
+    detailList(host, "Characters", (d.characters || []).map((c) => c.name + " — " + c.description));
+    detailList(host, "Locations", d.locations || []);
+    detailList(host, "Beats", (d.beats || []).map((b) => b.timecode + "  " + b.name + ": " + b.action), true);
+    detailList(host, "Invented defaults", d.invented || []);
+    return true;
+  },
+  writer(host, d) {
+    const shots = d.shots || [];
+    if (!d.drafts && !shots.length) return false;
+    const drafts = d.drafts === 1 ? "1 draft written" : d.drafts + " drafts written";
+    host.appendChild(make("p", "detail-meta", drafts + (d.final ? " · final pages saved" : "")));
+    if (shots.length) {
+      const wrap = make("div", "detail-table");
+      const table = document.createElement("table");
+      const head = document.createElement("tr");
+      for (const label of ["#", "Dur", "Framing", "Action"]) head.appendChild(make("th", "", label));
+      table.appendChild(head);
+      for (const shot of shots) {
+        const row = document.createElement("tr");
+        for (const value of [shot.number, shot.duration_seconds + "s", shot.framing, shot.action]) row.appendChild(make("td", "", value));
+        table.appendChild(row);
+      }
+      wrap.appendChild(table);
+      host.appendChild(wrap);
+    }
+    detailList(host, "Writer's notes", d.notes || []);
+    return true;
+  },
+  editor(host, d) {
+    const verdicts = d.verdicts || [];
+    if (!verdicts.length) return false;
+    for (const verdict of verdicts) {
+      const card = make("div", "verdict" + (verdict.passed ? " is-pass" : " is-fail"));
+      const head = make("p", "verdict-head");
+      head.append(make("strong", "", "Draft " + verdict.draft), make("span", "", verdict.passed ? "Passed" : "Sent back"));
+      card.appendChild(head);
+      if (verdict.issues.length) {
+        const list = make("ul", "detail-list");
+        for (const issue of verdict.issues) list.appendChild(make("li", "", issue));
+        card.appendChild(list);
+      }
+      host.appendChild(card);
+    }
+    return true;
+  },
+  approval(host, d, state) {
+    let text = "";
+    if (d.approved) text = "You approved these pages. The art director and stills continued from them.";
+    else if (d.aborted) text = "This draft was aborted. The pages stay in the production folder.";
+    else if (d.waiting && d.passed) text = "The editor passed these pages. Read the script and the shot list, then choose Approve pages above. Abort draft stops here and keeps every file.";
+    else if (d.waiting) text = "The editor did not pass these pages after two rewrites. You can proceed with them anyway, or abort the draft.";
+    else if ((state.done || []).includes("art") || (state.images || []).length) text = "This run continued to stills without waiting for approval.";
+    if (!text) return false;
+    host.appendChild(make("p", "detail-lede", text));
+    return true;
+  },
+  art(host, d) {
+    const jobs = d.jobs || [];
+    if (!jobs.length) return false;
+    host.appendChild(make("p", "detail-meta", jobs.length + " still jobs · " + (d.submitted ? "sent to stills" : "planned")));
+    const list = make("ol", "job-list");
+    for (const job of jobs) {
+      const item = document.createElement("li");
+      const head = make("div", "job-head");
+      head.append(make("strong", "", job.id), make("span", "detail-chip", job.kind));
+      for (const ref of job.references || []) head.appendChild(modeChip(ref.id, ref.mode));
+      item.appendChild(head);
+      const details = document.createElement("details");
+      details.dataset.key = "job:" + job.id;
+      details.append(make("summary", "", "Prompt"), make("p", "job-prompt", job.prompt || ""));
+      item.appendChild(details);
+      list.appendChild(item);
+    }
+    host.appendChild(list);
+    return true;
+  }
+};
+
+function renderStageOutput(id, data) {
+  const host = document.getElementById("detail-output");
+  const files = document.getElementById("detail-files");
+  const open = new Set([...host.querySelectorAll("details[open]")].map((node) => node.dataset.key));
+  host.replaceChildren();
+  files.replaceChildren();
+  const filled = STAGE_OUTPUT[id](host, (data && data.data) || {}, last || {});
+  if (!filled) host.appendChild(make("p", "detail-empty", STEP_INFO[id].empty));
+  host.querySelectorAll("details").forEach((node) => { if (open.has(node.dataset.key)) node.open = true; });
+  for (const file of (data && data.files) || []) {
+    const button = make("button", "ghost", "Open " + file.name);
+    button.type = "button";
+    button.addEventListener("click", () => openFile(file.path));
+    files.appendChild(button);
+  }
+  files.hidden = !files.children.length;
+}
+
+async function loadStageDetail(id) {
+  const serial = ++detailSerial;
+  let data = null;
+  try {
+    const res = await fetch("/api/stage?station=" + encodeURIComponent(id));
+    if (res.ok) data = await res.json();
+  } catch (error) { /* The empty state explains the step. */ }
+  if (serial !== detailSerial || id !== shownStation()) return;
+  renderStageOutput(id, data);
+}
+
+function paintStageDetail(state) {
+  const id = shownStation();
+  document.querySelectorAll("#track .station").forEach((station) => {
+    const on = station.dataset.station === id;
+    station.classList.toggle("is-selected", on);
+    station.querySelector(".piece").setAttribute("aria-pressed", on ? "true" : "false");
+  });
+  const station = stationEl(id);
+  const model = station.querySelector(".model").textContent;
+  setText(document.getElementById("detail-kicker"), STEP_INFO[id].step + (model && id !== "brief" ? " · " + model : ""));
+  setText(document.getElementById("detail-title"), station.querySelector("strong").textContent);
+  const status = document.getElementById("detail-status");
+  setText(status, station.querySelector(".status").textContent);
+  status.dataset.mode = station.dataset.mode || "idle";
+  document.getElementById("detail-follow").hidden = !pickedStation;
+  const lines = stationLines(state, id);
+  const log = document.getElementById("detail-log");
+  const signature = id + ":" + lines.length + ":" + (lines[0] || "");
+  if (log.dataset.signature !== signature) {
+    log.dataset.signature = signature;
+    log.replaceChildren();
+    for (const line of lines) log.appendChild(make("li", "", line));
+    if (!lines.length) log.appendChild(make("li", "detail-empty", "No activity yet."));
+    log.scrollTop = log.scrollHeight;
+  }
+  const key = [id, state.folder, (state.done || []).join(","), state.active, state.running, lines.length, state.can_proceed, state.pages_passed, (state.brief || "").length].join("|");
+  if (key !== detailKey) {
+    detailKey = key;
+    clearTimeout(detailTimer);
+    detailTimer = setTimeout(() => loadStageDetail(id), 200);
+  }
+}
+
+function pickStation(id) {
+  pickedStation = id;
+  detailKey = "";
+  if (last) paintStageDetail(last);
+}
+
+let videoPromptKey = "";
+let videoSettingsFolder = "";
+let videoPreview = null;
+let videoPreviewRequest = 0;
+function videoPreviewBasis(state) {
+  return JSON.stringify([state.folder, state.images, state.video]);
+}
+function videoOptions() {
+  return { mode: document.getElementById("video-mode").value,
+    sound: document.getElementById("video-sound").checked,
+    selection: document.getElementById("video-model").value };
+}
+async function refreshVideoPreview() {
+  const request = ++videoPreviewRequest;
+  const folder = last && last.folder;
+  const basis = last && videoPreviewBasis(last);
+  const options = videoOptions();
+  document.getElementById("generate-video").disabled = true;
+  document.getElementById("plan-video").disabled = true;
+  setText(document.getElementById("video-message"), "Checking models for these settings…");
+  try {
+    const response = await fetch("/api/video/preview", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(options)});
+    if (!response.ok) throw new Error("Could not preview video model choices.");
+    const data = await response.json();
+    if (request !== videoPreviewRequest || !last || last.folder !== folder || data.folder !== folder ||
+        JSON.stringify(options) !== JSON.stringify(videoOptions())) return;
+    if (basis !== videoPreviewBasis(last)) { refreshVideoPreview(); return; }
+    videoPreview = {folder, basis, options: JSON.stringify(options), video: data.video};
+    syncVideo(last);
+  } catch (error) { if (request === videoPreviewRequest) toast(error.message, 5000); }
+}
+function syncVideo(state) {
+  let video = state.video || {};
+  const running = Boolean(state.running);
+  const mode = document.getElementById("video-mode");
+  const sound = document.getElementById("video-sound");
+  const model = document.getElementById("video-model");
+  if (video.saved || videoSettingsFolder !== state.folder) {
+    mode.value = video.mode || "pro";
+    sound.checked = video.sound !== false;
+    model.value = video.selection || "auto";
+    videoSettingsFolder = state.folder;
+    videoPreview = null;
+  }
+  const cachedPreview = !video.saved && videoPreview && videoPreview.folder === state.folder &&
+    videoPreview.basis === videoPreviewBasis(state) && videoPreview.options === JSON.stringify(videoOptions());
+  if (cachedPreview) {
+    video = videoPreview.video;
+  }
+  const defaults = {mode: video.mode || "pro", sound: video.sound !== false, selection: video.selection || "auto"};
+  if (!video.saved && !running && !cachedPreview && JSON.stringify(defaults) !== JSON.stringify(videoOptions())) {
+    refreshVideoPreview();
+    return;
+  }
+  setText(document.getElementById("video-message"),
+    state.active === "video" && running ? state.note : video.message || "Approve the stills to continue.");
+  mode.disabled = sound.disabled = model.disabled = running || Boolean(video.saved);
+  document.getElementById("plan-video").disabled = running || !video.can_plan;
+  const generate = document.getElementById("generate-video");
+  generate.disabled = running || !video.ready || Boolean(video.src);
+  setText(generate, video.src ? "Final video ready" : video.saved ? "Resume final video" : "Generate final video");
+  const player = document.getElementById("final-video");
+  const download = document.getElementById("download-video");
+  const src = video.src || "";
+  if ((player.getAttribute("src") || "") !== src) {
+    player.pause();
+    if (src) player.src = src;
+    else { player.removeAttribute("src"); player.load(); }
+  }
+  player.hidden = download.hidden = !src;
+  if (src) download.href = src + "&download=1";
+  else download.removeAttribute("href");
+  const host = document.getElementById("video-clips");
+  const clips = video.clips || [];
+  const ids = new Set(clips.map((clip) => clip.id));
+  for (const node of [...host.children]) if (!ids.has(node.dataset.clip)) node.remove();
+  for (const clip of clips) {
+    let card = [...host.children].find((node) => node.dataset.clip === clip.id);
+    if (!card) {
+      card = make("article", "video-clip");
+      card.dataset.clip = clip.id;
+      card.append(make("h3"), make("p"), make("video"), make("button", "ghost"));
+      card.querySelector("button").type = "button";
+      card.querySelector("button").addEventListener("click", () => {
+        const done = card.dataset.state === "done";
+        startVideo(false, done ? { redo: [clip.id] } : { shots: [clip.id] });
+      });
+      const preview = card.querySelector("video");
+      preview.controls = true;
+      preview.playsInline = true;
+      preview.preload = "none";
+      host.appendChild(card);
+    }
+    setText(card.querySelector("h3"), clip.id + " · " + modelTitle(clip.model || "Video") + " · " + clip.state);
+    setText(card.querySelector("p"), clip.error || "");
+    card.dataset.state = clip.state;
+    const action = card.querySelector("button");
+    setText(action, clip.state === "done" ? "Redo this shot · paid" : "Render this shot · paid");
+    action.disabled = running || !video.ready || !video.saved;
+    action.hidden = Boolean(video.saved) === false;
+    const preview = card.querySelector("video");
+    preview.hidden = !clip.src;
+    if (clip.src && preview.getAttribute("src") !== clip.src) preview.src = clip.src;
+  }
+  const shots = video.shots || [];
+  const promptKey = JSON.stringify(shots);
+  if (videoPromptKey !== promptKey) {
+    videoPromptKey = promptKey;
+    const prompts = document.getElementById("video-prompts");
+    prompts.replaceChildren();
+    for (const shot of shots) {
+      prompts.append(make("h3", "", shot.id + " · " + shot.duration_seconds + "s · " + (shot.model_name || "Kling 3.0")),
+        make("p", "field-note", shot.selection_reason || "Original saved Kling plan."), make("pre", "", shot.prompt));
+      const sources = make("p", "field-note");
+      for (const [index, source] of (shot.sources || []).entries()) {
+        const link = make("a", "", "Official documentation " + (index + 1));
+        link.href = safeUrl(source);
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        sources.append(link, document.createTextNode(" "));
+      }
+      prompts.append(sources);
+    }
+  }
+  document.getElementById("video-plan").hidden = !shots.length;
+}
+
+async function startVideo(dryRun, only = {}) {
+  const button = document.getElementById(dryRun ? "plan-video" : "generate-video");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/video", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...videoOptions(), ...only, dry_run: dryRun })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not start video generation.");
+    setView("video", true);
+    toast(dryRun ? "Saving video plan" : "Video generation started");
+    await fetch("/api/status").then((res) => res.json()).then(apply);
+  } catch (error) {
+    toast(error.message, 6000);
+    button.disabled = Boolean(only.shots || only.redo);
+  }
+}
+
+document.getElementById("plan-video").addEventListener("click", () => startVideo(true));
+document.getElementById("generate-video").addEventListener("click", () => startVideo(false));
+for (const id of ["video-model", "video-mode", "video-sound"]) {
+  document.getElementById(id).addEventListener("change", refreshVideoPreview);
+}
+
 function paint(state, prev) {
   const stage = document.getElementById("stage");
   const note = document.getElementById("note");
@@ -667,15 +1227,24 @@ function paint(state, prev) {
   const folder = document.getElementById("folder");
   setText(folder, state.folder || "");
   folder.hidden = !state.folder;
+  if ((state.folder || "") !== deskFolder) {
+    deskFolder = state.folder || "";
+    renderReferences();
+  }
   const plaque = document.getElementById("plaque");
   setText(plaque, state.brief || "");
   plaque.hidden = !state.brief;
   document.getElementById("live").hidden = !state.running;
+  const stop = document.getElementById("stop");
+  stop.hidden = !state.running;
+  if (!state.running) stop.disabled = false;
   stage.classList.toggle("is-running", !!state.running);
   const run = document.getElementById("run");
   run.disabled = !!state.running;
   setText(run, state.running ? "Working…" : "Start production");
   paintCrew(state);
+  if (state.can_proceed && !state.running && !(prev && prev.can_proceed && !prev.running)) pickedStation = "";
+  paintStageDetail(state);
   const token = document.getElementById("token");
   const glyph = state.glyph || "sheet";
   if (token.dataset.glyph !== glyph) {
@@ -687,6 +1256,7 @@ function paint(state, prev) {
     document.getElementById("return-token").dataset.ready = "1";
   }
   syncImages(state);
+  syncVideo(state);
   syncProceed(state);
   placeRail();
   paintProgress(state);
@@ -716,13 +1286,13 @@ function paint(state, prev) {
   setText(document.getElementById("count-pipeline"), String(stepsDone));
   setText(document.getElementById("count-stills"), String((state.images || []).length));
   setText(document.getElementById("count-activity"), String((state.log || []).length));
-  setText(document.getElementById("stat-steps"), stepsDone + " of 5 done");
+  setText(document.getElementById("stat-steps"), stepsDone + " of " + stationRow().length + " done");
   const stillCount = (state.images || []).length;
   setText(document.getElementById("stat-stills"), stillCount + (stillCount === 1 ? " still" : " stills"));
-  setText(document.getElementById("stat-loop"), state.returning ? "Rewrite in flight" : "Editor loop ready");
+  setText(document.getElementById("stat-loop"), loopLabel(state));
   if (!viewChosen) {
-    if (stillCount) setView("stills");
-    else if ((state.done || []).length) setView("pipeline");
+    const nextView = openingView(state);
+    if (nextView) setView(nextView);
     viewChosen = true;
   } else if (follow && state.running) {
     const next = viewFor(state);
@@ -742,6 +1312,7 @@ function apply(state) {
 function startDust() {}
 
 function suggestLabel() {
+  ideaCount();
   const button = document.getElementById("suggest");
   if (!button || button.dataset.busy === "1") return;
   const empty = !document.getElementById("idea").value.trim();
@@ -796,6 +1367,219 @@ async function suggestBrief() {
   }
 }
 
+function productionSlug(folder) {
+  const parts = String(folder || "").replace(/\\/g, "/").replace(/\/+$/, "").split("/").filter(Boolean);
+  const at = parts.lastIndexOf("productions");
+  if (at >= 0 && parts[at + 1]) return parts[at + 1];
+  return parts[parts.length - 1] || "";
+}
+
+function referenceExtension(name) {
+  const parts = String(name || "").toLowerCase().split(".");
+  return parts.length > 1 ? parts.pop() : "";
+}
+
+function referenceCatalogKey() {
+  const parts = [deskFolder];
+  for (const project of libraryProjects) {
+    parts.push(project.slug + "=" + (project.images || []).map((item) => item.path).join(","));
+  }
+  parts.push(uploadedRefs.map((item) => item.id).join(","));
+  return parts.join("\n");
+}
+
+function referenceSummary() {
+  if (!selectedRefs.size) return "None selected";
+  const styles = [...selectedRefs.values()].filter((mode) => mode === "style").length;
+  const locks = selectedRefs.size - styles;
+  const parts = [];
+  if (styles) parts.push(styles + " style");
+  if (locks) parts.push(locks + " locked");
+  return parts.join(" · ");
+}
+
+function renderReferenceTray() {
+  const tray = document.getElementById("reference-selected");
+  tray.replaceChildren();
+  for (const [path, mode] of selectedRefs) {
+    const info = refInfo.get(path) || { name: path, src: "/library-media?path=" + encodeURIComponent(path) };
+    const card = make("div", "ref-chosen");
+    const img = document.createElement("img");
+    img.alt = "";
+    img.src = info.src;
+    const body = make("div", "ref-chosen-body");
+    const name = make("span", "ref-chosen-name", info.name);
+    name.title = info.name;
+    const toggle = make("div", "segmented");
+    toggle.setAttribute("role", "group");
+    toggle.setAttribute("aria-label", "How to use " + info.name);
+    for (const [value, label] of [["style", "Style"], ["lock", "Lock"]]) {
+      const option = make("button", value === mode ? "is-on" : "", label);
+      option.type = "button";
+      option.setAttribute("aria-pressed", value === mode ? "true" : "false");
+      option.title = value === "style" ? "Look only, on every shot" : "Same subject, only where it appears";
+      option.addEventListener("click", () => {
+        selectedRefs.set(path, value);
+        markReferenceSelection();
+      });
+      toggle.appendChild(option);
+    }
+    body.append(name, toggle);
+    const remove = make("button", "ref-remove", "×");
+    remove.type = "button";
+    remove.setAttribute("aria-label", "Remove " + info.name);
+    remove.addEventListener("click", () => {
+      selectedRefs.delete(path);
+      markReferenceSelection();
+    });
+    card.append(img, body, remove);
+    tray.appendChild(card);
+  }
+  tray.hidden = !selectedRefs.size;
+}
+
+function markReferenceSelection() {
+  document.querySelectorAll("#reference-picker .ref-thumb").forEach((button) => {
+    const mode = selectedRefs.get(button.dataset.ref);
+    button.classList.toggle("is-selected", !!mode);
+    button.dataset.badge = mode === "lock" ? "Lock" : mode ? "Style" : "";
+    button.setAttribute("aria-pressed", mode ? "true" : "false");
+  });
+  document.getElementById("reference-count").textContent = referenceSummary();
+  renderReferenceTray();
+  briefSummary();
+}
+
+function referenceThumb(item) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ref-thumb";
+  button.dataset.ref = item.path;
+  button.title = item.name || item.path;
+  const img = document.createElement("img");
+  img.alt = "";
+  img.src = item.src || ("/library-media?path=" + encodeURIComponent(item.path));
+  refInfo.set(item.path, { name: item.name || item.path, src: img.src });
+  const caption = document.createElement("span");
+  caption.textContent = item.name || item.path;
+  button.append(img, caption);
+  button.addEventListener("click", () => {
+    if (selectedRefs.has(item.path)) selectedRefs.delete(item.path);
+    else selectedRefs.set(item.path, "style");
+    markReferenceSelection();
+  });
+  return button;
+}
+
+function fillReferenceGrid(container, items, emptyText) {
+  container.replaceChildren();
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.className = "ref-empty";
+    empty.textContent = emptyText;
+    container.appendChild(empty);
+    return;
+  }
+  for (const item of items) container.appendChild(referenceThumb(item));
+}
+
+function renderReferences() {
+  const current = document.getElementById("reference-current");
+  if (!current) return;
+  const key = referenceCatalogKey();
+  if (key === referenceKey) {
+    markReferenceSelection();
+    return;
+  }
+  referenceKey = key;
+  const slug = productionSlug(deskFolder);
+  const label = document.getElementById("reference-current-label");
+  label.textContent = slug ? "This production · " + slug : "This production";
+  const mine = [];
+  const others = [];
+  for (const project of libraryProjects) {
+    const images = (project.images || []).filter((item) => REFERENCE_EXT.has(referenceExtension(item.path || item.name)));
+    if (slug && project.slug === slug) mine.push(...images);
+    else others.push(...images.map((item) => ({ ...item, name: project.slug + "/" + item.name })));
+  }
+  fillReferenceGrid(current, mine, slug ? "No stills in this production yet." : "No production is on the desk yet.");
+  fillReferenceGrid(document.getElementById("reference-other"), others, "No other stills in the library.");
+  fillReferenceGrid(
+    document.getElementById("reference-uploads"),
+    uploadedRefs.map((item) => ({ path: item.id, name: item.name, src: item.src })),
+    ""
+  );
+  const uploads = document.getElementById("reference-uploads");
+  if (!uploadedRefs.length) uploads.replaceChildren();
+  markReferenceSelection();
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      const comma = text.indexOf(",");
+      resolve(comma >= 0 ? text.slice(comma + 1) : text);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadReference(file) {
+  const ext = referenceExtension(file.name);
+  if (!REFERENCE_EXT.has(ext)) {
+    toast("Upload a PNG, JPEG, or WebP.", 4000);
+    return;
+  }
+  if (!file.size || file.size > MAX_REFERENCE_BYTES) {
+    toast("That image is too large.", 4000);
+    return;
+  }
+  const encoded = await fileToBase64(file);
+  const res = await fetch("/api/references", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: file.name.split(/[/\\]/).pop(), data: encoded })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.id) {
+    toast(data.error || "Could not save that image.", 4000);
+    return;
+  }
+  uploadedRefs.push({ id: data.id, name: file.name.split(/[/\\]/).pop(), src: data.src });
+  selectedRefs.set(data.id, "style");
+  referenceKey = "";
+  renderReferences();
+}
+
+function gateChoice() {
+  const picked = document.querySelector('input[name="gate"]:checked');
+  return picked ? picked.value : "approve";
+}
+
+function briefSummary() {
+  const out = document.getElementById("brief-summary");
+  if (!out) return;
+  const gate = { approve: "Waits for your approval", auto: "Continues to stills automatically", pages: "Stops after the pages" }[gateChoice()];
+  const parts = [gate];
+  if (gateChoice() !== "pages") {
+    parts.push(document.getElementById("dry").checked ? "Plans stills, no image credits" : (document.getElementById("inspection-mode").value === "auto" ? "Auto inspection" : "Manual inspection"));
+  }
+  const shots = document.getElementById("max-shots").value;
+  const images = document.getElementById("image-count").value;
+  if (shots) parts.push("Up to " + shots + " shots");
+  if (images) parts.push("Up to " + images + " images");
+  if (selectedRefs.size) parts.push("References: " + referenceSummary().replace(" · ", ", "));
+  out.textContent = parts.join(" · ");
+}
+
+function ideaCount() {
+  const words = document.getElementById("idea").value.trim().split(/\s+/).filter(Boolean).length;
+  setText(document.getElementById("idea-count"), words ? words + (words === 1 ? " word" : " words") : "Empty");
+}
+
 async function startRun() {
   releaseNote();
   const run = document.getElementById("run");
@@ -809,15 +1593,19 @@ async function startRun() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         idea: document.getElementById("idea").value,
-        pages_only: document.getElementById("pages").checked,
+        pages_only: gateChoice() === "pages",
+        approval: gateChoice() === "approve",
         dry_run: document.getElementById("dry").checked,
         inspection_mode: document.getElementById("inspection-mode").value,
-        max_shots: document.getElementById("max-shots").value ? Number(document.getElementById("max-shots").value) : null
+        max_shots: document.getElementById("max-shots").value ? Number(document.getElementById("max-shots").value) : null,
+        image_count: document.getElementById("image-count").value === "" ? null : Number(document.getElementById("image-count").value),
+        references: [...selectedRefs].map(([path, mode]) => ({ path, mode }))
       })
     });
     if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
       const note = document.getElementById("note");
-      note.textContent = "Could not start the crew.";
+      note.textContent = data.error || "Could not start the crew.";
       note.classList.add("is-bad");
       run.disabled = false;
     }
@@ -836,6 +1624,8 @@ async function pollLibrary() {
     const data = await res.json();
     if (data.signature === librarySig) return;
     librarySig = data.signature;
+    libraryProjects = data.projects || [];
+    renderReferences();
     const nav = document.getElementById("library");
     nav.replaceChildren();
     if (!data.projects || !data.projects.length) {
@@ -849,7 +1639,7 @@ async function pollLibrary() {
     }
     for (const project of data.projects) {
       const { section, content } = libraryFolder(project, "production");
-      for (const [label, items] of [["Documents", project.documents], ["Images", project.images]]) {
+      for (const [label, items] of [["Documents", project.documents], ["Images", project.images], ["Videos", project.videos || []]]) {
         const groupContent = document.createElement("div");
         groupContent.className = "library-group";
         content.appendChild(groupContent);
@@ -1136,6 +1926,12 @@ function paintReader() {
 }
 
 function releaseReaderImage() {
+  const video = document.getElementById("reader-video");
+  if (video) {
+    video.pause();
+    video.removeAttribute("src");
+    video.hidden = true;
+  }
   const img = document.getElementById("reader-image");
   const src = img.getAttribute("src") || "";
   if (src.startsWith("blob:")) URL.revokeObjectURL(src);
@@ -1144,16 +1940,38 @@ function releaseReaderImage() {
   img.hidden = true;
 }
 
+function syncReaderEmpty() {
+  const empty = document.getElementById("reader-empty");
+  const showLibrary = document.getElementById("reader-show-library");
+  if (empty) empty.hidden = readerOpen;
+  if (showLibrary) showLibrary.hidden = readerOpen || !document.body.classList.contains("library-hidden");
+}
+
+function setLibraryHidden(hidden) {
+  document.body.classList.toggle("library-hidden", hidden);
+  const toggle = document.getElementById("toggle-library");
+  if (toggle) toggle.textContent = hidden ? "Show library" : "Hide library";
+  syncReaderEmpty();
+}
+
+function toggleLibrary() {
+  setLibraryHidden(!document.body.classList.contains("library-hidden"));
+}
+
 function showReaderDocument(name, text) {
+  readerOpen = true;
   readerSource = String(text == null ? "" : text);
   readerFormat = readerFormatFor(name);
   readerMode = readerFormat ? "preview" : "source";
   document.getElementById("reader-title").textContent = name || "Reader";
   releaseReaderImage();
   paintReader();
+  syncReaderEmpty();
 }
 
 function showReaderImage(name, src) {
+  releaseReaderImage();
+  readerOpen = true;
   readerSource = "";
   readerFormat = "";
   readerMode = "source";
@@ -1171,14 +1989,14 @@ function showReaderImage(name, src) {
   img.hidden = false;
   img.alt = name || "Image";
   img.src = src;
+  syncReaderEmpty();
 }
 
 function resetReader() {
+  readerOpen = false;
   readerSource = "";
   readerFormat = "";
   readerMode = "source";
-  const hint = document.getElementById("reader-hint");
-  if (hint) hint.hidden = false;
   const pre = document.getElementById("reader-text");
   pre.hidden = true;
   pre.textContent = "";
@@ -1188,6 +2006,7 @@ function resetReader() {
   releaseReaderImage();
   document.getElementById("reader-title").textContent = "Reader";
   syncPreviewButton();
+  syncReaderEmpty();
 }
 
 function toggleReaderPreview() {
@@ -1198,9 +2017,7 @@ function toggleReaderPreview() {
 
 async function openLocalFile(path) {
   const file = localFiles.get(path);
-  const hint = document.getElementById("reader-hint");
   if (!file) return;
-  if (hint) hint.hidden = true;
   const suffix = file.name.includes(".") ? file.name.split(".").pop().toLowerCase() : "";
   if (LOCAL_IMAGES.has(suffix)) {
     showReaderImage(file.name, URL.createObjectURL(file));
@@ -1210,9 +2027,17 @@ async function openLocalFile(path) {
 }
 
 async function openFile(path) {
-  const hint = document.getElementById("reader-hint");
-  if (hint) hint.hidden = true;
   setView("reader", true);
+  if (/^[^/]+\/videos\/(final|s\d+)\.mp4$/.test(path)) {
+    resetReader();
+    readerOpen = true;
+    document.getElementById("reader-title").textContent = path;
+    const video = document.getElementById("reader-video");
+    video.src = "/video-media?path=" + encodeURIComponent(path);
+    video.hidden = false;
+    syncReaderEmpty();
+    return;
+  }
   if (String(path).startsWith("local:")) {
     await openLocalFile(path);
     return;
@@ -1241,7 +2066,14 @@ document.getElementById("idea").addEventListener("keydown", (event) => {
     startRun();
   }
 });
-for (const name of ["idea", "pages", "dry"]) {
+document.getElementById("brief-form").addEventListener("change", briefSummary);
+document.getElementById("brief-form").addEventListener("input", briefSummary);
+document.getElementById("track").addEventListener("click", (event) => {
+  const station = event.target.closest(".station");
+  if (station) pickStation(station.dataset.station);
+});
+document.getElementById("detail-follow").addEventListener("click", () => pickStation(""));
+for (const name of ["idea", "gate", "dry"]) {
   document.getElementById("help-" + name).addEventListener("click", () => {
     const copy = document.getElementById("help-" + name + "-copy");
     const button = document.getElementById("help-" + name);
@@ -1258,10 +2090,7 @@ document.getElementById("follow").addEventListener("click", () => {
   if (follow && last) setView(viewFor(last));
   toast(follow ? "Following the crew" : "Tabs stay where you put them");
 });
-document.getElementById("toggle-library").addEventListener("click", () => {
-  const hidden = document.body.classList.toggle("library-hidden");
-  document.getElementById("toggle-library").textContent = hidden ? "Show library" : "Hide library";
-});
+document.getElementById("toggle-library").addEventListener("click", toggleLibrary);
 document.getElementById("suggest").addEventListener("click", suggestBrief);
 document.getElementById("sample").addEventListener("click", () => {
   document.getElementById("idea").value = SAMPLE;
@@ -1328,6 +2157,17 @@ document.getElementById("folder-picker").addEventListener("change", (event) => {
   if (files && files.length) takeFolder(files);
   event.target.value = "";
 });
+document.getElementById("reference-upload").addEventListener("change", async (event) => {
+  const files = [...(event.target.files || [])];
+  event.target.value = "";
+  for (const file of files) {
+    try {
+      await uploadReference(file);
+    } catch (error) {
+      toast("Could not save that image.", 4000);
+    }
+  }
+});
 document.getElementById("clear-log").addEventListener("click", async () => {
   try {
     const res = await fetch("/api/log/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
@@ -1345,10 +2185,17 @@ document.getElementById("new-session").addEventListener("click", async () => {
     document.getElementById("idea").value = "";
     suggestLabel();
     releaseNote();
-    document.getElementById("pages").checked = false;
+    document.querySelector('input[name="gate"][value="approve"]').checked = true;
     document.getElementById("dry").checked = false;
+    pickedStation = "";
     document.getElementById("max-shots").value = "";
+    document.getElementById("image-count").value = "";
     document.getElementById("inspection-mode").value = "manual";
+    selectedRefs.clear();
+    uploadedRefs = [];
+    referenceKey = "";
+    renderReferences();
+    briefSummary();
     resetReader();
     openPath = null;
     setView("brief");
@@ -1361,8 +2208,8 @@ document.addEventListener("keydown", (event) => {
   if (event.metaKey || event.ctrlKey || event.altKey) return;
   const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement && document.activeElement.tagName);
   if (typing) return;
-  const views = ["brief", "pipeline", "stills", "activity", "reader"];
-  const index = "12345".indexOf(event.key);
+  const views = ["brief", "pipeline", "stills", "video", "activity", "reader"];
+  const index = "123456".indexOf(event.key);
   if (index >= 0) setView(views[index], true);
 });
 document.getElementById("stage").addEventListener("animationend", (event) => {
@@ -1376,6 +2223,9 @@ window.addEventListener("resize", () => {
 });
 
 suggestLabel();
+renderReferences();
+briefSummary();
+syncReaderEmpty();
 startDust();
 pollLibrary();
 setInterval(pollLibrary, 3000);
@@ -1394,8 +2244,27 @@ setInterval(() => {
   fetch("/api/status").then((res) => res.json()).then(apply).catch(() => {});
 }, 1000);
 
+document.getElementById("stop").addEventListener("click", async () => {
+  const button = document.getElementById("stop");
+  button.disabled = true;
+  try {
+    const res = await fetch("/api/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    if (!res.ok) throw new Error("stop");
+  } catch (error) {
+    button.disabled = false;
+    toast("Could not stop generation");
+  }
+});
+document.getElementById("review-stills").addEventListener("click", openStillsReview);
+document.getElementById("show-review-still").addEventListener("click", openStillsReview);
+document.getElementById("reader-show-library").addEventListener("click", toggleLibrary);
 document.getElementById("resume-images").addEventListener("click", () => reviewImage({}));
 document.getElementById("proceed").addEventListener("click", proceedDraft);
+document.getElementById("abort-draft").addEventListener("click", abortDraft);
 
 async function proceedDraft() {
   const button = document.getElementById("proceed");
@@ -1422,5 +2291,29 @@ async function proceedDraft() {
   } catch (error) {
     toast("Could not continue this draft.");
     button.disabled = false;
+  }
+}
+
+async function abortDraft() {
+  const button = document.getElementById("abort-draft");
+  const proceed = document.getElementById("proceed");
+  button.disabled = true;
+  proceed.disabled = true;
+  try {
+    const res = await fetch("/api/abort-draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast(data.error || "Could not abort this draft.");
+      button.disabled = false;
+      proceed.disabled = false;
+    }
+  } catch (error) {
+    toast("Could not abort this draft.");
+    button.disabled = false;
+    proceed.disabled = false;
   }
 }

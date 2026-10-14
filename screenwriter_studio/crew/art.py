@@ -24,6 +24,9 @@ Order the jobs so references point at earlier ids only:
 Use `poster`, `title`, `logo`, `ui`, or `text` only when words inside the image must be readable. One text card at most.
 Use `product` or `packshot` only for a photoreal object with no cast reference. One product still at most.
 Do not use `edit`. End frames, sheets, and variants are extra images, and this pass does not generate them.
+If the user message lists locked reference images, those faces, costumes, and places stay. Attach a locked id in `references` only on the stills whose shot shows that subject. Do not invent new character or location jobs for subjects the references already show. The piece is a different plot, not a rewrite of the previous story. Do not generate the locked images again.
+If the user message lists style references, they set the look only. Do not build jobs from their people or places. Describe their grade, light, lens, and texture in words in each prompt. The stills step attaches style ids itself.
+If the user message sets how many new stills to generate, that count is the still budget. Do not write more jobs than that number. Locked references do not count. When that count is below the shot list, cover only as many shots as fit.
 
 Prompts are prose, 60-180 words, in this order: medium, subject, action, setting, composition, light, palette, camera, constraints.
 Write the shot's camera placement into each keyframe prompt as a concrete angle, height, and distance. Character and location jobs stay neutral references; the coverage rule is for keyframes. max_keyframes is the shot budget.

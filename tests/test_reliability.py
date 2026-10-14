@@ -143,6 +143,35 @@ class ScriptGateTest(unittest.TestCase):
                 asyncio.run(run())
             call.assert_not_awaited()
 
+    def test_cancel_before_start_does_not_call_the_crew(self):
+        cancel = threading.Event()
+        cancel.set()
+
+        async def collect():
+            return [event async for event in ScreenwriterStudio().run("hall", cancel=cancel)]
+
+        with patch("screenwriter_studio.studio.Runner.run", new=AsyncMock()) as call:
+            events = asyncio.run(collect())
+        call.assert_not_awaited()
+        self.assertEqual(events[-1].kind, "failed")
+        self.assertIn("Generation stopped", events[-1].text)
+
+    def test_stream_stills_uses_the_given_cancel_event(self):
+        package = StillPackage(aspect_ratio="16:9", resolution="1K", jobs=[])
+        cancel = threading.Event()
+        seen = {}
+
+        def fake_render(*args, **kwargs):
+            seen["cancel"] = kwargs.get("cancel")
+            return {"images": [], "status": "complete"}
+
+        async def collect():
+            return [event async for event in _stream_stills(package, Path("unused"), dry_run=True, cancel=cancel)]
+
+        with patch("screenwriter_studio.studio.render_stills", side_effect=fake_render):
+            asyncio.run(collect())
+        self.assertIs(seen["cancel"], cancel)
+
     def test_partial_still_failure_is_not_reported_as_complete(self):
         package = StillPackage(aspect_ratio="16:9", resolution="1K", jobs=[])
         async def run():

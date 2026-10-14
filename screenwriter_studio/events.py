@@ -9,7 +9,7 @@ class StudioEvent:
     kind: Literal[
         "development", "developed", "writing", "reviewing", "approved",
         "rejected", "rewriting", "greenlit", "pages", "art", "stills", "image",
-        "complete", "failed",
+        "complete", "failed", "video",
     ]
     text: str
     folder: str = ""

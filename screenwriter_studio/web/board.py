@@ -32,6 +32,37 @@ class Board:
     revision: int = 0
     log: list[str] = field(default_factory=list)
     overridden: set[str] = field(default_factory=set)
+    # Parallel to log: which station each line belongs to.
+    log_stations: list[str] = field(default_factory=list)
+
+
+_EVENT_STATION = {
+    "development": "development",
+    "developed": "development",
+    "writing": "writer",
+    "rewriting": "writer",
+    "pages": "writer",
+    "reviewing": "editor",
+    "approved": "editor",
+    "rejected": "editor",
+    "awaiting": "approval",
+    "signed_off": "approval",
+    "greenlit": "approval",
+    "art": "art",
+    "stills": "images",
+    "image": "images",
+    "video": "video",
+}
+
+
+def event_station(board: Board, event: StudioEvent) -> str:
+    """The station a line belongs to. Call before apply_event so failures land where they happened."""
+    return _EVENT_STATION.get(event.kind) or token_station(board)
+
+
+def append_log(board: Board, station: str, text: str) -> None:
+    board.log.append(text)
+    board.log_stations.append(station)
 
 
 def scrub(text: str, secret: str) -> str:
@@ -60,6 +91,10 @@ def apply_event(board: Board, event: StudioEvent) -> None:
         board.folder = event.folder
     board.note = _plain(event.text)
     kind = event.kind
+    if kind == "video":
+        board.active = "video"
+        board.edge = None
+        board.returning = False
     stages = {
         "development": ("development", "brief-dev", set()),
         "developed": (None, "dev-writer", {"development"}),
@@ -82,9 +117,19 @@ def apply_event(board: Board, event: StudioEvent) -> None:
     elif kind == "greenlit":
         board.active = None
         board.edge = "editor-art"
-        board.done.update({"development", "writer"})
+        board.done.update({"development", "writer", "approval"})
         board.done.discard("editor")
         board.overridden.add("editor")
+        board.returning = False
+    elif kind == "awaiting":
+        board.active = None
+        board.edge = "editor-approval"
+        board.returning = False
+    elif kind == "signed_off":
+        board.active = None
+        board.edge = "editor-art"
+        board.done.update({"development", "writer", "editor", "approval"})
+        board.overridden.discard("editor")
         board.returning = False
     elif kind in {"rejected", "rewriting"}:
         board.active = "writer" if kind == "rewriting" else "editor"
@@ -116,8 +161,12 @@ def token_station(board: Board) -> str:
     brief-dev with nobody active yet keeps the piece on the brief, so the
     next development line is a visible move rather than a jump.
     """
+    if board.active == "video":
+        return "video"
     if board.returning or board.edge == "editor-writer":
         return "writer"
+    if board.edge == "editor-approval":
+        return "approval"
     if board.edge == "art-images":
         return "images"
     if board.active in _CREW:
@@ -187,6 +236,7 @@ def client_payload(board: Board, secret: str = "") -> dict:
         "returning": board.returning,
         "note": scrub(board.note, secret),
         "log": [scrub(line, secret) for line in board.log],
+        "log_stations": list(board.log_stations),
         "images": images,
         "overridden": sorted(board.overridden),
         "station": token_station(board),
@@ -220,6 +270,8 @@ def board_from(data: dict) -> Board:
     board.running = bool(data.get("running"))
     board.revision = int(data.get("revision") or 0)
     board.log = [str(line) for line in (data.get("log") or [])]
+    stations = [str(item) for item in (data.get("log_stations") or [])][: len(board.log)]
+    board.log_stations = stations + [""] * (len(board.log) - len(stations))
     board.overridden = {item for item in (data.get("overridden") or []) if item in _CREW}
     return board
 
@@ -243,6 +295,7 @@ def save_status(board: Board, secret: str = "") -> None:
         "returning": board.returning,
         "note": scrub(board.note, secret),
         "log": [scrub(line, secret) for line in board.log],
+        "log_stations": list(board.log_stations),
         "images": images,
         "overridden": sorted(board.overridden),
     }

@@ -98,6 +98,10 @@ class DeskPageTest(unittest.TestCase):
         self.assertIn('id="suggest"', page)
         self.assertIn('id="proceed"', page)
         self.assertIn("Proceed with this draft", page)
+        self.assertIn('id="stop"', page)
+        self.assertIn('class="stop"', page)
+        self.assertIn(">Stop</button>", page)
+        self.assertNotIn('id="stop" class="ghost"', page)
         self.assertEqual(page.count('aria-label="What is this?"'), 3)
         self.assertEqual(page.count(">?</button>"), 3)
         self.assertNotIn(">What is this?</button>", page)
@@ -106,6 +110,12 @@ class DeskPageTest(unittest.TestCase):
         script = self._get("/static/desk.js").decode()
         self.assertIn("/api/brief/suggest", script)
         self.assertIn("/api/proceed", script)
+        self.assertIn("/api/stop", script)
+        self.assertIn("stop.hidden = !state.running", script)
+        css = self._get("/static/desk.css").decode()
+        self.assertIn("button.stop", css)
+        self.assertIn("background: #a3261b", css)
+        self.assertIn("color: #fff", css)
         self.assertNotIn("import gradio", (PROJECT_ROOT / "run.py").read_text(encoding="utf-8"))
 
     def test_static_assets_are_served_and_private_paths_are_not(self):
@@ -166,6 +176,55 @@ class DeskPageTest(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 urllib.request.urlopen(request, timeout=5)
             self.assertEqual(caught.exception.code, 403)
+
+    def test_stop_rejects_cross_origin_and_invokes_cancel(self):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/stop",
+            data=b"{}",
+            method="POST",
+            headers={"Content-Type": "application/json", "Origin": "https://attacker.example"},
+        )
+        with mock.patch("screenwriter_studio.web.server.stop_run") as cancel:
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(caught.exception.code, 403)
+            cancel.assert_not_called()
+        with mock.patch("screenwriter_studio.web.server.stop_run") as cancel:
+            body = json.loads(self._post("/api/stop").decode("utf-8"))
+        self.assertTrue(body["ok"])
+        cancel.assert_called_once_with()
+
+    def test_stop_run_sets_the_batch_event_and_cancels_the_crew(self):
+        import screenwriter_studio.web.server as desk
+        from screenwriter_studio.events import StudioEvent
+
+        event = threading.Event()
+        future = mock.Mock()
+        future.done.return_value = False
+        previous_cancel = desk._cancel
+        previous_future = desk._future
+        previous_serial = desk._run_serial
+        desk._cancel = event
+        desk._future = future
+        desk._board.running = True
+        desk._board.active = "writer"
+        desk._board.images = [{"id": "s01", "state": "running"}]
+        try:
+            desk.stop_run()
+            self.assertTrue(event.is_set())
+            future.cancel.assert_called_once_with()
+            self.assertFalse(desk._board.running)
+            self.assertIsNone(desk._board.active)
+            self.assertEqual(desk._board.note, "Generation stopped. Saved images can be resumed.")
+            self.assertEqual(desk._board.images[0]["state"], "failed")
+            self.assertEqual(desk._board.images[0]["error"], "Generation stopped. Saved images can be resumed.")
+            desk._apply(previous_serial, StudioEvent("writing", "**Screenwriter** is writing.\n\n"))
+            self.assertFalse(desk._board.running)
+            self.assertEqual(desk._board.note, "Generation stopped. Saved images can be resumed.")
+        finally:
+            desk._cancel = previous_cancel
+            desk._future = previous_future
+            desk._run_serial = previous_serial
 
     def test_cross_origin_post_cannot_start_paid_run(self):
         from unittest import mock
@@ -591,7 +650,7 @@ const waiting = {
         self.assertEqual(
             result["proposed"]["row"],
             [
-                {"text": "Approve these changes", "className": "go", "action": "repair", "disabled": False},
+                {"text": "Approve these changes (uses credits)", "className": "go", "action": "repair", "disabled": False},
                 {"text": "Abort", "className": "ghost", "action": "keep", "disabled": False},
             ],
         )
@@ -616,7 +675,7 @@ const waiting = {
         self.assertEqual(
             result["busy"],
             [
-                {"text": "Approve these changes", "className": "go", "action": "repair", "disabled": True},
+                {"text": "Approve these changes (uses credits)", "className": "go", "action": "repair", "disabled": True},
                 {"text": "Abort", "className": "ghost", "action": "keep", "disabled": False},
             ],
         )

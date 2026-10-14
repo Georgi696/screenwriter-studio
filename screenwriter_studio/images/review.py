@@ -159,8 +159,10 @@ def run_reviewed(spec, out, ordered, records, api_key, checkpoint, keep,
 
 def _run_review_loop(spec, out, ordered, records, api_key, checkpoint, keep, on_start, cancel, decision, urls, stopped, begin_repair, aspect, resolution, settings, mode):
     from screenwriter_studio.images.generator import (
-        run_job, _ref_list, choose, build_payload, card_for, prompt_length_error,
+        run_job, _ref_list, choose, build_payload, card_for, prompt_length_error, locked_files, style_reference_ids,
     )
+    locked = locked_files(spec)
+    styles = style_reference_ids(spec)
     if decision is None and any(isinstance(record, dict) and record.get("state") == "review" for record in records.values()):
         # Reviews are already waiting. Returning lets the desk clear its running
         # flag instead of polling or inspecting inside this same call.
@@ -172,7 +174,10 @@ def _run_review_loop(spec, out, ordered, records, api_key, checkpoint, keep, on_
         for job in wave:
             stopped()
             record = dict(records.get(job["id"], {}))
-            missing = [ref for ref in _ref_list(job) if not ref.startswith(("https://", "http://")) and ref not in urls]
+            missing = [
+                ref for ref in _ref_list(job)
+                if not ref.startswith(("https://", "http://")) and ref not in urls and ref not in locked
+            ]
             if missing:
                 unresolved = [
                     ref for ref in missing
@@ -202,7 +207,7 @@ def _run_review_loop(spec, out, ordered, records, api_key, checkpoint, keep, on_
 
                     record = run_job(api_key, current_job, aspect, resolution, out, dict(urls),
                                      False, on_start, previous=record,
-                                     checkpoint=save_generation, cancel=cancel)
+                                     checkpoint=save_generation, cancel=cancel, locked=locked)
                     record["kind"] = job["kind"]
                     if record.get("error"):
                         keep(record)
@@ -216,8 +221,16 @@ def _run_review_loop(spec, out, ordered, records, api_key, checkpoint, keep, on_
                     urls[job["id"]] = record["url"]
                     break
                 stopped()
-                references = [(ref, ref if ref.startswith(("https://", "http://")) else
-                               Path(records[ref]["path"])) for ref in _ref_list(job)]
+                references = []
+                for ref in _ref_list(job):
+                    if ref.startswith(("https://", "http://")):
+                        references.append((ref, ref))
+                    elif ref in styles:
+                        references.append((f"{ref} (style only: compare grade, light and texture, not people, places or composition)", locked[ref]))
+                    elif ref in locked:
+                        references.append((ref, locked[ref]))
+                    else:
+                        references.append((ref, Path(records[ref]["path"])))
                 try:
                     review = inspect_image(record, job, spec.get("inspection_context", {}),
                                            references, api_key=api_key,
@@ -242,8 +255,16 @@ def _run_review_loop(spec, out, ordered, records, api_key, checkpoint, keep, on_
                     try:
                         proposed = repair_job(job, record, out)
                         model, _ = choose(proposed, aspect, resolution)
-                        refs = [ref if ref.startswith(("http://", "https://")) else urls[ref]
-                                for ref in _ref_list(proposed)]
+                        refs = []
+                        for ref in _ref_list(proposed):
+                            if ref.startswith(("http://", "https://")):
+                                refs.append(ref)
+                            elif ref in urls:
+                                refs.append(urls[ref])
+                            elif ref in locked:
+                                refs.append(str(locked[ref]))
+                            else:
+                                raise KeyError(ref)
                         if len(refs) > card_for(model).max_images:
                             raise ValueError("Repair exceeds the model's reference limit.")
                         length_error = prompt_length_error(model, proposed["prompt"])

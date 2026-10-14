@@ -18,14 +18,15 @@ jobs.json:
       ]
     }
 
-kind selects the model unless "model" is set. references are earlier job ids
-or public image URLs. Jobs in one wave run together; a later wave waits so it
-can pass the earlier result URL as a reference.
+kind selects the model unless "model" is set. references are earlier job ids,
+public image URLs, or ids listed in locked_references. Jobs in one wave run
+together; a later wave waits so it can pass the earlier result URL as a reference.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import threading
 import fcntl
@@ -40,6 +41,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from screenwriter_studio.paths import WORKSPACE_ROOT
 from screenwriter_studio.images.catalog import (
     EDIT_MODEL as EDIT,
     GPT_IMAGE_MODEL as GPT_IMAGE,
@@ -53,6 +55,9 @@ from screenwriter_studio.models import IMAGE_MODEL_BY_KIND, load_kie_api_key as 
 
 CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
 POLL_URL = "https://api.kie.ai/api/v1/jobs/recordInfo"
+UPLOAD_URL = "https://kieai.redpandaai.co/api/file-base64-upload"
+UPLOAD_PATH = "screenwriter-studio/references"
+UPLOAD_REUSE_SECONDS = 20 * 3600
 POLL_INTERVAL = 4
 MAX_WAIT = 180
 REQUEST_TIMEOUT = 60
@@ -228,9 +233,116 @@ def download(url: str, dest: Path) -> None:
     temporary.replace(dest)
 
 
-def waves(jobs: list[dict]) -> list[list[dict]]:
+_MAX_REFERENCE_BYTES = 8_000_000
+_REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def _header_kind(header: bytes) -> str | None:
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
+def _suffix_matches(suffix: str, header: bytes) -> bool:
+    kind = _header_kind(header)
+    if kind == ".jpg":
+        return suffix in {".jpg", ".jpeg"}
+    return kind is not None and kind == suffix
+
+
+def locked_files(spec: dict) -> dict[str, Path]:
+    """Ids of images that already exist. They are references, not jobs to generate."""
+    raw = spec.get("locked_references") or []
+    if not isinstance(raw, list):
+        raise ValueError("Locked references are unreadable.")
+    root = WORKSPACE_ROOT.resolve()
+    found: dict[str, Path] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("Locked references are unreadable.")
+        ref_id = item.get("id")
+        raw_path = item.get("path")
+        if not isinstance(ref_id, str) or not ref_id.strip() or not isinstance(raw_path, str) or not raw_path.strip():
+            raise ValueError("Locked references are unreadable.")
+        if ref_id in found:
+            raise ValueError("Locked reference ids must be unique.")
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = WORKSPACE_ROOT / path
+        try:
+            resolved = path.resolve()
+        except OSError as exc:
+            raise ValueError("Reference image is not available.") from exc
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("Reference image is outside the workspace.") from exc
+        if not resolved.is_file():
+            raise ValueError("Reference image is not available.")
+        suffix = resolved.suffix.lower()
+        if suffix not in _REFERENCE_SUFFIXES:
+            raise ValueError("Reference image must be a PNG, JPEG, or WebP.")
+        try:
+            size = resolved.stat().st_size
+            header = resolved.read_bytes()[:12]
+        except OSError as exc:
+            raise ValueError("Reference image is not available.") from exc
+        if size <= 0 or size > _MAX_REFERENCE_BYTES or not _suffix_matches(suffix, header):
+            raise ValueError("Reference image must be a PNG, JPEG, or WebP within the size limit.")
+        found[ref_id] = resolved
+    return found
+
+
+def style_reference_ids(spec: dict) -> set[str]:
+    """Locked references the user marked as look only. Identity checks do not apply to them."""
+    return {
+        item["id"] for item in spec.get("locked_references") or []
+        if isinstance(item, dict) and isinstance(item.get("id"), str) and item.get("mode") == "style"
+    }
+
+
+def reference_data_url(path: Path) -> str:
+    """Encode a workspace image as a data URL for the upload API."""
+    data = path.read_bytes()
+    if not data or len(data) > _MAX_REFERENCE_BYTES:
+        raise ValueError("Reference image is too large.")
+    suffix = path.suffix.lower()
+    if not _suffix_matches(suffix, data[:12]):
+        raise ValueError("Reference image must be a PNG, JPEG, or WebP.")
+    mime = "image/jpeg" if suffix in {".jpg", ".jpeg"} else "image/png" if suffix == ".png" else "image/webp"
+    return f"data:{mime};base64," + base64.b64encode(data).decode()
+
+
+_uploads: dict[str, tuple[str, float]] = {}
+_upload_lock = threading.Lock()
+
+
+def hosted_reference_url(api_key: str, path: Path) -> str:
+    """KIE image tasks reject data URLs, so local references go through KIE's file
+    store first. Uploads are deleted after 24 hours; reuse stays inside that window."""
+    data_url = reference_data_url(path)
+    digest = hashlib.sha256(data_url.encode()).hexdigest()
+    with _upload_lock:
+        cached = _uploads.get(digest)
+        if cached and time.time() - cached[1] < UPLOAD_REUSE_SECONDS:
+            return cached[0]
+        body = {"base64Data": data_url, "uploadPath": UPLOAD_PATH,
+                "fileName": f"{digest[:24]}{path.suffix.lower()}"}
+        reply = _within(REQUEST_TIMEOUT, lambda: _request(UPLOAD_URL, api_key, payload=body))
+        url = str((reply.get("data") or {}).get("downloadUrl") or "")
+        if reply.get("code") != 200 or not url.startswith("https://"):
+            raise RuntimeError(f"Reference upload rejected: {reply.get('msg') or 'no download URL'}")
+        _uploads[digest] = (url, time.time())
+        return url
+
+
+def waves(jobs: list[dict], satisfied: set[str] | None = None) -> list[list[dict]]:
     pending = {job["id"]: job for job in jobs}
-    done: set[str] = set()
+    done: set[str] = set(satisfied or ())
     ordered: list[list[dict]] = []
     while pending:
         ready = []
@@ -268,6 +380,7 @@ def run_job(
     dry_run: bool,
     on_start: Callable[[dict], None] | None = None,
     *, previous: dict | None = None, checkpoint=None, cancel=None,
+    locked: dict[str, Path] | None = None,
 ) -> dict:
     prompt = (job.get("prompt") or "").strip()
     job_id = str(job["id"])
@@ -277,12 +390,23 @@ def run_job(
         return record
 
     model, reason = choose(job, aspect, resolution)
+    locked = locked or {}
     ref_urls = []
+    sent_urls = []
     for ref in _ref_list(job):
         if ref.startswith("http://") or ref.startswith("https://"):
             ref_urls.append(ref)
+            sent_urls.append(ref)
         elif ref in urls:
             ref_urls.append(urls[ref])
+            sent_urls.append(urls[ref])
+        elif ref in locked:
+            ref_urls.append(str(locked[ref]))
+            try:
+                sent_urls.append(str(locked[ref]) if dry_run else hosted_reference_url(api_key, locked[ref]))
+            except (OSError, ValueError, RuntimeError) as exc:
+                record["error"] = f"reference {ref}: {exc}"
+                return record
         else:
             record["error"] = f"reference {ref!r} has no image URL yet"
             return record
@@ -315,7 +439,7 @@ def run_job(
             checkpoint(dict(record))
 
     try:
-        payload = build_payload(model, prompt, aspect, resolution, ref_urls)
+        payload = build_payload(model, prompt, aspect, resolution, sent_urls)
         if cancel is not None and cancel.is_set():
             raise RuntimeError("Generation cancelled.")
         if result_url:
@@ -368,13 +492,17 @@ def run_batch(spec: dict, out: Path, *, dry_run: bool = False, resume: bool = Fa
     ids = [job.get("id") for job in jobs]
     if any(not isinstance(value, str) or not value.strip() for value in ids) or len(ids) != len(set(ids)):
         raise ValueError("every job needs a unique string id")
+    locked = locked_files(spec)
+    overlap = set(locked) & set(ids)
+    if overlap:
+        raise ValueError("Locked reference ids must not reuse still job ids.")
     paths = [_destination(out, job) for job in jobs]
     if settings:
         paths += [_destination(out, {"id": job["id"], "filename": f"{dest.stem}.repair-{n}{dest.suffix}"})
                   for job in jobs for dest in [_destination(out, job)] for n in (1, 2)]
     if len({str(path.resolve()) for path in paths}) != len(paths):
         raise ValueError("Job filenames collide after sanitization.")
-    ordered = waves(jobs)  # Validate the whole graph before spending credits.
+    ordered = waves(jobs, set(locked))  # Validate the whole graph before spending credits.
     aspect = str(spec.get("aspect_ratio") or "16:9")
     resolution = str(spec.get("resolution") or "1K")
     if settings:
@@ -390,11 +518,11 @@ def run_batch(spec: dict, out: Path, *, dry_run: bool = False, resume: bool = Fa
         except BlockingIOError as exc:
             raise RuntimeError("This image folder already has a running batch.") from exc
         return _run_locked(spec, out, ordered, aspect, resolution, fingerprint,
-                           dry_run, resume, on_record, on_start, cancel, decision)
+                           dry_run, resume, on_record, on_start, cancel, decision, locked)
 
 
 def _run_locked(spec, out, ordered, aspect, resolution, fingerprint,
-                dry_run, resume, on_record, on_start, cancel, decision):
+                dry_run, resume, on_record, on_start, cancel, decision, locked):
     manifest_path = out / ("manifest.preview.json" if dry_run else "manifest.json")
     records: dict[str, dict] = {}
     if manifest_path.exists() and not dry_run:
@@ -460,7 +588,7 @@ def _run_locked(spec, out, ordered, aspect, resolution, fingerprint,
         with ThreadPoolExecutor(max_workers=min(3, max(1, len(pending)))) as pool:
             futures = [pool.submit(
                 run_job, api_key, job, aspect, resolution, out, dict(urls), dry_run, on_start,
-                previous=records.get(job["id"]), checkpoint=checkpoint, cancel=cancel,
+                previous=records.get(job["id"]), checkpoint=checkpoint, cancel=cancel, locked=locked,
             ) for job in pending]
             for future in as_completed(futures):
                 keep(future.result())

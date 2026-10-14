@@ -28,6 +28,8 @@ Ads and explainers add one CTA in the final 2-3 seconds.
 Beats are story events, not a count of generated images. Multiple beats may share a shot.
 Use only as many beats as the runtime needs, including a single beat for a very short piece.
 If the user specifies a maximum shot count, respect it. Otherwise leave max_shots null.
+If the user message lists locked reference images, keep those faces, costumes, and places in the character and location locks. The piece is a different plot, not a rewrite of the previous story. An image count is not a shot count.
+Style references set the look only. They do not add characters or locations.
 One character want. One obstacle. One turn.
 
 Style bible:

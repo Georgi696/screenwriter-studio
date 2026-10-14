@@ -38,6 +38,7 @@ Shot list, one row per clip:
 
 """ + CAMERA_COVERAGE + """
 If you are given a rejected draft and a list of issues, rewrite the whole piece so those issues are gone.
+If the user message lists locked reference images, keep those faces, costumes, and places. The piece is a different plot, not a rewrite of the previous story.
 Do not mention the notes inside the Fountain text.
 `notes` is at most two items: one default you still had to invent, or one alternative worth trying.
 """

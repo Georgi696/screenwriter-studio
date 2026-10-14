@@ -7,7 +7,10 @@ No frontend build or third-party web framework is required.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -17,13 +20,16 @@ import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from uuid import uuid4
 
 from screenwriter_studio.web.brief import BriefSuggestError, suggest_brief
 from screenwriter_studio.web.board import (
     Board,
+    append_log,
     apply_event,
     board_from,
     client_payload,
+    event_station,
     load_status,
     save_status,
     scrub,
@@ -39,11 +45,15 @@ from screenwriter_studio.models import (
     SEEDREAM_MODEL,
     WRITER_MODEL,
 )
-from screenwriter_studio.studio import ScreenwriterStudio
+from screenwriter_studio.studio import ScreenwriterStudio, reference_choices
 from screenwriter_studio.images.generator import run_batch
 from screenwriter_studio.images.review import apply_live_keep, validate_decision
 from screenwriter_studio.paths import WORKSPACE_ROOT
 from screenwriter_studio.events import StudioEvent
+from screenwriter_studio.videos.assembly import require_tools
+from screenwriter_studio.videos.plan import build_plan, read_json as read_video_json
+from screenwriter_studio.videos.service import render_video
+from screenwriter_studio.videos.web import video_file, video_status, stream_video
 
 STATIC = Path(__file__).resolve().parent / "static"
 PAGE = STATIC / "desk.html"
@@ -52,13 +62,19 @@ DOCUMENT_SUFFIXES = {".json", ".md", ".fountain", ".txt"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 DEFAULT_IDEA = "A 30-second vertical film about someone who keeps a seat on the last bus."
 _MAX_BODY = 100_000
+_MAX_UPLOAD_BODY = 12_000_000
 _MAX_TEXT = 200_000
 _MAX_IMAGE = 8_000_000
+_REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+_STOP_NOTE = "Generation stopped. Saved images can be resumed."
+_VIDEO_STOP_NOTE = "Generation stopped. Use Resume final video to continue saved work."
+_ABORT_NOTE = "This draft was aborted. The pages remain in the folder."
 
 _lock = threading.Lock()
 _board = Board()
 _run_serial = 0
 _future: asyncio.Future | None = None
+_cancel: threading.Event | None = None
 _loop: asyncio.AbstractEventLoop | None = None
 _loop_ready = threading.Event()
 
@@ -93,7 +109,7 @@ def _restore() -> None:
         _board.running = False
         _board.active = _board.edge = None
         _board.returning = False
-        _board.note = "Previous run was interrupted. Use Resume saved image work in Stills, or resume from the command line."
+        _board.note = "Previous run was interrupted. Resume saved work in Stills or Final Video, or from the command line."
     # The manifest is authoritative if a checkpoint reached disk before the last UI event.
     if _board.folder:
         folder = Path(_board.folder)
@@ -159,7 +175,22 @@ def public_view() -> dict:
             {"model": model, "kinds": kinds} for model, kinds in _image_agents()
         ]
         payload["can_proceed"] = (not _board.running) and can_proceed(_board.folder)
+        payload["pages_passed"] = saved_verdict(_board.folder)
+        payload["video"] = json.loads(scrub(json.dumps(video_status(production_path(_board.folder))), _secret()))
         return payload
+
+
+def saved_verdict(folder: str) -> bool | None:
+    """Whether the editor passed the saved pages, or nothing when there is no verdict yet."""
+    path = production_path(folder)
+    if path is None:
+        return None
+    try:
+        verdict = json.loads((path / "verdict.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    passed = verdict.get("passed") if isinstance(verdict, dict) else None
+    return passed if isinstance(passed, bool) else None
 
 
 def production_path(folder: str) -> Path | None:
@@ -179,9 +210,11 @@ def production_path(folder: str) -> Path | None:
 
 
 def can_proceed(folder: str) -> bool:
-    """Saved pages can continue when stills have not been submitted yet."""
+    """Saved pages can continue when stills have not been submitted and the draft was not aborted."""
     path = production_path(folder)
     if path is None:
+        return False
+    if (path / "aborted.json").is_file():
         return False
     needed = ("00_development.json", "01_screenplay.json", "verdict.json")
     if not all((path / name).is_file() for name in needed):
@@ -246,6 +279,7 @@ def library_catalog() -> tuple[list[dict], str]:
     for folder in sorted(path for path in root.iterdir() if path.is_dir() and not path.name.startswith(".")):
         documents: list[dict] = []
         images: list[dict] = []
+        videos: list[dict] = []
         for file in sorted(folder.rglob("*")):
             if not file.is_file() or file.name.startswith("."):
                 continue
@@ -257,14 +291,102 @@ def library_catalog() -> tuple[list[dict], str]:
                 bucket = images
             elif suffix in DOCUMENT_SUFFIXES:
                 bucket = documents
+            elif suffix == ".mp4" and video_file(root, resolved.relative_to(root).as_posix()):
+                bucket = videos
             else:
                 continue
             relative = resolved.relative_to(root).as_posix()
             stat = resolved.stat()
             bucket.append({"path": relative, "name": resolved.relative_to(folder.resolve()).as_posix()})
             signature.append(f"{relative}:{stat.st_mtime_ns}:{stat.st_size}")
-        projects.append({"slug": folder.name, "documents": documents, "images": images})
+        projects.append({"slug": folder.name, "documents": documents, "images": images, "videos": videos})
     return projects, "|".join(signature)
+
+
+def _image_header_kind(header: bytes) -> str | None:
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
+def _suffix_matches_image(suffix: str, header: bytes) -> bool:
+    kind = _image_header_kind(header)
+    if kind == ".jpg":
+        return suffix in {".jpg", ".jpeg"}
+    return kind is not None and kind == suffix
+
+
+def reference_file(path: str) -> Path | None:
+    """A PNG, JPEG, or WebP already stored under productions/."""
+    file = library_file(path)
+    if file is None or file.suffix.lower() not in _REFERENCE_SUFFIXES:
+        return None
+    try:
+        size = file.stat().st_size
+        header = file.read_bytes()[:12]
+    except OSError:
+        return None
+    if size <= 0 or size > _MAX_IMAGE or not _suffix_matches_image(file.suffix.lower(), header):
+        return None
+    return file
+
+
+def parse_image_count(value) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int or not 1 <= value <= 240:
+        raise ValueError("Image count must be an integer between 1 and 240.")
+    return value
+
+
+def parse_references(value) -> list[dict]:
+    """[{path, mode}] with mode style or lock. A bare path string is a lock."""
+    chosen: list[dict] = []
+    seen: set[str] = set()
+    for relative, mode in reference_choices(value):
+        if reference_file(relative) is None:
+            raise ValueError("Reference image is not in a production folder.")
+        if relative not in seen:
+            seen.add(relative)
+            chosen.append({"path": relative, "mode": mode})
+    return chosen
+
+
+def save_reference_upload(filename, encoded) -> dict:
+    """Store an uploaded still under productions/.references without using the client path."""
+    if not isinstance(filename, str) or not isinstance(encoded, str):
+        raise ValueError("Upload must be a PNG, JPEG, or WebP image.")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in _REFERENCE_SUFFIXES or Path(filename).name != filename:
+        raise ValueError("Upload must be a PNG, JPEG, or WebP image.")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError("Upload must be a PNG, JPEG, or WebP image.") from exc
+    if not data or len(data) > _MAX_IMAGE or not _suffix_matches_image(suffix, data[:12]):
+        raise ValueError("Upload must be a PNG, JPEG, or WebP image within the size limit.")
+    if not PRODUCTIONS.is_dir():
+        raise ValueError("Upload path is not allowed.")
+    root = PRODUCTIONS.resolve()
+    dest_dir = (root / ".references").resolve()
+    if not _under(dest_dir, root):
+        raise ValueError("Upload path is not allowed.")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = (dest_dir / f"{uuid4().hex}{suffix}").resolve()
+    if not _under(dest, dest_dir) or dest.exists():
+        raise ValueError("Upload path is not allowed.")
+    temporary = dest.with_suffix(dest.suffix + ".part")
+    temporary.write_bytes(data)
+    temporary.replace(dest)
+    relative = dest.relative_to(root).as_posix()
+    return {
+        "id": relative,
+        "src": "/library-media?path=" + urllib.parse.quote(relative, safe=""),
+    }
 
 
 def library_file(path: str) -> Path | None:
@@ -292,6 +414,115 @@ def library_text(file: Path) -> str:
     if len(text) > _MAX_TEXT:
         text = text[:_MAX_TEXT] + "\n\n… truncated"
     return scrub(text, _secret())
+
+
+STAGES = ("brief", "development", "writer", "editor", "approval", "art")
+_DEVELOPMENT_FIELDS = (
+    "title", "logline", "job_type", "runtime_seconds", "aspect_ratio", "tone", "audience",
+    "look", "palette", "lighting", "characters", "locations", "beats", "invented",
+)
+
+
+def _read_json(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
+def _draft_number(path: Path) -> int:
+    head = path.name.split("_", 1)[0]
+    return int(head) if head.isdigit() else 0
+
+
+def stage_detail(station: str) -> dict:
+    """What one station produced, read from the production folder. Paths are library-relative."""
+    if station not in STAGES:
+        raise ValueError("Unknown station.")
+    with _lock:
+        folder_label = _board.folder
+        brief = _board.brief
+    folder = production_path(folder_label)
+    detail: dict = {"station": station, "folder": folder_label, "files": [], "data": {}}
+    root = PRODUCTIONS.resolve() if PRODUCTIONS.is_dir() else None
+
+    def add_file(path: Path, label: str = "") -> None:
+        if root is None or not path.is_file() or not _under(path, root):
+            return
+        detail["files"].append({"path": path.resolve().relative_to(root).as_posix(), "name": label or path.name})
+
+    data = detail["data"]
+    settings = _read_json(folder / "run_settings.json") if folder else None
+    settings = settings if isinstance(settings, dict) else {}
+    modes = {
+        item["id"]: item.get("mode", "lock") for item in settings.get("references") or []
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    if station == "brief":
+        data["brief"] = brief
+        data["image_count"] = settings.get("image_count")
+        data["references"] = [
+            {"id": item.get("id"), "name": item.get("name"), "mode": item.get("mode", "lock")}
+            for item in settings.get("references") or [] if isinstance(item, dict)
+        ]
+        if folder:
+            for item in sorted((folder / "references").glob("*")):
+                add_file(item)
+    elif folder is None:
+        pass
+    elif station == "development":
+        saved = _read_json(folder / "00_development.json")
+        if isinstance(saved, dict):
+            data.update({key: saved.get(key) for key in _DEVELOPMENT_FIELDS})
+        add_file(folder / "00_development.json")
+    elif station == "writer":
+        drafts = sorted((folder / "drafts").glob("*_screenplay.json"), key=_draft_number)
+        final = folder / "01_screenplay.json"
+        latest = _read_json(final) if final.is_file() else (_read_json(drafts[-1]) if drafts else None)
+        data["drafts"] = len(drafts)
+        data["final"] = final.is_file()
+        if isinstance(latest, dict):
+            data["shots"] = [
+                {key: shot.get(key) for key in ("number", "duration_seconds", "framing", "action")}
+                for shot in latest.get("shots") or [] if isinstance(shot, dict)
+            ]
+            data["notes"] = latest.get("notes") or []
+        add_file(folder / "01_script.fountain")
+        add_file(folder / "02_shots.md")
+        for draft in drafts:
+            add_file(draft, f"Draft {_draft_number(draft)}")
+    elif station == "editor":
+        verdicts = []
+        for path in sorted((folder / "drafts").glob("*_verdict.json"), key=_draft_number):
+            saved = _read_json(path)
+            if isinstance(saved, dict):
+                verdicts.append({"draft": _draft_number(path), "passed": bool(saved.get("passed")),
+                                 "issues": [str(item) for item in saved.get("issues") or []]})
+                add_file(path, f"Verdict on draft {_draft_number(path)}")
+        data["verdicts"] = verdicts
+        add_file(folder / "verdict.json")
+    elif station == "approval":
+        greenlight = _read_json(folder / "greenlight.json")
+        data["passed"] = saved_verdict(folder_label)
+        data["approved"] = isinstance(greenlight, dict) and bool(greenlight.get("proceeded"))
+        data["aborted"] = (folder / "aborted.json").is_file()
+        data["waiting"] = can_proceed(folder_label)
+        add_file(folder / "01_script.fountain")
+        add_file(folder / "02_shots.md")
+        add_file(folder / "greenlight.json")
+    elif station == "art":
+        submitted = folder / "images" / "jobs.json"
+        plan = _read_json(submitted) if submitted.is_file() else _read_json(folder / "03_still_plan.json")
+        jobs = plan.get("jobs") if isinstance(plan, dict) else None
+        data["submitted"] = submitted.is_file()
+        data["jobs"] = [
+            {"id": job.get("id"), "kind": job.get("kind"), "prompt": job.get("prompt"),
+             "references": [{"id": ref, "mode": modes.get(ref, "")} for ref in job.get("references") or []]}
+            for job in jobs or [] if isinstance(job, dict)
+        ]
+        add_file(folder / "03_still_plan.json")
+        add_file(submitted)
+    return json.loads(scrub(json.dumps(detail), _secret()))
 
 
 def _media_for(image_id: str) -> Path | None:
@@ -334,10 +565,11 @@ def _current(serial: int) -> bool:
 
 def _apply(serial: int, chunk: StudioEvent) -> None:
     with _lock:
-        if serial != _run_serial:
+        if serial != _run_serial or (_cancel is not None and _cancel.is_set()):
             return
+        station = event_station(_board, chunk)
         apply_event(_board, chunk)
-        _board.log.append(chunk.text.strip())
+        append_log(_board, station, chunk.text.strip())
         _board.running = True
         _replace(_board)
 
@@ -346,6 +578,8 @@ def _finish(serial: int, note: str | None) -> None:
     with _lock:
         if serial != _run_serial:
             return
+        if _cancel is not None and _cancel.is_set():
+            note = _VIDEO_STOP_NOTE if _board.active == "video" else _STOP_NOTE
         if note:
             _board.note = note
             _board.active = _board.edge = None
@@ -362,7 +596,7 @@ async def _consume(serial: int, stream) -> None:
                 return
             _apply(serial, chunk)
     except asyncio.CancelledError:
-        note = "Run cancelled."
+        note = _STOP_NOTE
     except Exception as exc:
         message = str(exc)
         secret = _secret()
@@ -373,41 +607,103 @@ async def _consume(serial: int, stream) -> None:
         _finish(serial, note)
 
 
-async def _drive(serial: int, idea: str, pages_only: bool, dry_run: bool, max_shots: int | None = None, inspection_mode: str = "manual") -> None:
+async def _drive(serial: int, idea: str, pages_only: bool, dry_run: bool, max_shots: int | None, inspection_mode: str, cancel: threading.Event, image_count: int | None = None, references: list | None = None, approval: bool = False) -> None:
     studio = ScreenwriterStudio()
-    await _consume(serial, studio.run(idea, pages_only=pages_only, dry_run=dry_run, max_shots=max_shots, inspection_mode=inspection_mode))
+    await _consume(serial, studio.run(
+        idea, pages_only=pages_only, dry_run=dry_run, max_shots=max_shots,
+        inspection_mode=inspection_mode, cancel=cancel, image_count=image_count, references=references,
+        approval=approval,
+    ))
 
 
-async def _drive_saved(serial: int, folder: Path, brief: str, dry_run: bool, inspection_mode: str) -> None:
+async def _drive_saved(serial: int, folder: Path, brief: str, dry_run: bool, inspection_mode: str, cancel: threading.Event) -> None:
     studio = ScreenwriterStudio()
-    await _consume(serial, studio.proceed(folder, dry_run=dry_run, inspection_mode=inspection_mode, brief=brief))
+    await _consume(serial, studio.proceed(
+        folder, dry_run=dry_run, inspection_mode=inspection_mode, brief=brief, cancel=cancel,
+    ))
 
 
 def clear_log() -> None:
     """Drop the activity lines. The crew, the brief, and the stills stay."""
     with _lock:
         _board.log = []
+        _board.log_stations = []
         _replace(_board)
 
 
-def clear_session() -> None:
-    """Stop the crew and put the desk back to a blank brief."""
-    global _future, _run_serial
-    future = None
-    with _lock:
-        _run_serial += 1
-        future = _future
-        board = Board()
-        board.revision = _board.revision
-        _replace(board)
+def _cut(cancel: threading.Event | None, future) -> None:
+    """Set the batch event, then cancel the crew task. The event is what the batch thread polls."""
+    if cancel is not None:
+        cancel.set()
     if future is not None and not future.done():
         future.cancel()
 
 
-def start_crew(idea: str, pages_only: bool, dry_run: bool, max_shots: int | None = None, inspection_mode: str = "manual") -> None:
-    global _future, _run_serial
-    loop = _ensure_loop()
+def _commit_future(serial: int, cancel: threading.Event, coro) -> None:
+    """Start coro unless stop already retired this serial."""
+    global _future
+    future = asyncio.run_coroutine_threadsafe(coro, _loop)
+    discarded = None
     with _lock:
+        if serial != _run_serial:
+            discarded = future
+        else:
+            _future = future
+    if discarded is not None:
+        cancel.set()
+        discarded.cancel()
+
+
+def clear_session() -> None:
+    """Stop the crew and put the desk back to a blank brief."""
+    global _future, _run_serial, _cancel
+    future = None
+    cancel = None
+    with _lock:
+        _run_serial += 1
+        future = _future
+        cancel = _cancel
+        _future = None
+        _cancel = None
+        board = Board()
+        board.revision = _board.revision
+        _replace(board)
+    _cut(cancel, future)
+
+
+def stop_run() -> None:
+    """Stop image generation and the in-flight crew step. Saved files stay on disk."""
+    global _run_serial
+    with _lock:
+        cancel = _cancel
+        future = _future
+        if cancel is not None:
+            cancel.set()
+        if _board.running:
+            note = _VIDEO_STOP_NOTE if _board.active == "video" else _STOP_NOTE
+            _run_serial += 1
+            _board.running = False
+            _board.active = None
+            _board.edge = None
+            _board.returning = False
+            _board.note = note
+            for image in _board.images:
+                if image.get("state") in {"running", "inspecting"}:
+                    image["state"] = "failed"
+                    image["error"] = _STOP_NOTE
+            _replace(_board)
+    if future is not None and not future.done():
+        future.cancel()
+
+
+def start_crew(idea: str, pages_only: bool, dry_run: bool, max_shots: int | None = None, inspection_mode: str = "manual", image_count: int | None = None, references: list | None = None, approval: bool = False) -> None:
+    global _run_serial, _cancel
+    _ensure_loop()
+    with _lock:
+        previous_cancel = _cancel
+        previous_future = _future
+        cancel = threading.Event()
+        _cancel = cancel
         _run_serial += 1
         serial = _run_serial
         previous = load_status()
@@ -418,16 +714,17 @@ def start_crew(idea: str, pages_only: bool, dry_run: bool, max_shots: int | None
         board.note = "The brief is on its way to Development."
         board.running = True
         _replace(board)
-    if _future is not None and not _future.done():
-        _future.cancel()
-    _future = asyncio.run_coroutine_threadsafe(_drive(serial, idea, pages_only, dry_run, max_shots, inspection_mode), loop)
+    _cut(previous_cancel, previous_future)
+    _commit_future(
+        serial, cancel,
+        _drive(serial, idea, pages_only, dry_run, max_shots, inspection_mode, cancel, image_count=image_count, references=references, approval=approval),
+    )
 
 
-async def _resume_images(serial, out, spec, decision):
-    cancel = threading.Event()
+async def _resume_images(serial, out, spec, decision, cancel: threading.Event):
     def update(record):
         _apply(serial, StudioEvent("image", f"Image {record['id']}: {record.get('state', 'working')}", image=record))
-    note = "Image work stopped; progress is saved."
+    note = _STOP_NOTE
     try:
         manifest = await asyncio.to_thread(run_batch, spec, out, resume=True, decision=decision,
                                          on_record=update, cancel=cancel,
@@ -435,10 +732,10 @@ async def _resume_images(serial, out, spec, decision):
         note = "Stills complete." if manifest.get("status") == "complete" else "Stills paused. Review the image cards or resume saved tasks."
     except asyncio.CancelledError:
         cancel.set()
-        note = "Image work cancelled; progress is saved."
+        note = _STOP_NOTE
         raise
     except Exception as exc:
-        note = scrub(str(exc), _secret())
+        note = _STOP_NOTE if cancel.is_set() else scrub(str(exc), _secret())
     finally:
         _finish(serial, note)
 
@@ -496,8 +793,9 @@ def _keep_without_provider(out: Path, decision: dict) -> None:
 
 
 def resume_images(data):
-    global _future, _run_serial
-    loop = _ensure_loop()
+    global _run_serial, _cancel
+    _ensure_loop()
+    launch = None
     with _lock:
         decision = data if data else None
         keep_now = isinstance(decision, dict) and decision.get("action") == "keep"
@@ -518,14 +816,22 @@ def resume_images(data):
         if keep_now:
             held_out, held_decision = out, decision
         else:
+            previous_cancel = _cancel
+            previous_future = _future
+            cancel = threading.Event()
+            _cancel = cancel
             _run_serial += 1
             serial = _run_serial
             _board.running = True
             _board.note = "Continuing saved image work."
             _replace(_board)
-            _future = asyncio.run_coroutine_threadsafe(_resume_images(serial, out, spec, decision), loop)
-            return
-    _keep_without_provider(held_out, held_decision)
+            launch = (serial, cancel, previous_cancel, previous_future, out, spec, decision)
+    if launch is None:
+        _keep_without_provider(held_out, held_decision)
+        return
+    serial, cancel, previous_cancel, previous_future, out, spec, decision = launch
+    _cut(previous_cancel, previous_future)
+    _commit_future(serial, cancel, _resume_images(serial, out, spec, decision, cancel))
 
 
 def _require_proceed(inspection_mode: str) -> None:
@@ -538,28 +844,117 @@ def _require_proceed(inspection_mode: str) -> None:
         raise ValueError("This draft cannot be continued. Image work that is already saved can be resumed from Stills.")
 
 
+def abort_draft() -> None:
+    """Drop the offer to continue. Pages stay on disk. No art director and no stills."""
+    with _lock:
+        if _board.running or not can_proceed(_board.folder):
+            raise ValueError("This draft cannot be aborted.")
+        folder = production_path(_board.folder)
+        if folder is None:
+            raise ValueError("This draft cannot be aborted.")
+        marker = folder / "aborted.json"
+        temporary = marker.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps({"aborted": True}) + "\n", encoding="utf-8")
+        temporary.replace(marker)
+        _board.note = _ABORT_NOTE
+        _replace(_board)
+
+
 def proceed_saved(dry_run: bool, inspection_mode: str) -> None:
     """Send the saved pages to the art director. The editor is not asked again."""
-    global _future, _run_serial
+    global _run_serial, _cancel
     with _lock:
         _require_proceed(inspection_mode)
-    loop = _ensure_loop()
+    _ensure_loop()
     with _lock:
         _require_proceed(inspection_mode)
         folder = production_path(_board.folder)
         if folder is None:
             raise ValueError("This draft cannot be continued.")
+        previous_cancel = _cancel
+        previous_future = _future
+        cancel = threading.Event()
+        _cancel = cancel
         _run_serial += 1
         serial = _run_serial
         brief = _board.brief
         _board.running = True
         _board.note = "Continuing with the saved draft."
         _replace(_board)
-        if _future is not None and not _future.done():
-            _future.cancel()
-        _future = asyncio.run_coroutine_threadsafe(
-            _drive_saved(serial, folder, brief, dry_run, inspection_mode), loop
-        )
+    _cut(previous_cancel, previous_future)
+    _commit_future(
+        serial, cancel,
+        _drive_saved(serial, folder, brief, dry_run, inspection_mode, cancel),
+    )
+
+
+async def _drive_video(serial, folder, mode, sound, dry_run, cancel, selection=None, shots=None, redo=None):
+    def update(manifest):
+        complete = sum(clip.get("state") == "done" for clip in manifest["clips"])
+        text = f"Video {manifest['status']}: {complete}/{len(manifest['clips'])} clips ready."
+        _apply(serial, StudioEvent("video", text))
+    note = None
+    try:
+        result = await asyncio.to_thread(render_video, folder, mode=mode, sound=sound,
+                                         selection=selection, dry_run=dry_run, on_update=update, cancel=cancel,
+                                         shots=shots, regenerate=redo)
+        note = {"planned": "Video plan saved in videos/jobs.preview.json. No credits spent.",
+                "partial": "Clips saved. Render the remaining shots to assemble the final video."}.get(
+            result["status"], "Final video ready. Open Final Video to play or download it.")
+    except asyncio.CancelledError:
+        cancel.set()
+        raise
+    except Exception as exc:
+        note = scrub(str(exc), _secret())
+    finally:
+        _finish(serial, note)
+
+
+def start_video(data: dict) -> None:
+    global _run_serial, _cancel
+    mode, sound = data.get("mode"), data.get("sound")
+    selection = data.get("selection")
+    if selection is not None and selection not in ("auto", "kling", "seedance"):
+        raise ValueError("Choose auto, kling, or seedance model selection.")
+    dry_run = data.get("dry_run", False)
+    shots, redo = data.get("shots"), data.get("redo")
+    for chosen in (shots, redo):
+        if chosen is not None and (not isinstance(chosen, list) or len(chosen) > 240 or not all(
+                isinstance(item, str) and re.fullmatch(r"s\d{2,3}", item) for item in chosen)):
+            raise ValueError("Shots must be a list of shot IDs such as s01.")
+    if (shots or redo) and dry_run:
+        raise ValueError("A video plan covers every shot.")
+    if mode is not None and mode not in ("std", "pro", "4K"):
+        raise ValueError("Choose std, pro, or 4K video quality.")
+    if (sound is not None and type(sound) is not bool) or type(dry_run) is not bool:
+        raise ValueError("Sound and dry-run settings must be boolean.")
+    _ensure_loop()
+    with _lock:
+        if _board.running:
+            raise ValueError("Wait for the current run to finish before generating video.")
+        folder = production_path(_board.folder)
+        if folder is None:
+            raise ValueError("No saved production is selected.")
+        saved = folder / "videos/jobs.json"
+        settings = read_video_json(saved) if (folder / "videos/manifest.json").exists() else {}
+        mode = mode if mode is not None else settings.get("mode", "pro")
+        sound = sound if sound is not None else settings.get("sound", True)
+        selection = selection if selection is not None else settings.get("selection", "kling" if settings else "auto")
+        build_plan(folder, mode=mode, sound=sound, selection=selection, hash_images=False, frozen_plan=settings or None)
+        if not dry_run:
+            require_tools()
+        previous_cancel, previous_future = _cancel, _future
+        cancel = threading.Event()
+        _cancel = cancel
+        _run_serial += 1
+        serial = _run_serial
+        _board.running = True
+        _board.active = "video"
+        _board.edge = None
+        _board.note = "Planning video." if dry_run else "Generating final video from approved keyframes."
+        _replace(_board)
+    _cut(previous_cancel, previous_future)
+    _commit_future(serial, cancel, _drive_video(serial, folder, mode, sound, dry_run, cancel, selection, shots, redo))
 
 
 def _content_type(path: Path) -> str:
@@ -611,6 +1006,12 @@ class DeskHandler(BaseHTTPRequestHandler):
         if route == "/api/events":
             self._events()
             return
+        if route == "/api/stage":
+            try:
+                self._json(200, stage_detail(query.get("station", [""])[0]))
+            except ValueError as exc:
+                self._json(404, {"error": str(exc)})
+            return
         if route == "/api/library":
             projects, signature = library_catalog()
             self._json(200, {"signature": signature, "projects": projects})
@@ -623,6 +1024,13 @@ class DeskHandler(BaseHTTPRequestHandler):
             return
         if route == "/library-media":
             self._library_media(query.get("path", [""])[0])
+            return
+        if route == "/video-media":
+            path = video_file(PRODUCTIONS, query.get("path", [""])[0])
+            if path is None:
+                self._send(404, b"Video not found", "text/plain")
+            else:
+                stream_video(self, path, attachment=query.get("download") == ["1"])
             return
         self._send(404, b"Not found", "text/plain; charset=utf-8")
 
@@ -638,11 +1046,48 @@ class DeskHandler(BaseHTTPRequestHandler):
             clear_session()
             self._json(200, {"ok": True})
             return
-        if parsed.path not in {"/api/run", "/api/brief/suggest", "/api/images/review", "/api/proceed"}:
+        if parsed.path == "/api/stop":
+            stop_run()
+            self._json(200, {"ok": True})
+            return
+        if parsed.path == "/api/abort-draft":
+            try:
+                abort_draft()
+            except ValueError as exc:
+                self._json(409, {"error": scrub(str(exc), _secret())})
+                return
+            self._json(200, {"ok": True})
+            return
+        if parsed.path == "/api/references":
+            data = self._read_json(_MAX_UPLOAD_BODY)
+            if data is None:
+                return
+            try:
+                saved = save_reference_upload(data.get("filename"), data.get("data"))
+            except ValueError as exc:
+                self._json(400, {"error": str(exc)})
+                return
+            self._json(200, saved)
+            return
+        if parsed.path not in {"/api/run", "/api/brief/suggest", "/api/images/review", "/api/proceed", "/api/video", "/api/video/preview"}:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return
         data = self._read_json()
         if data is None:
+            return
+        if parsed.path == "/api/video/preview":
+            with _lock:
+                folder = production_path(_board.folder)
+                result = {"folder": _board.folder, "video": video_status(folder, options=data)}
+            self._json(200, json.loads(scrub(json.dumps(result), _secret())))
+            return
+        if parsed.path == "/api/video":
+            try:
+                start_video(data)
+            except (ValueError, OSError) as exc:
+                self._json(409, {"error": scrub(str(exc), _secret())})
+                return
+            self._json(202, {"ok": True})
             return
         if parsed.path == "/api/images/review":
             try:
@@ -672,11 +1117,24 @@ class DeskHandler(BaseHTTPRequestHandler):
         if max_shots is not None and (type(max_shots) is not int or not 1 <= max_shots <= 240):
             self._json(400, {"error": "Shot limit must be an integer between 1 and 240."})
             return
+        try:
+            image_count = parse_image_count(data.get("image_count"))
+            references = parse_references(data.get("references"))
+        except ValueError as exc:
+            self._json(400, {"error": str(exc)})
+            return
         mode = data.get("inspection_mode", "manual")
         if mode not in ("manual", "auto"):
             self._json(400, {"error": "Inspection mode must be manual or auto."})
             return
-        start_crew(idea.strip() or DEFAULT_IDEA, bool(data.get("pages_only")), bool(data.get("dry_run")), max_shots, mode)
+        kwargs = {}
+        if image_count is not None:
+            kwargs["image_count"] = image_count
+        if references:
+            kwargs["references"] = references
+        if data.get("approval") is True:
+            kwargs["approval"] = True
+        start_crew(idea.strip() or DEFAULT_IDEA, bool(data.get("pages_only")), bool(data.get("dry_run")), max_shots, mode, **kwargs)
         self._json(202, {"ok": True})
 
     def _local_request(self, mutating: bool = False) -> bool:
@@ -694,14 +1152,15 @@ class DeskHandler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _read_json(self) -> dict | None:
+    def _read_json(self, limit: int | None = None) -> dict | None:
+        cap = _MAX_BODY if limit is None else limit
         try:
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
             self._json(400, {"error": "expected JSON"})
             return None
-        if length < 0 or length > _MAX_BODY:
-            self._json(413, {"error": "brief is too long"})
+        if length < 0 or length > cap:
+            self._json(413, {"error": "brief is too long" if limit is None else "upload is too large"})
             return None
         raw = self.rfile.read(length) if length else b"{}"
         try:

@@ -92,7 +92,7 @@ class StillJob(BaseModel):
     )
     references: list[str] = Field(
         default_factory=list,
-        description="Ids of earlier stills this image must match, or empty",
+        description="Ids of earlier stills this image must match, locked reference ids from the user message, or empty",
     )
 
 
