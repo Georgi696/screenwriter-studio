@@ -1,11 +1,12 @@
 """Stills desk — writes jobs.json and calls KIE.ai. No model choice here; the generator routes."""
 
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 
 from screenwriter_studio.budget import select_stills
-from screenwriter_studio.images.catalog import card_for, prompt_length_error
+from screenwriter_studio.images.catalog import NANO_BANANA_MODEL, card_for, prompt_length_error
 from screenwriter_studio.images.generator import _ref_list, choose, run_batch, waves
 from screenwriter_studio import settings as studio_settings
 from screenwriter_studio.models import ART_MODEL
@@ -79,7 +80,8 @@ def apply_style_references(jobs: list[dict], style_ids: list[str], aspect: str, 
             styled.append(job)
             continue
         model, _ = choose({**job, "references": subject}, aspect, resolution)
-        room = max(0, card_for(model).max_images - len(subject))
+        # Keep one slot free: a repair sends the candidate image first, then these references.
+        room = max(0, card_for(model).max_images - len(subject) - 1)
         extra = style_ids[:room]
         prompt = str(job.get("prompt") or "").rstrip()
         if extra and not prompt_length_error(model, prompt + style_note(len(extra))):
@@ -89,6 +91,40 @@ def apply_style_references(jobs: list[dict], style_ids: list[str], aspect: str, 
             job["references"] = subject
         styled.append(job)
     return styled
+
+
+def _tokens(text: str) -> list[str]:
+    return [token for token in re.split(r"[^a-z0-9]+", str(text).lower()) if token]
+
+
+def attach_cast(jobs: list[dict], shots: list[dict]) -> list[dict]:
+    """Each shot image gets the sheet of every character its shot lists, even when the prompt writer forgot one.
+
+    A sheet is matched by the character's first name appearing in the sheet id ("maya", "maya-sheet").
+    An ambiguous name attaches nothing. One reference slot stays free for a repair.
+    """
+    sheets: dict[str, list[str]] = {}
+    for job in jobs:
+        if job.get("kind") == "character":
+            for token in set(_tokens(job.get("id", ""))):
+                sheets.setdefault(token, []).append(job["id"])
+    cast = {}
+    for shot in shots or []:
+        if isinstance(shot, dict) and isinstance(shot.get("number"), int) and isinstance(shot.get("characters"), list):
+            cast[f"s{shot['number']:02d}"] = [str(name) for name in shot["characters"]]
+    attached = []
+    for job in jobs:
+        names = cast.get(job.get("id")) if job.get("kind") in {"keyframe", "scene"} else None
+        if names:
+            references = _ref_list(job)
+            for name in names:
+                first = (_tokens(name) or [""])[0]
+                found = sheets.get(first, [])
+                if len(found) == 1 and found[0] not in references and len(references) < card_for(NANO_BANANA_MODEL).max_images - 1:
+                    references.append(found[0])
+            job = {**job, "references": references}
+        attached.append(job)
+    return attached
 
 
 def portrait_characters(jobs: list[dict]) -> list[dict]:
@@ -116,7 +152,9 @@ def render_stills(
     out.mkdir(parents=True, exist_ok=True)
     style_ids = [item["id"] for item in locked_references or [] if item.get("mode") == "style"]
     chosen = studio_settings.load()
-    jobs, resolution = studio_settings.apply_images(portrait_characters([job.model_dump() for job in package.jobs]), package.resolution, chosen)
+    planned = package.resolution if package.resolution in {"1K", "2K", "4K"} else "1K"  # the art director writes free text here
+    jobs = attach_cast(portrait_characters([job.model_dump() for job in package.jobs]), (inspection_context or {}).get("shots", []))
+    jobs, resolution = studio_settings.apply_images(jobs, planned, chosen)
     spec = {
         "inspection": {"mode": inspection_mode, "model": chosen["chat"]["inspection"],
                        "effort": chosen["effort"]["inspection"]},

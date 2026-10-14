@@ -19,8 +19,8 @@ jobs.json:
     }
 
 kind selects the model unless "model" is set. references are earlier job ids,
-public image URLs, or ids listed in locked_references. Jobs in one wave run
-together; a later wave waits so it can pass the earlier result URL as a reference.
+public image URLs, or ids listed in locked_references. A job starts once the jobs
+it references are done, so their result URLs can be passed along.
 """
 
 from __future__ import annotations
@@ -31,6 +31,8 @@ import hashlib
 import threading
 import fcntl
 import json
+import uuid
+import socket
 import re
 import sys
 import time
@@ -94,6 +96,8 @@ def choose(job: dict, aspect: str, resolution: str) -> tuple[str, str]:
     else:
         model, why = NANO, "cinematic still; holds identity across references"
 
+    if refs and len(refs) > card_for(model).max_images:
+        return NANO, f"{model} takes {card_for(model).max_images} reference images; this job has {len(refs)}, using {NANO}"
     if resolution == "4K" and model == SEEDREAM:
         return NANO, f"4K is outside Seedream; using {NANO}"
     if not _ratio_ok(model, aspect, resolution):
@@ -165,11 +169,47 @@ def _request(url: str, api_key: str, payload: dict | None = None, query: dict | 
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:400]
-        raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+        raise ProviderHTTPError(exc.code, f"HTTP {exc.code}: {detail}") from exc
+
+
+class ProviderHTTPError(RuntimeError):
+    """The provider answered with an HTTP error status."""
+
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class JobFailed(RuntimeError):
     """Provider reports a terminal failure; an explicit resume may submit a retry."""
+
+
+def submit_task(api_key: str, payload: dict, send=None) -> dict:
+    """createTask, sorting failures into "certainly not created" and "unknown".
+
+    A 4xx answer, a refused connection or an unknown host means no task exists, so
+    the job is failed and an explicit resume may submit it again. A timeout, a reset
+    after sending, or a 5xx may have created a billable task, so those stay unknown.
+    """
+    send = send or _request
+    try:
+        return _within(REQUEST_TIMEOUT, lambda: send(CREATE_URL, api_key, payload=payload))
+    except ProviderHTTPError as exc:
+        if 400 <= exc.code < 500:
+            raise JobFailed(f"submit rejected: {exc}") from exc
+        raise
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, (socket.gaierror, ConnectionRefusedError)):
+            raise JobFailed(f"not sent, the provider could not be reached: {exc.reason}") from exc
+        raise
+
+
+def wait_for(payload: dict) -> float:
+    """Larger images and more references take longer; a fixed wait turned slow jobs into errors."""
+    body = payload.get("input") or {}
+    scale = {"2K": 1.7, "4K": 2.7}.get(str(body.get("resolution") or ""), 1.0)
+    references = body.get("image_input") or body.get("input_urls") or []
+    return MAX_WAIT * scale + 20 * len(references)
 
 
 def generate_one(api_key: str, payload: dict, *, task_id: str | None = None,
@@ -177,7 +217,7 @@ def generate_one(api_key: str, payload: dict, *, task_id: str | None = None,
     if cancel is not None and cancel.is_set():
         raise RuntimeError("Generation cancelled.")
     if task_id is None:
-        created = _within(REQUEST_TIMEOUT, lambda: _request(CREATE_URL, api_key, payload=payload))
+        created = submit_task(api_key, payload)
         if created.get("code") != 200:
             raise JobFailed(f"submit rejected: {created.get('msg') or created}")
         task_id = (created.get("data") or {}).get("taskId")
@@ -186,7 +226,7 @@ def generate_one(api_key: str, payload: dict, *, task_id: str | None = None,
         if on_submitted:
             on_submitted(task_id)
 
-    deadline = time.monotonic() + MAX_WAIT
+    deadline = time.monotonic() + wait_for(payload)
     while time.monotonic() < deadline:
         if cancel is not None:
             if cancel.wait(POLL_INTERVAL):
@@ -234,6 +274,9 @@ def download(url: str, dest: Path) -> None:
             return resp.read()
 
     payload = _within(90, fetch)
+    if _header_kind(payload[:12]) is None:
+        # An expired link or a CDN error page arrives as HTML; never save it as a still.
+        raise RuntimeError("The provider returned a file that is not an image. Resume to retry the download.")
     temporary = dest.with_suffix(dest.suffix + ".part")
     temporary.write_bytes(payload)
     temporary.replace(dest)
@@ -316,10 +359,11 @@ def reference_data_url(path: Path) -> str:
     data = path.read_bytes()
     if not data or len(data) > _MAX_REFERENCE_BYTES:
         raise ValueError("Reference image is too large.")
-    suffix = path.suffix.lower()
-    if not _suffix_matches(suffix, data[:12]):
-        raise ValueError("Reference image must be a PNG, JPEG, or WebP.")
-    mime = "image/jpeg" if suffix in {".jpg", ".jpeg"} else "image/png" if suffix == ".png" else "image/webp"
+    kind = _header_kind(data[:12])
+    if kind is None:
+        raise ValueError(f"Reference {path.name} must be a PNG, JPEG, or WebP image.")
+    # Label the upload by its real bytes: a JPEG saved as .png must not be sent as image/png.
+    mime = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}[kind]
     return f"data:{mime};base64," + base64.b64encode(data).decode()
 
 
@@ -336,12 +380,14 @@ def hosted_reference_url(api_key: str, path: Path) -> str:
         cached = _uploads.get(digest)
         if cached and time.time() - cached[1] < UPLOAD_REUSE_SECONDS:
             return cached[0]
+        extension = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[data_url[5:data_url.index(";")]]
+        # A unique name per upload: a reused name can be overwritten or served stale by the file store.
         body = {"base64Data": data_url, "uploadPath": UPLOAD_PATH,
-                "fileName": f"{digest[:24]}{path.suffix.lower()}"}
+                "fileName": f"{digest[:16]}-{uuid.uuid4().hex[:8]}{extension}"}
         reply = _within(REQUEST_TIMEOUT, lambda: _request(UPLOAD_URL, api_key, payload=body))
         url = str((reply.get("data") or {}).get("downloadUrl") or "")
         if reply.get("code") != 200 or not url.startswith("https://"):
-            raise RuntimeError(f"Reference upload rejected: {reply.get('msg') or 'no download URL'}")
+            raise RuntimeError(f"Reference upload of {path.name} rejected: {reply.get('msg') or 'no download URL'}")
         _uploads[digest] = (url, time.time())
         return url
 
@@ -486,7 +532,7 @@ def _destination(out: Path, job: dict) -> Path:
 
 
 def run_batch(spec: dict, out: Path, *, dry_run: bool = False, resume: bool = False,
-              on_record=None, on_start=None, cancel=None, decision=None) -> dict:
+              on_record=None, on_start=None, cancel=None, decision=None, only=None) -> dict:
     """Checkpoint submissions and results; resume never repeats a successful job."""
     settings = spec.get("inspection")
     if settings is not None and (not isinstance(settings, dict) or settings.get("mode") not in ("manual", "auto")):
@@ -525,11 +571,11 @@ def run_batch(spec: dict, out: Path, *, dry_run: bool = False, resume: bool = Fa
         except BlockingIOError as exc:
             raise RuntimeError("This image folder already has a running batch.") from exc
         return _run_locked(spec, out, ordered, aspect, resolution, fingerprint,
-                           dry_run, resume, on_record, on_start, cancel, decision, locked)
+                           dry_run, resume, on_record, on_start, cancel, decision, locked, only)
 
 
 def _run_locked(spec, out, ordered, aspect, resolution, fingerprint,
-                dry_run, resume, on_record, on_start, cancel, decision, locked):
+                dry_run, resume, on_record, on_start, cancel, decision, locked, only=None):
     manifest_path = out / ("manifest.preview.json" if dry_run else "manifest.json")
     records: dict[str, dict] = {}
     if manifest_path.exists() and not dry_run:
@@ -574,7 +620,7 @@ def _run_locked(spec, out, ordered, aspect, resolution, fingerprint,
     if spec.get("inspection") and not dry_run:
         from screenwriter_studio.images.review import run_reviewed
         run_reviewed(spec, out, ordered, records, api_key, checkpoint, keep,
-                     on_start, cancel, decision)
+                     on_start, cancel, decision, only=set(only) if only else None)
         manifest["status"] = ("complete" if len(records) == len(spec["jobs"]) and
                               all(r.get("state") == "done" for r in records.values()) else "paused")
         checkpoint()
@@ -613,13 +659,48 @@ def main() -> int:
     parser.add_argument("--review-id", help="Exact review_id from manifest.json")
     parser.add_argument("--image", help="Image ID for a review decision")
     parser.add_argument("--decision", choices=["keep", "repair", "inspect"])
+    parser.add_argument("--regenerate", metavar="ID", help="Make a new take of one image (paid). Use with --prompt.")
+    parser.add_argument("--prompt", help="The edited prompt for --regenerate.")
+    parser.add_argument("--use-version", metavar="ID=FILE", help="Make an earlier version (e.g. s01=s01.png) the image again. No provider call.")
+    parser.add_argument("--attach-task", metavar="ID=TASK_ID", help="Recover an uncertain image submission with its KIE task ID.")
+    parser.add_argument("--forget-submission", metavar="ID",
+                        help="After checking KIE's task history, mark an uncertain image submission as never created.")
     args = parser.parse_args()
     if any((args.decision, args.image, args.review_id)) and not all((args.decision, args.image, args.review_id)):
         parser.error("--decision, --image and --review-id must be supplied together")
+    if bool(args.regenerate) != bool(args.prompt):
+        parser.error("--regenerate and --prompt must be supplied together")
+
+    from screenwriter_studio.images.review import attach_image_task, forget_image_submission, restore_version
+    try:
+        if args.forget_submission:
+            forget_image_submission(args.out, args.forget_submission)
+            print("Submission forgotten. Resume to send that image again.")
+            return 0
+        for value, label in ((args.attach_task, "--attach-task"), (args.use_version, "--use-version")):
+            if value and "=" not in value:
+                parser.error(f"Use {label} ID=VALUE.")
+        if args.attach_task:
+            image, _, task = args.attach_task.partition("=")
+            attach_image_task(args.out, image, task)
+            print("Task attached. Resume to poll it.")
+            return 0
+        if args.use_version:
+            image, _, name = args.use_version.partition("=")
+            restore_version(args.out, image, name)
+            print(f"{image} now uses {name}.")
+            return 0
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     spec = json.loads(args.jobs.read_text(encoding="utf-8"))
+    if args.regenerate:
+        decision = {"id": args.regenerate, "action": "regenerate", "prompt": args.prompt}
+    else:
+        decision = {"id": args.image, "review_id": args.review_id, "action": args.decision} if args.decision else None
     try:
-        manifest = run_batch(spec, args.out, dry_run=args.dry_run, resume=args.resume, decision=({"id": args.image, "review_id": args.review_id, "action": args.decision} if args.decision else None))
+        manifest = run_batch(spec, args.out, dry_run=args.dry_run, resume=args.resume or bool(args.regenerate), decision=decision)
     except (ValueError, RuntimeError, SystemExit) as exc:
         print(str(exc), file=sys.stderr)
         return 1

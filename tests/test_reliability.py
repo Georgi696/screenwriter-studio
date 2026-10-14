@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import screenwriter_studio.images.generator as generator
 from screenwriter_studio.schemas import Beat, Screenplay, ScriptVerdict, StillJob, StillPackage
 from screenwriter_studio.images.service import validate_still_package
-from screenwriter_studio.studio import ScreenwriterStudio, _script_issues, _stream_stills, art_user_message, editor_user_message, writer_user_message
+from screenwriter_studio.studio import ScreenwriterStudio, _script_issues, _shot_issues, _stream_stills, art_user_message, editor_user_message, writer_user_message
 from tests.fixtures import _piece
 
 
@@ -68,6 +68,7 @@ class ScriptGateTest(unittest.TestCase):
 
     def test_proceed_continues_a_rejected_draft_without_another_rewrite(self):
         development, screenplay = _piece()
+        development.runtime_seconds = sum(shot.duration_seconds for shot in screenplay.shots)
         package = StillPackage(aspect_ratio="16:9", resolution="1K", jobs=[
             StillJob(id="s01", kind="keyframe", prompt="A quiet hallway.")
         ])
@@ -361,6 +362,74 @@ class RecoveryTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "already has a running batch"):
                     generator.run_batch(self.spec, self.out)
                 request.assert_not_called()
+
+
+class FeasibilityGateTest(unittest.TestCase):
+    def test_impossible_clips_stop_before_the_paid_art_step(self):
+        from screenwriter_studio.studio import video_feasibility
+        development, screenplay = _piece()
+        self.assertTrue(any("total" in issue for issue in video_feasibility(development, screenplay)))
+        development.runtime_seconds = 8
+        self.assertEqual(video_feasibility(development, screenplay), [])
+        self.assertTrue(video_feasibility(development, screenplay, image_count=1))
+        values = {"video": {"selection": "seedance", "mode": "4K", "sound": True, "parallel": 3}}
+        self.assertTrue(any("4K" in issue for issue in video_feasibility(development, screenplay, values=values)))
+        studio = ScreenwriterStudio()
+        studio._art = AsyncMock()
+        broken, _ = _piece()
+
+        async def collect():
+            with tempfile.TemporaryDirectory() as temp:
+                return [event async for event in studio._produce(Path(temp), broken, screenplay, "", dry_run=True, inspection_mode="manual")]
+        events = asyncio.run(collect())
+        studio._art.assert_not_awaited()
+        self.assertEqual(events[-1].kind, "failed")
+        self.assertIn("no image prompts or images were paid for", events[-1].text)
+
+    def test_dialogue_must_fit_the_clip_and_job_types_find_their_playbook(self):
+        from screenwriter_studio.playbooks import PLAYBOOKS
+        from screenwriter_studio.studio import _playbook
+        development, screenplay = _piece()
+        development.runtime_seconds = 8
+        shot = screenplay.shots[0]
+        screenplay.shots = [shot.model_copy(update={"audio": 'MAYA: "' + "word " * 30 + '"'})]
+        self.assertTrue(any("spoken words" in issue for issue in _shot_issues(development, screenplay)))
+        self.assertEqual(_script_issues(development, screenplay), [], "a long line is an editor note, not a blocker")
+        screenplay.shots = [shot.model_copy(update={"audio": 'MAYA: "Open the door, please."'})]
+        self.assertEqual(_shot_issues(development, screenplay), [])
+        self.assertEqual(_playbook("Vertical social"), PLAYBOOKS["vertical"])
+        self.assertEqual(_playbook("30s Ad spot"), PLAYBOOKS["ad"])
+        self.assertEqual(_playbook("something else"), PLAYBOOKS["narrative"])
+
+    def test_saved_image_plan_is_reused_instead_of_paying_again(self):
+        from screenwriter_studio.studio import _reusable_plan
+        development, screenplay = _piece()
+        development.runtime_seconds = 8
+        package = StillPackage(aspect_ratio="16:9", resolution="1K", jobs=[
+            StillJob(id="maya", kind="character", prompt="Maya, 3:4 portrait."),
+            StillJob(id="hall", kind="location", prompt="The hall."),
+            StillJob(id="s01", kind="keyframe", prompt="Wide shot.", references=["maya", "hall"])])
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            self.assertIsNone(_reusable_plan(folder, development, screenplay, None, []))
+            (folder / "03_still_plan.json").write_text(package.model_dump_json(), encoding="utf-8")
+            self.assertEqual(_reusable_plan(folder, development, screenplay, None, []), package)
+            (folder / "images").mkdir()
+            (folder / "images/jobs.json").write_text("{}", encoding="utf-8")
+            self.assertIsNone(_reusable_plan(folder, development, screenplay, None, []))
+
+    def test_image_wait_grows_with_resolution_and_references(self):
+        from screenwriter_studio.images import generator
+        small = generator.wait_for({"input": {"resolution": "1K"}})
+        large = generator.wait_for({"input": {"resolution": "4K", "image_input": ["a", "b", "c"]}})
+        self.assertEqual(small, generator.MAX_WAIT)
+        self.assertGreater(large, 2.5 * small)
+
+    def test_slug_keeps_non_latin_titles_apart(self):
+        from screenwriter_studio.studio import _slug
+        self.assertEqual(_slug("Café Noir"), "cafe-noir")
+        self.assertNotEqual(_slug("Последний поезд"), _slug("Тихий дом"))
+        self.assertTrue(_slug("Последний поезд").startswith("film-"))
 
 
 if __name__ == "__main__":

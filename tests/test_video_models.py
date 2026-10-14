@@ -160,3 +160,16 @@ class VideoRoutingPlanTest(unittest.TestCase):
         bad = video_status(self.folder, options={"selection": "seedance", "mode": "4K"})
         self.assertFalse(bad["ready"])
         self.assertIn("4K", bad["message"])
+
+
+class SpeechDetectionTest(unittest.TestCase):
+    def test_sound_effects_and_scenery_are_not_speech(self):
+        from types import SimpleNamespace
+        from screenwriter_studio.videos.catalog import has_speech
+        cases = [
+            ('SFX: "whoosh"', "", False), ("Birds sing at dawn", "", False), ("", "A narrative beat", False),
+            ('"whoosh"', "", False), ('LENA: "Go now, go."', "", True), ("", "Lena says hello", True),
+            ("Wind.", "She sings softly", True), ('"Run!"', "", True), ("Lena sings a song", "", True),
+        ]
+        for audio, action, expected in cases:
+            self.assertEqual(has_speech(SimpleNamespace(audio=audio, action=action, notes="")), expected, (audio, action))

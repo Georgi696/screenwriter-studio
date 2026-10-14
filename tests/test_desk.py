@@ -2,6 +2,7 @@
 
 import io
 import json
+import shutil
 import os
 import re
 import socket
@@ -68,7 +69,7 @@ class DeskPageTest(unittest.TestCase):
             self.addCleanup(replacement.stop)
 
         self.httpd = bind(0)
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         self.thread.start()
         self.port = self.httpd.server_address[1]
 
@@ -455,6 +456,7 @@ def _reader_renderer_js() -> str:
 
 
 class MarkdownPreviewTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed to run the desk script")
     def test_shot_sheet_table_renders_and_suffix_case_is_markdown(self):
         fixture = "\n".join(
             [
@@ -548,6 +550,7 @@ class MarkdownPreviewTest(unittest.TestCase):
 
 
 class ReviewCardAbortTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed to run the desk script")
     def test_abort_sits_beside_approve_and_posts_keep(self):
         script = (STATIC / "desk.js").read_text(encoding="utf-8")
         css = (STATIC / "desk.css").read_text(encoding="utf-8")
@@ -580,6 +583,7 @@ class ReviewCardAbortTest(unittest.TestCase):
         driver = script[start:end] + r"""
 const posted = [];
 let last = null;
+let settingsSchema = null;
 function reviewImage(data) { posted.push(data); return Promise.resolve(); }
 function fetch() { return Promise.resolve({ json() { return Promise.resolve({}); } }); }
 function apply() {}

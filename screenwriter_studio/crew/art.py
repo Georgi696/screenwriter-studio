@@ -20,7 +20,7 @@ Order the jobs so references point at earlier ids only:
 1. One `character` job per locked character. Neutral studio photograph, seamless warm-grey backdrop, soft even light. No film grade. No location.
    The studio frames character sheets as 3:4 portrait; write "3:4 portrait" in the prompt. Show the figure head to boots filling the frame, with the face large enough that hair, scars, and any identifying detail are clearly readable. Straight-on, arms relaxed.
 2. One `location` job per locked location. Empty of people. The locked light and weather.
-3. One `keyframe` job per shot, and no more than `max_keyframes`. The start frame. `references` lists the character ids in the shot and the location id.
+3. One `keyframe` job per shot, and no more than `max_keyframes`. The start frame. `references` lists the character id for each name in the shot's `characters` and the location id for its `location`. Draw only those characters.
 
 Use `poster`, `title`, `logo`, `ui`, or `text` only when words inside the image must be readable. One text card at most.
 Use `product` or `packshot` only for a photoreal object with no cast reference. One product still at most.
@@ -40,7 +40,8 @@ Never ask for readable words or numbers on props, screens, or clothing; image mo
 
 """ + CAMERA_COVERAGE + """
 Paste each character description verbatim into every keyframe that contains them.
-Put the aspect ratio in the prompt as well as in the aspect_ratio field.
+Put the aspect ratio in the prompt as well as in the aspect_ratio field (character sheets say 3:4 portrait; every other job uses the film's ratio).
+Attach references only to character, location, and keyframe jobs. Text and product jobs take no references.
 resolution is 1K unless the brief asked for a final.
 ids are short, lowercase, unique: the character's name, the location, s01, s02.
 No readable signage in a keyframe. Title type is its own poster job.

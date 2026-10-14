@@ -67,7 +67,6 @@
         <p class="field-note">Say who wants what, where it happens, what stands in the way, and the tone.</p>
         <div class="idea-tools">
           <button class="ghost" id="suggest" type="button">Suggest a story</button>
-          <button class="ghost" id="sample" type="button">Use sample</button>
           <span class="idea-count" id="idea-count">Empty</span>
           <button class="ghost" id="copy-brief" type="button">Copy brief</button>
           <button class="ghost" id="clear-brief" type="button">Clear</button>
@@ -101,6 +100,7 @@
           </div>
         </div>
         <p class="field-note" id="format-estimate" role="status" aria-live="polite">Leave these empty and the idea decides. Shots last 3–30 seconds and together fill the length exactly. A clip longer than 15 seconds uses Seedance 2.5.</p>
+        <p class="field-note cost-line" id="idea-cost" hidden></p>
       </section>
       <section class="brief-section" aria-labelledby="gate-heading">
         <div class="section-head">
@@ -219,6 +219,7 @@
           <button type="button" id="abort-draft" class="ghost">Abort draft</button>
           <div id="cost-choices"></div>
         </div>
+        <p class="cost-line" id="proceed-cost" hidden></p>
         <p class="help-copy" id="proceed-note" hidden>Sends this script to the image prompts and image generation. The editor's verdict stays on file. Plan images and image inspection beside this button set the cost.</p>
       </div>
       <div class="hud-side">
@@ -314,6 +315,7 @@
         <ol id="video-ready-list"></ol>
       </details>
       <p id="video-summary"></p>
+      <p id="video-cost" class="cost-line" hidden></p>
       <p id="video-settings-note" class="field-note"></p>
       <p class="field-note">Auto selects a compatible model for each shot’s action, camera, timing, language, and quality. Review the choices and prompts below. Video generation uses additional KIE credits; model, quality, and sound affect cost. Resume keeps saved model choices and tasks. Each clip can be redone on its own. Retrying failed provider jobs may incur a new charge.</p>
       <div class="toolbar">
@@ -339,7 +341,7 @@
       <div id="activity-jump" hidden>
         <button class="ghost" id="show-review-still" type="button">Show the still that needs review</button>
       </div>
-      <div id="log" aria-live="polite"></div>
+      <div id="log"></div>
     </section>
     <section id="reader-pane">
       <div class="toolbar">
@@ -358,7 +360,7 @@
     </section>
   </div>
 </main>
-<p id="toast" hidden></p>
+<p id="toast" role="status" aria-live="polite" hidden></p>
 <noscript>Turn on JavaScript to run the crew and open the library.</noscript>
 <script src="/static/desk.js" defer></script>
 </body>

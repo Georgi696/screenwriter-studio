@@ -104,12 +104,28 @@ def build_input(idea: str, *, salt: str) -> str:
     )
 
 
-def build_request(idea: str, *, salt: str | None = None) -> dict:
+def film_line(film: dict | None) -> str:
+    """What the user already locked in the Film section; the brief must not contradict it."""
+    film = film or {}
+    parts = []
+    if film.get("runtime_seconds"):
+        parts.append(f"the film is exactly {int(film['runtime_seconds'])} seconds long")
+    if film.get("aspect_ratio"):
+        parts.append(f"the aspect ratio is {film['aspect_ratio']}")
+    if film.get("max_shots"):
+        parts.append(f"it has at most {int(film['max_shots'])} shots")
+    if not parts:
+        return ""
+    return "\n\nThe user has already locked: " + "; ".join(parts) + ". State these exactly in the brief and do not choose different values."
+
+
+def build_request(idea: str, *, salt: str | None = None, film: dict | None = None) -> dict:
     """Body fields for `responses.create` on the KIE chat client."""
+    from screenwriter_studio import settings as studio_settings
     return {
-        "model": DEVELOPMENT_MODEL,
+        "model": studio_settings.load()["chat"]["development"] or DEVELOPMENT_MODEL,
         "instructions": instructions(),
-        "input": build_input(idea, salt=salt or secrets.token_hex(4)),
+        "input": build_input(idea, salt=salt or secrets.token_hex(4)) + film_line(film),
         # Reasoning tokens count against this cap. A medium effort pass can
         # spend the whole budget before any visible paragraph exists.
         "max_output_tokens": 4096,
@@ -391,12 +407,12 @@ def _text_from_client_response(response, *, key: str) -> str:
     return text
 
 
-def suggest_brief(idea: str, *, client=None, salt: str | None = None) -> str:
+def suggest_brief(idea: str, *, client=None, salt: str | None = None, film: dict | None = None) -> str:
     """Return one paragraph. Raises BriefSuggestError when the key or the model fails."""
     key = load_kie_api_key()
     if not key:
         raise BriefSuggestError(MISSING_KEY)
-    request = build_request(idea if isinstance(idea, str) else "", salt=salt)
+    request = build_request(idea if isinstance(idea, str) else "", salt=salt, film=film)
     chat = client or kie_responses_client(api_key=key)
     try:
         response = chat.responses.create(**request)

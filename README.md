@@ -32,13 +32,15 @@ video viewers, an activity log, and a library of saved production documents and 
 
 ## Quick start
 
-Requires **Python 3.12** on **macOS or Linux**, plus a KIE.ai API key. Node.js is
-needed only for the Markdown-renderer test; the desk has no frontend build step.
+Requires **Python 3.12 or newer** (tested on 3.13) on **macOS or Linux**, plus a KIE.ai
+API key. Node.js is optional: two desk-script tests use it and skip without it. The desk
+has no frontend build step. FFmpeg is optional too: with `ffprobe` installed the studio
+checks image proportions and clip lengths.
 
 Run these commands from this repository's root:
 
 ```bash
-python3.12 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 cp -n .env.example .env
@@ -100,6 +102,50 @@ python -m screenwriter_studio \
 | `--inspection manual` | Inspect images and approve proposed repairs yourself (default). Use `auto` for up to two repairs per image. |
 | `--pages-only` | Stop after screenplay review, before art planning and stills. |
 | `--dry-run` | Develop and review the film, then save a still plan without generating images. |
+| `--no-approval` | Continue straight into paid image work when the editor passes the pages. By default the run pauses with the pages. |
+| `--proceed FOLDER` | Continue a saved production into image prompts and images, including a draft the editor did not pass. Paths are relative to where you run the command. |
+
+Before any image prompt or image is paid for, the studio checks that every shot can
+become a clip with the current video settings: shot lengths and the runtime, a video
+model for each shot at the chosen quality, sound and dialogue language, and an image
+budget of one image per shot plus character and location sheets. If not, it stops and
+says why.
+
+Each shot in the shot list carries structured fields next to its framing, action
+and audio: `characters` (the locked names on screen), `location` (one locked
+location), `camera_move` (the one move during the take, or static) and `dialogue`
+(each spoken line with its speaker). The script editor sends a draft back when a
+name or place does not match development, a shot has more than one speaker, or
+its lines run past about 2.5 words per second. These notes never block paid work.
+The fields drive the rest of the pipeline: every shot image gets the sheet of each
+listed character attached, the inspector checks that exactly those people appear,
+the video router counts the listed cast, and clip prompts attribute each line to
+its speaker. Screenplays saved before these fields existed still open and render.
+
+## Cost estimates
+
+Prices come from KIE's public [price list](https://kie.ai/pricing), checked on
+2026-10-14 and kept in `screenwriter_studio/pricing.py`; KIE bills what its page
+says on the day, so treat every figure as a guide. One credit is $0.005.
+
+| Model | Credits |
+| --- | --- |
+| Kling 3.0 | per second: 720p 20 with sound, 14 silent · 1080p 27 / 18 · 4K 67 |
+| Seedance 2.5 | per second: 720p 63 · 1080p 158 (no separate sound price) |
+| Nano Banana 2.1 | per image: 1K 8 · 2K 12 · 4K 18 (KIE lists Nano Banana 2; that price is used) |
+| GPT Image Sunburst (and its edit) | per image: 1K 6 · 2K 10 · 4K 16 |
+| Seedream 5 Pro | per image: 1K 7 · 2K 14 |
+
+The desk shows an estimate before each paid step: a rough range on the Idea tab,
+the images and clips a script will lead to beside **Approve pages**, the unfinished
+images on **Resume saved image work**, the price of a proposed repair, and the
+price of every clip, of the unfinished ones, and of a single render or redo in
+the Video clips tab and its confirmation. The CLI prints the same estimate when
+the pages wait for approval and with `python -m screenwriter_studio.videos … --dry-run`.
+Chat calls (story, image prompts, inspections) are billed per token and are not
+included. Auto can route a long or multi-subject shot to Seedance, which costs
+several times more per second than Kling; choose Kling in **Models and quality**
+to cap that.
 
 The default shot limit is one per eight seconds, adjusted when necessary to make
 the runtime feasible. It is a generation-count limit, not a fixed editing rhythm
@@ -125,13 +171,13 @@ promise of perfect images.
 - **Manual (default):** usable images pass. Others pause in the Images tab with
   findings, proposed changes, details to preserve, and expandable exact repair
   instructions. View the full image, then choose **Approve these changes**,
-  **Keep this image**, or **Inspect again**. No repair starts without approval.
+  **Abort** (keep the current image), or **Inspect again**. No repair starts without approval.
 - **Auto:** clear defects trigger targeted repairs, each followed by inspection.
   Uncertainty, inspection errors, or the two-repair limit pause for human review.
 
 Both modes allow at most two repair versions per image. Unapproved references
 block dependent shots. Originals and repair versions stay on disk; the manifest
-records findings, decisions, task IDs and history. **Keep this image** explicitly
+records findings, decisions, task IDs and history. **Abort** explicitly
 accepts the current version, even if the inspector found issues. Approving or
 keeping an image also resumes eligible downstream image work.
 
@@ -142,10 +188,34 @@ for human review. A normal image preview (`--dry-run`) never inspects images.
 The request format follows the [OpenAI image-input documentation](https://developers.openai.com/api/docs/guides/images-vision);
 KIE compatibility is tested with mocked responses, not live paid calls.
 
+Images are generated and inspected side by side, 1–4 at a time (**Images generated
+at once** in **Models and quality**; default 3). A shot image starts as soon as the
+character and location images it uses are done. An image waiting for your review
+holds back only the images that use it; the rest carry on.
+
 After interruption, use **Resume saved image work** in the Images tab. This continues the
-current production, without rerunning the screenplay. Legacy jobs without an
-`inspection` setting keep their existing generation behavior. Modes are saved
-in the plan; changing the brief selector only affects new productions.
+current production, without rerunning the screenplay, even while some images wait
+for review. Legacy jobs without an `inspection` setting keep their existing generation
+behavior. Modes are saved in the plan; changing the brief selector only affects new productions.
+
+### Edit, regenerate and choose versions
+
+Every finished, failed or waiting image card has **Edit prompt and regenerate**. A new
+take is made from your prompt (paid, about one image plus its inspection), saved as
+`s01.take-2.png`, inspected against the edited prompt, and becomes the image. Only that
+image is generated; images that use it are not redone. The original, every repair and
+every take stay on disk; **Earlier versions** on the card switches back to any of them
+without a provider call. Clips use whichever version is current when they are rendered.
+
+From the command line:
+
+```bash
+images=../productions/last-train/images
+python -m screenwriter_studio.images.generator "$images/jobs.json" --out "$images" \
+  --regenerate s01 --prompt "Wide shot, low angle, Maya runs through the hall."
+python -m screenwriter_studio.images.generator "$images/jobs.json" --out "$images" \
+  --use-version s01=s01.png
+```
 
 ## Generate the video clips
 
@@ -163,7 +233,8 @@ explicit step and never starts automatically after still generation.
 
 `ffprobe` (part of FFmpeg) is optional. When it is on PATH the studio checks keyframe
 proportions and clip durations; without it those checks are skipped. Clips are never
-re-encoded or merged. Up to three clips are generated at the same time.
+re-encoded or merged. Several clips are generated at the same time (1–4, set in
+**Models and quality**; default 3).
 
 The adapters use the official [KIE Kling 3.0](https://docs.kie.ai/market/kling/kling-3-0)
 and [KIE Seedance 2.5](https://docs.kie.ai/market/bytedance/seedance-2-5) contracts,
@@ -195,7 +266,12 @@ separate dialogue recording or audio inspection stage.
 Each clip is saved untouched as `videos/s01.mp4`, `videos/s02.mp4` and so on, playable
 and downloadable from its card in the Video clips tab and listed in the library. If a
 clip is not right, **Redo this shot** regenerates just that one (paid). The previous
-take is kept as `s02_v1.mp4` and stays downloadable.
+take is kept as `s02_v1.mp4` and stays downloadable. **Edit prompt** on a clip card
+redoes (or renders) that shot with your own prompt; the planned prompt is kept beside
+it in `videos/jobs.json`, and editing one shot never locks the others. **Use this take**
+next to an earlier take makes it the clip again and keeps the replaced one as an
+earlier take, with no provider call. On the command line: `--prompt s02="…"` with
+`--redo s02` or `--shot s02`, and `--use-take s02=s02_v1.mp4`.
 
 From the command line:
 
@@ -209,7 +285,7 @@ python -m screenwriter_studio.videos ../productions/last-train
 # Choose settings on the first run (saved settings are reused thereafter):
 python -m screenwriter_studio.videos ../productions/last-train --mode std --no-sound
 
-# Render a single shot first (up to three clips run in parallel otherwise):
+# Render a single shot first (otherwise clips run in parallel, as set in the desk):
 python -m screenwriter_studio.videos ../productions/last-train --shot s02
 
 # Regenerate one finished shot (paid); the old take is kept as s02_v1.mp4:
@@ -229,6 +305,13 @@ Resume retries explicitly failed provider jobs, which may cost credits, but does
 not automatically resubmit an uncertain submission. See
 [video recovery](docs/recovery.md#resume-video-clips) for details.
 
+## Open an earlier production
+
+Every production in the library has an **Open** button. It puts that production back on
+the desk with its steps, images and clips, so you can approve its script, review or resume
+images, or render and redo clips. The activity log of the original run is not kept.
+Opening is refused while a run is in progress.
+
 ## Saved work
 
 Productions stay in `../productions/`, beside this checkout. This preserves the
@@ -246,16 +329,23 @@ workspace/
         ├── 02_shots.md
         ├── 03_still_plan.json
         ├── verdict.json
+        ├── run_settings.json    # the idea, image count and references this run used
+        ├── greenlight.json      # written when you continue a draft
+        ├── aborted.json         # written when you abort a draft
+        ├── references/          # copies of the reference images you chose
         ├── videos/
         │   ├── jobs.json        # locked video prompts and keyframe fingerprints
         │   ├── manifest.json    # provider task IDs, clip states, recovery history
+        │   ├── jobs.preview.json  # the free clip plan from --dry-run
         │   ├── s01.mp4          # original generated clip
-        │   └── s02_v1.mp4       # earlier take, kept after a redo
+        │   ├── s02_v1.mp4       # earlier take, kept after a redo
+        │   └── s03_rejected.mp4 # a clip that failed its length check, kept to view
         └── images/
             ├── jobs.json
             ├── manifest.json    # saved task IDs, progress, results, and errors
             ├── manifest.preview.json  # created by image dry-run only
-            └── s01.png
+            ├── s01.png
+            └── lena.repair-1.png  # a repaired version; the original stays
 ```
 
 Later stages create their files only when reached. Keyframes use shot IDs such as
@@ -305,6 +395,9 @@ screenwriter_studio/
 ├── studio.py            # workflow orchestration and editorial loop
 ├── schemas.py           # structured creative handoffs
 ├── budget.py            # shot and still count policies
+├── pricing.py           # KIE credit prices and estimates before paid steps
+├── settings.py          # saved model and quality choices
+├── errors.py            # one-line, path-free error text for the desk
 ├── events.py            # typed workflow events
 ├── paths.py             # shared workspace and session locations
 ├── models.py            # KIE clients, credentials, and model routing
@@ -351,8 +444,7 @@ python -B -m unittest discover -s tests -t . -v
 node --check screenwriter_studio/web/static/desk.js
 ```
 
-Tests mock the generation providers and spend no credits. With FFmpeg installed,
-the video integration test assembles synthetic clips and checks order, audio,
-dimensions, and duration; it skips when the tools are unavailable. HTTP tests use a
-temporary session directory and an ephemeral loopback port. No KIE key is
-required to run the suite.
+Tests mock the generation providers and spend no credits. The suite refuses any
+network connection other than loopback, so a missed mock fails instead of calling
+KIE. HTTP tests use a temporary session directory and an ephemeral loopback port, and
+settings go to a temporary file. No KIE key is required to run the suite.

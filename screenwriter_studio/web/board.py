@@ -60,9 +60,16 @@ def event_station(board: Board, event: StudioEvent) -> str:
     return _EVENT_STATION.get(event.kind) or token_station(board)
 
 
+MAX_LOG_LINES = 2000
+
+
 def append_log(board: Board, station: str, text: str) -> None:
+    """Keep the newest lines. The whole board is saved and pushed on every event."""
     board.log.append(text)
     board.log_stations.append(station)
+    if len(board.log) > MAX_LOG_LINES:
+        del board.log[: len(board.log) - MAX_LOG_LINES]
+        del board.log_stations[: len(board.log_stations) - MAX_LOG_LINES]
 
 
 def scrub(text: str, secret: str) -> str:
@@ -303,3 +310,60 @@ def save_status(board: Board, secret: str = "") -> None:
     temporary = STATUS_PATH.with_suffix(".tmp")
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     temporary.replace(STATUS_PATH)
+
+
+def board_from_folder(folder, label: str) -> Board:
+    """Rebuild the desk from a saved production, so any earlier film can be continued.
+
+    Files on disk are the record: which steps finished, whether the editor passed the
+    pages or the user pushed a draft through, and the image manifest. The activity log
+    from that run is not kept, so it starts empty.
+    """
+    from pathlib import Path
+
+    folder = Path(folder)
+
+    def read(name: str):
+        try:
+            value = json.loads((folder / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    board = Board(folder=label)
+    verdict = read("verdict.json") or {}
+    greenlit = (read("greenlight.json") or {}).get("proceeded") is True
+    if (folder / "00_development.json").is_file():
+        board.done.add("development")
+    if (folder / "01_screenplay.json").is_file():
+        board.done.add("writer")
+    if verdict.get("passed") is True:
+        board.done.add("editor")
+    elif greenlit:
+        board.overridden.add("editor")
+    spec = read("images/jobs.json") or {}
+    if greenlit or (folder / "03_still_plan.json").is_file() or spec:
+        board.done.add("approval")
+    if (folder / "03_still_plan.json").is_file() or spec:
+        board.done.add("art")
+    board.brief = str((spec.get("inspection_context") or {}).get("brief") or "")
+    manifest = read("images/manifest.json") or {}
+    records = manifest.get("images") if isinstance(manifest.get("images"), list) else []
+    for record in records:
+        if not isinstance(record, dict) or not record.get("id"):
+            continue
+        record = dict(record)
+        if not record.get("state"):
+            # Manifests written before image states existed only listed finished files.
+            record["state"] = "failed" if record.get("error") else "done"
+        board.images.append(record)
+    name = folder.name
+    if (folder / "aborted.json").is_file():
+        board.note = f"Opened {name}. This draft was aborted; its files are kept."
+    elif board.images:
+        board.note = f"Opened {name}. Continue with its images or video clips."
+    elif "writer" in board.done:
+        board.note = f"Opened {name}. Its script is ready to read in the Story tab."
+    else:
+        board.note = f"Opened {name}."
+    return board

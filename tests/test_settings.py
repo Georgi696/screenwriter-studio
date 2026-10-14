@@ -81,3 +81,39 @@ class ReasoningEffortTest(unittest.TestCase):
         self.assertIs(tuned.model, writer_agent.model)
         self.assertEqual(tuned.instructions, writer_agent.instructions)
         self.assertIsNone(writer_agent.model_settings.reasoning)
+
+
+class ImageHardeningTest(unittest.TestCase):
+    def test_repair_keeps_portrait_and_references_route_to_a_model_that_takes_them(self):
+        from pathlib import Path
+        from screenwriter_studio.images.review import repair_job
+        job = {"id": "lena", "kind": "character", "aspect_ratio": "3:4", "prompt": "Lena", "references": []}
+        record = {"inspection": {"changes": ["Fix the scar."], "preserve": ["Face."]}, "url": "https://host/lena.png"}
+        repaired = repair_job(job, record, Path("/tmp/out"))
+        self.assertEqual(repaired["aspect_ratio"], "3:4")
+        self.assertEqual(job_aspect(repaired, "16:9"), "3:4")
+        self.assertEqual(choose({"id": "t", "kind": "title", "references": ["loc"]}, "16:9", "1K")[0], "nano-banana-2-1")
+        self.assertEqual(choose({"id": "t", "kind": "title"}, "16:9", "1K")[0], "gpt-image-2-5-sunburst-text-to-image")
+
+    def test_downloads_must_be_images_and_uploads_use_the_real_type(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        from screenwriter_studio.images import generator
+        jpeg = b"\xff\xd8\xff\xe0" + b"0" * 64
+        with tempfile.TemporaryDirectory() as root:
+            dest = Path(root) / "s01.png"
+            with mock.patch.object(generator, "_within", side_effect=lambda seconds, fn: b"<html>expired</html>"):
+                with self.assertRaisesRegex(RuntimeError, "not an image"):
+                    generator.download("https://host/x", dest)
+            self.assertFalse(dest.exists())
+            dest.write_bytes(jpeg)
+            self.assertTrue(generator.reference_data_url(dest).startswith("data:image/jpeg;base64,"))
+
+    def test_inspection_reply_is_tidied_not_discarded(self):
+        from screenwriter_studio.images.inspection import Inspection, normalize_review
+        raw = {"verdict": "accept", "summary": "Fine", "findings": [f"f{n}" for n in range(20)],
+               "changes": [], "preserve": [], "uncertainty": "", "confidence": 0.9}
+        review = Inspection.model_validate(normalize_review(raw))
+        self.assertEqual(len(review.findings), 12)
+        self.assertEqual(review.verdict, "accept")

@@ -41,6 +41,7 @@ What one shot may hold (the writer and the script editor use this same rule):
 - Inside it, a chain of up to three closely linked beats is fine (she crawls, checks the tracker, ducks), as long as it happens in one place, in continuous time, with no cut.
 - A shot needs trimming or splitting only when it requires a cut, jumps in time or place, has a second speaker, or chains more than three beats.
 - Trim by keeping the beats that carry the story and moving the rest to audio or notes. A change of camera height, angle, or distance is framing, not an extra beat.
+- Spoken lines fit the clip: about 2.5 words per second of shot, one speaker, so lip sync is not rushed or cut off.
 """
 
 CAMERA_COVERAGE = """\
@@ -51,13 +52,4 @@ Camera coverage, on the shots that already exist:
 - Name a concrete angle, height, and distance. Cinematic or dynamic alone is not a camera.
 - Vary the cameras on the shots that already exist. Do not add shots. Do not exceed the shot budget.
 - Camera variety is framing, not extra action inside the shot. A shot stays one unbroken take.
-"""
-
-AI_VIDEO_RULES = """\
-AI video constraints:
-- One shot is one continuous action inside one clip. Budget one shot per 8 seconds: a 60s piece is at most 7 shots, a 30s spot at most 3. Do not fill the runtime with 3-second fragments.
-- One speaker per clip, at most about 20 words. Default the dialogue to American English.
-- Kling accepts only 16:9, 9:16, and 1:1. Seedance also accepts 4:3, 3:4, and 21:9.
-- No readable text in frame. No precise handwork (typing, pouring, handing objects over).
-- Restate wardrobe, light, and location in every shot. The last frame of a shot can be the first of the next; say so in the notes.
 """

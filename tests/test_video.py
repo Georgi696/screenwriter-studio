@@ -272,10 +272,63 @@ class VideoRecoveryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changed"):
             service.render_video(self.folder)
         write_json(script_path, original)
-        (self.folder / "images/s01.png").write_bytes(b"repaired image")
-        with self.assertRaisesRegex(ValueError, "changed"):
-            service.render_video(self.folder)
         self.create.assert_called_once()
+
+    def test_definite_rejections_fail_cleanly_and_unknown_outcomes_can_be_forgotten(self):
+        import urllib.error
+        from screenwriter_studio.images.generator import ProviderHTTPError
+        self.create.side_effect = ProviderHTTPError(429, "HTTP 429: too many requests")
+        with self.assertRaises(service.JobFailed):
+            service.render_video(self.folder)
+        self.assertEqual(read_json(self.folder / "videos/manifest.json")["clips"][0]["state"], "failed")
+        self.create.side_effect = urllib.error.URLError(ConnectionRefusedError("refused"))
+        with self.assertRaises(service.JobFailed):
+            service.render_video(self.folder)
+        self.create.side_effect = TimeoutError("read timed out")
+        with self.assertRaises(TimeoutError):
+            service.render_video(self.folder)
+        self.assertEqual(read_json(self.folder / "videos/manifest.json")["clips"][0]["state"], "uncertain")
+        self.create.side_effect = None
+        with self.assertRaisesRegex(ValueError, "outcome unknown"):
+            service.render_video(self.folder)
+        service.forget_submission(self.folder, "s01")
+        self.assertEqual(service.render_video(self.folder)["status"], "complete")
+        with self.assertRaisesRegex(ValueError, "Only an uncertain"):
+            service.forget_submission(self.folder, "s01")
+
+    def test_short_clip_is_kept_for_viewing_and_marked_failed(self):
+        self.validate = mock.patch.object(service, "validate_clip", side_effect=ValueError("s01.mp4: shorter than planned.")).start()
+        self.addCleanup(mock.patch.stopall)
+        with self.assertRaises(service.JobFailed):
+            service.render_video(self.folder)
+        clip = read_json(self.folder / "videos/manifest.json")["clips"][0]
+        self.assertEqual(clip["state"], "failed")
+        self.assertTrue((self.folder / "videos/s01_rejected.mp4").is_file())
+        self.assertFalse((self.folder / "videos/s01.mp4").exists())
+
+    def test_ctrl_c_stops_queued_clips_and_pauses(self):
+        self._two_shots()
+        self.poll.side_effect = KeyboardInterrupt
+        cancel = threading.Event()
+        with self.assertRaises(KeyboardInterrupt):
+            service.render_video(self.folder, cancel=cancel)
+        self.assertTrue(cancel.is_set())
+        self.assertEqual(read_json(self.folder / "videos/manifest.json")["status"], "paused")
+
+    def test_dry_run_rejects_single_shot_options(self):
+        with self.assertRaisesRegex(ValueError, "covers every shot"):
+            service.render_video(self.folder, dry_run=True, regenerate=["s01"])
+
+    def test_replacing_a_shot_image_keeps_other_clips_and_allows_redo(self):
+        service.render_video(self.folder)
+        (self.folder / "images/s01.png").write_bytes(b"repaired image")
+        # The finished clip stays; nothing is resubmitted just because the image changed.
+        self.assertEqual(service.render_video(self.folder)["status"], "complete")
+        self.create.assert_called_once()
+        service.render_video(self.folder, regenerate=["s01"])
+        self.assertEqual(self.create.call_count, 2)
+        clip = read_json(self.folder / "videos/manifest.json")["clips"][0]
+        self.assertEqual(clip["image_sha256"], service.file_digest(self.folder / "images/s01.png"))
 
     def test_cancel_before_work_does_not_submit(self):
         cancel = threading.Event()
@@ -290,7 +343,7 @@ class VideoRecoveryTest(unittest.TestCase):
         out.mkdir()
         with (out / ".generation.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with self.assertRaisesRegex(ValueError, "already"):
+            with self.assertRaisesRegex(ValueError, "still running or still stopping"):
                 service.render_video(self.folder)
         self.create.assert_not_called()
 
@@ -349,6 +402,9 @@ class VideoDeliveryTest(unittest.TestCase):
             self.assertTrue(status["ready"])
             self.assertTrue(status["can_plan"])
             self.assertNotIn(str(folder), json.dumps(status))
+            # Default settings: Kling 3.0 pro with sound, 27 credits per second, for an 8-second shot.
+            self.assertEqual(status["shots"][0]["credits"], 27 * 8)
+            self.assertEqual(status["estimate"]["remaining"], 27 * 8)
 
 
 class VideoProviderTest(unittest.TestCase):
@@ -367,9 +423,12 @@ class VideoProviderTest(unittest.TestCase):
 
     def test_poll_api_error_preserves_task_and_cancel_never_polls(self):
         cancel = threading.Event()
-        with mock.patch.object(service, "_request", return_value={"code": 500, "msg": "unavailable"}) as request:
+        with mock.patch.object(service, "POLL_INTERVAL", 0), \
+                mock.patch.object(service, "_request", return_value={"code": 500, "msg": "unavailable"}) as request:
             with self.assertRaisesRegex(RuntimeError, "unavailable"):
                 service.poll_task("key", "saved-task", cancel)
+            # Status checks are retried before the clip pauses; they never resubmit.
+            self.assertEqual(request.call_count, service.POLL_RETRIES + 1)
             request.reset_mock()
             cancel.set()
             with self.assertRaisesRegex(RuntimeError, "stopped"):
@@ -398,7 +457,7 @@ class VideoHTTPTest(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.httpd = server.bind(0)
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         self.thread.start()
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
 
@@ -435,7 +494,14 @@ class VideoHTTPTest(unittest.TestCase):
             drive.assert_not_called()
             with self.post({"redo": ["s01"]}) as response:
                 self.assertEqual(response.status, 202)
-            self.assertEqual(drive.call_args.args[-2:], (None, ["s01"]))
+            self.assertEqual(drive.call_args.args[-3:], (None, ["s01"], None))
+            # An edited prompt is accepted only for the shot being rendered or redone.
+            self.server._board.running = False  # the mocked run above never finishes
+            with self.assertRaises(urllib.error.HTTPError):
+                self.post({"redo": ["s01"], "prompts": {"s02": "Different."}})
+            with self.post({"redo": ["s01"], "prompts": {"s01": "Slow push in on Maya."}}) as response:
+                self.assertEqual(response.status, 202)
+            self.assertEqual(drive.call_args.args[-1], {"s01": "Slow push in on Maya."})
 
     def test_invalid_settings_or_unapproved_still_never_launch(self):
         with mock.patch.object(self.server, "_ensure_loop"), mock.patch.object(self.server, "_commit_future") as commit:
@@ -449,19 +515,6 @@ class VideoHTTPTest(unittest.TestCase):
                 self.post({})
             self.assertIn(b"approve", caught.exception.read())
             commit.assert_not_called()
-
-    def test_model_preview_is_free_and_uses_selected_settings(self):
-        with mock.patch.object(self.server, "_commit_future") as commit, mock.patch.object(service, "_request") as provider:
-            request = urllib.request.Request(self.url + "/api/video/preview",
-                data=json.dumps({"selection": "seedance", "mode": "pro", "sound": True}).encode(),
-                headers={"Content-Type": "application/json"}, method="POST")
-            with urllib.request.urlopen(request, timeout=5) as response:
-                status = json.load(response)
-            self.assertEqual(status["video"]["shots"][0]["model"], "bytedance/seedance-2-5")
-            self.assertIn("Timeline", status["video"]["shots"][0]["prompt"])
-            self.assertFalse((self.folder / "videos").exists())
-            commit.assert_not_called()
-            provider.assert_not_called()
 
     def test_mp4_endpoint_supports_seek_and_library_discovery(self):
         (self.folder / "videos").mkdir()

@@ -8,6 +8,9 @@ from urllib.parse import quote
 import zipfile
 
 from screenwriter_studio import settings as studio_settings
+from screenwriter_studio.errors import friendly
+from screenwriter_studio.pricing import CHECKED, EXTRAS, SOURCE, plan_estimate, video_estimate
+from screenwriter_studio.schemas import Development, Screenplay
 from screenwriter_studio.videos.plan import build_plan, read_json
 
 
@@ -28,7 +31,10 @@ def video_status(folder: Path | None, *, options: dict | None = None) -> dict:
         options = {**defaults, **(options or {})}
         if saved:
             options = saved_plan
-        result.update(status=saved.get("status", "waiting"), saved=bool(saved),
+        status = saved.get("status", "waiting")
+        if status in {"running", "assembling"} and not _locked(folder):
+            status = "paused"  # the process that was running it ended without saying so
+        result.update(status=status, saved=bool(saved),
                       mode=options.get("mode", "pro"), sound=options.get("sound", True),
                       selection=options.get("selection", "kling" if saved_plan.get("version") == 1 else defaults["selection"]))
         for clip in saved.get("clips", []):
@@ -42,6 +48,7 @@ def video_status(folder: Path | None, *, options: dict | None = None) -> dict:
                              if re.fullmatch(r"s\d+_v\d+\.mp4", take.get("file", "")) and (folder / "videos" / take["file"]).is_file()]
             result["clips"].append(item)
         result["complete"] = saved.get("status") == "complete"
+        result["estimate"] = _script_estimate(folder, result)
         plan = build_plan(folder, mode=result["mode"], sound=result["sound"], selection=result["selection"],
                           hash_images=False, frozen_plan=saved_plan or None)
         if saved_plan:
@@ -53,11 +60,30 @@ def video_status(folder: Path | None, *, options: dict | None = None) -> dict:
                       aspect_ratio=plan["aspect_ratio"])
         # Local paths are only needed by the backend.
         result["shots"] = [{k: v for k, v in shot.items() if k != "image"} for shot in plan["shots"]]
+        estimate = plan_estimate(plan, saved.get("clips"))
+        for shot in result["shots"]:
+            shot["credits"] = estimate["shots"].get(shot["id"])
+        result["estimate"] = {**{k: v for k, v in estimate.items() if k != "shots"},
+                              "checked": CHECKED, "source": SOURCE, "extras": EXTRAS}
         result.update(ready=True, message=saved.get("error") or (
             "All clips are ready." if result["complete"] else "Ready to animate the approved images."))
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        result["message"] = str(exc) if not isinstance(exc, FileNotFoundError) else "Finish and approve the stills before generating video."
+        result["message"] = friendly(exc) if not isinstance(exc, FileNotFoundError) else "Finish and approve the images before generating video clips."
     return result
+
+
+def _script_estimate(folder: Path, result: dict) -> dict | None:
+    """Before a clip plan can be built, price one clip per shot with the current choices."""
+    try:
+        development = Development.model_validate(read_json(folder / "00_development.json"))
+        screenplay = Screenplay.model_validate(read_json(folder / "01_screenplay.json"))
+        estimate = video_estimate(development, screenplay, mode=result["mode"], sound=result["sound"],
+                                  selection=result["selection"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return {"credits": estimate["credits"], "usd": estimate["usd"], "remaining": estimate["credits"],
+            "remaining_usd": estimate["usd"], "unpriced": estimate["unpriced"], "preliminary": True,
+            "checked": CHECKED, "source": SOURCE, "extras": EXTRAS}
 
 
 def video_file(root: Path, raw: str) -> Path | None:
@@ -116,6 +142,21 @@ def stream_video(handler, path: Path, *, attachment: bool = False) -> None:
             remaining -= len(chunk)
 
 
+def _locked(folder: Path) -> bool:
+    """Whether another process holds this production's video lock right now."""
+    import fcntl
+    lock_path = folder / "videos/.generation.lock"
+    if not lock_path.exists():
+        return False
+    with lock_path.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(lock, fcntl.LOCK_UN)
+    return False
+
+
 def clips_zip(handler, folder: Path) -> bool:
     """Send every finished clip in shot order as one download. Clips are already compressed, so nothing is re-packed."""
     try:
@@ -130,7 +171,10 @@ def clips_zip(handler, folder: Path) -> bool:
     with tempfile.TemporaryFile() as archive:
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as bundle:
             for name in names:
-                bundle.write(folder / "videos" / name, name)
+                try:
+                    bundle.write(folder / "videos" / name, name)
+                except FileNotFoundError:
+                    continue  # a redo moved it away while the archive was being built
         size = archive.tell()
         archive.seek(0)
         handler.send_response(200)

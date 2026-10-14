@@ -16,6 +16,7 @@ from pathlib import Path
 from screenwriter_studio.images.catalog import (
     CARD_BY_ID, EDIT_CARD, GPT_CARD, NANO_CARD, RESOLUTION_VALUES, SEEDREAM_CARD,
 )
+from screenwriter_studio import pricing
 from screenwriter_studio.paths import STATE_DIR
 from screenwriter_studio.videos.catalog import CARDS as VIDEO_CARDS, KLING, SEEDANCE, clip_bounds
 
@@ -71,7 +72,7 @@ DEFAULTS = {
     "chat": {"development": "gpt-6-astra", "writer": "gpt-6-astra", "editor": "gpt-6-1-sol",
              "art": "gpt-6-astra", "inspection": "gpt-6-astra"},
     "images": {"cinematic": NANO_CARD.model_id, "text": GPT_CARD.model_id,
-               "product": SEEDREAM_CARD.model_id, "resolution": "auto"},
+               "product": SEEDREAM_CARD.model_id, "resolution": "auto", "parallel": 3},
     "video": {"selection": "auto", "mode": "pro", "sound": True, "parallel": 3},
     "effort": {"development": "default", "writer": "default", "editor": "default",
                "art": "default", "inspection": "default"},
@@ -96,12 +97,13 @@ def schema() -> dict:
             "groups": [{
                 "id": group["id"], "label": group["label"], "help": group["help"],
                 "options": [{
-                    "id": card.model_id, "name": _image_name(card.model_id), "note": card.purpose,
+                    "id": card.model_id, "name": _image_name(card.model_id), "note": card.purpose + _image_price(card.model_id),
                     "resolutions": list(card.resolutions), "ratios": list(card.ratios),
                     "max_references": card.max_images, "sources": list(card.sources),
                 } for card in group["options"]],
             } for group in IMAGE_GROUPS],
             "resolutions": list(IMAGE_RESOLUTIONS),
+            "parallel": [1, 2, 3, 4],
         },
         "video": {
             "models": [{"id": "auto", "name": "Auto · choose for each shot",
@@ -110,7 +112,8 @@ def schema() -> dict:
                         "modes": list(video_modes("auto")), "sources": []}] + [{
                 "id": key, "name": VIDEO_CARDS[model].name,
                 "note": f"{VIDEO_CARDS[model].duration_min}–{VIDEO_CARDS[model].duration_max} s per clip · "
-                        f"{', '.join(VIDEO_CARDS[model].ratios)} · prompts up to {VIDEO_CARDS[model].prompt_max} characters",
+                        f"{', '.join(VIDEO_CARDS[model].ratios)} · prompts up to {VIDEO_CARDS[model].prompt_max} characters"
+                        + _video_price(model),
                 "duration_min": VIDEO_CARDS[model].duration_min,
                 "duration_max": VIDEO_CARDS[model].duration_max,
                 "modes": list(VIDEO_CARDS[model].modes), "sources": list(VIDEO_CARDS[model].sources),
@@ -119,7 +122,23 @@ def schema() -> dict:
             "parallel": [1, 2, 3, 4],
         },
         "defaults": deepcopy(DEFAULTS),
+        "pricing": pricing.schema(),
     }
+
+
+def _image_price(model_id: str) -> str:
+    rates = pricing.IMAGE_RATES.get(model_id)
+    if not rates:
+        return ""
+    return " · " + ", ".join(f"{size} {credits:g}" for size, credits in rates.items()) + " credits per image"
+
+
+def _video_price(model_id: str) -> str:
+    rates = pricing.VIDEO_RATES.get(model_id, {})
+    listed = {mode: (rates.get((mode, True)), rates.get((mode, False))) for mode in VIDEO_CARDS[model_id].modes}
+    parts = [f"{mode} {sound:g}" if sound == silent else f"{mode} {sound:g} with sound, {silent:g} silent"
+             for mode, (sound, silent) in listed.items() if sound is not None]
+    return (" · credits per second: " + "; ".join(parts)) if parts else ""
 
 
 def _image_name(model_id: str) -> str:
@@ -162,6 +181,10 @@ def validate(raw: object) -> dict:
     if resolution not in IMAGE_RESOLUTIONS:
         raise ValueError("Image resolution must be auto, 1K, 2K or 4K.")
     result["images"]["resolution"] = resolution
+    image_parallel = images.get("parallel", 3)
+    if type(image_parallel) is not int or not 1 <= image_parallel <= 4:
+        raise ValueError("Images generated at once must be between 1 and 4.")
+    result["images"]["parallel"] = image_parallel
     video = raw.get("video", {})
     if not isinstance(video, dict):
         raise ValueError("Video settings must be an object.")

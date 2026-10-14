@@ -1331,6 +1331,22 @@ body:not([data-view="stills"]) #image-summary, body:not([data-view="stills"]) #i
 .video-clip .takes { font-size: 12.5px; margin-top: 6px; }
 .video-clip button { margin-top: 10px; }
 
+.shot-who { font-weight: 600; }
+.shot-line { margin: 4px 0 0; font-size: 13px; font-style: italic; }
+.image-tools { display: grid; gap: 8px; padding: 12px; border-top: 1px solid var(--line, #ccc); font-size: 13px; }
+.image-tools p { margin: 0; overflow-wrap: anywhere; }
+.image-tools button { width: 100%; font-size: 12.5px; padding: 6px 10px; line-height: 1.3; }
+.image-tools textarea, .clip-edit textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; line-height: 1.45; padding: 8px; border: 1px solid var(--line, #d6d0c4); border-radius: 8px; background: #fff; resize: vertical; }
+.image-edit summary, .clip-edit summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.image-edit[open] button, .clip-edit[open] button { margin-top: 6px; }
+.image-versions { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+.image-versions > p { flex-basis: 100%; margin: 0; }
+.image-version { display: grid; gap: 4px; width: calc(50% - 4px); min-width: 72px; }
+.image-version img { width: 100%; height: auto; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 6px; border: 1px solid var(--line, #d6d0c4); }
+.image-version button { font-size: 12px; padding: 4px 6px; }
+.take-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
+.clip-edit { margin: 8px 0; }
+.cost-line { margin: 6px 0 0; font-size: 13px; font-weight: 600; color: var(--ink, inherit); }
 #format-estimate[data-bad="1"] { color: var(--bad, #b3261e); font-weight: 600; }
 #aspect { width: 100%; }
 .shot-more { margin-top: 6px; }
@@ -1356,3 +1372,10 @@ body:not([data-view="stills"]) #image-summary, body:not([data-view="stills"]) #i
 }
 
 .settings-pair { display: grid; grid-template-columns: 1fr; gap: 6px; }
+
+.folder-head { display: flex; align-items: center; gap: 8px; }
+.open-production { margin-left: auto; font-size: 12px; padding: 2px 8px; border: 1px solid rgba(255,255,255,0.25); border-radius: 999px; background: transparent; color: inherit; }
+.open-production:hover { border-color: var(--accent); }
+@media (max-width: 900px) {
+  body.library-hidden aside { display: none !important; }
+}

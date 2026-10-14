@@ -60,14 +60,34 @@ class Development(BaseModel):
     invented: list[str] = Field(description="Defaults you chose because the brief did not say. Two items at most")
 
 
+class Line(BaseModel):
+    speaker: str = Field(description="The speaking character's locked name, or NARRATOR for an unseen voice-over")
+    text: str = Field(description="The exact words spoken, in the locked language")
+
+
+# The structured shot fields use default factories so screenplays saved before they existed
+# still load, and so no non-null default reaches the strict output schema.
 class Shot(BaseModel):
     number: int = Field(ge=1)
     duration_seconds: int = Field(ge=3, le=30, description="Clip length. Kling is 3–15 seconds; Seedance 2.5 is 4–30")
     framing: str = Field(
         description="Concrete camera height (high, eye, or low), angle, and subject distance (wide, medium, or close). Consecutive shots must not share the same height, angle, and distance"
     )
+    camera_move: str = Field(
+        default_factory=str,
+        description="The one camera movement during the take: static, push in, pull out, pan, tilt, track, orbit, handheld, or crane. Use static when the camera holds",
+    )
+    characters: list[str] = Field(
+        default_factory=list,
+        description="Locked character names visible in this shot, spelled exactly as in development. Empty when nobody is on screen",
+    )
+    location: str = Field(default_factory=str, description="The locked location this shot happens in, copied exactly from development")
     action: str = Field(description="One continuous action. No cuts inside the shot")
-    audio: str
+    dialogue: list[Line] = Field(
+        default_factory=list,
+        description="Every line spoken in this shot, in order. Empty when nobody speaks. Spoken words go here, not in audio",
+    )
+    audio: str = Field(description="Sound effects, ambience, and music. No spoken lines; those go in dialogue")
     notes: str = Field(description="Continuity, lip-sync, or prop note. Empty string if none")
 
 

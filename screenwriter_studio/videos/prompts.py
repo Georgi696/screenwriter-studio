@@ -5,7 +5,27 @@ seven uppercase fields or a fixed word budget. Seedance recommends a summary,
 shot order/timeline, material roles when applicable, and continuity instructions.
 """
 
+import re
+
 from screenwriter_studio.videos.catalog import KLING, SEEDANCE, has_speech
+
+
+def _speaker(development, name: str) -> str:
+    """A name and a visible cue, so the model can tell which person in the frame is talking."""
+    for character in development.characters:
+        if character.name.strip().lower() == name.strip().lower():
+            cue = " ".join(character.description.split())
+            if len(cue) > 90:
+                cue = cue[:90].rsplit(" ", 1)[0].rstrip(",;")
+            return f"{character.name}: {cue}" if cue else character.name
+    if name.strip().upper() in {"NARRATOR", "V.O.", "VOICE-OVER", "VOICEOVER"}:
+        return "Narrator, voice-over, not on screen"
+    return name.strip()
+
+
+def dialogue_lines(development, shot) -> list[str]:
+    return [f'[{_speaker(development, line.speaker)}]: "{line.text.strip()}"'
+            for line in getattr(shot, "dialogue", None) or [] if line.text.strip()]
 
 
 def make_prompt(card, development, shot, *, sound: bool) -> str:
@@ -13,15 +33,21 @@ def make_prompt(card, development, shot, *, sound: bool) -> str:
     # Do not invent subjects or pretend that unattached reference assets exist.
     action = shot.action.strip()
     camera = shot.framing.strip()
+    move = getattr(shot, "camera_move", "").strip()
+    if move:
+        camera += f". Camera movement: {move}"
     continuity = "Keep the first frame's identities, wardrobe, props, lighting, and colour grade consistent."
     if shot.notes.strip():
         continuity += " " + shot.notes.strip()
+    lines = dialogue_lines(development, shot)
     if not sound:
         audio = "Silent video; no generated audio."
     elif shot.audio.strip() or has_speech(shot):
-        audio = "Audio direction: " + (shot.audio.strip() or "Use only the speech specified in the action.")
+        audio = "Audio direction: " + (shot.audio.strip() or ("Only the dialogue below." if lines else "Use only the speech specified in the action."))
+        if lines:
+            audio += "\nDialogue, in this order:\n" + "\n".join(lines) + "\n"
         if has_speech(shot):
-            audio += f" Spoken language: {development.language}. Keep the supplied speaker-to-line assignments and exact dialogue; do not translate or add lines."
+            audio += ("" if lines else " ") + f"Spoken language: {development.language}. Keep the supplied speaker-to-line assignments and exact dialogue; do not translate or add lines."
         else:
             audio += " Do not invent dialogue."
     else:

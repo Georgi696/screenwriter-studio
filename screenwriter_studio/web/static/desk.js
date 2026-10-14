@@ -6,8 +6,6 @@ const GLYPHS = {
 };
 const PIPS = ["brief", "development", "writer", "editor", "approval", "art", "images"];
 const CREW = ["development", "writer", "editor", "art"];
-const SAMPLE = "A 30-second vertical film about someone who keeps a seat on the last bus.";
-
 let last = null;
 let revision = -1;
 let shown = 0;
@@ -563,12 +561,101 @@ function applyFrameState(frame, image) {
     img.hidden = true;
     hold.hidden = false;
     hold.textContent = "Waiting for approved references: " + (image.blocked_by || []).join(", ");
+  } else if (image.state === "submitting" && image.uncertain) {
+    frame.classList.add("is-failed");
+    img.hidden = true;
+    hold.hidden = false;
+    hold.textContent = "Needs checking";
   } else if (image.state === "failed") {
     frame.classList.add("is-failed");
     img.hidden = true;
     hold.hidden = false;
     hold.textContent = "Failed";
   }
+}
+
+const SETTLED_IMAGE = new Set(["done", "review", "failed", "blocked", "planned"]);
+
+async function imageAction(path, body, done) {
+  try {
+    const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const reply = await res.json();
+    if (!res.ok) throw new Error(reply.error || "Could not change this image.");
+    toast(done);
+  } catch (error) { toast(error.message, 6000); }
+}
+
+// Edit the prompt and make a new take, go back to an earlier version, or recover an uncertain submission.
+function renderImageTools(frame, image, running) {
+  let tools = frame.querySelector(".image-tools");
+  const signature = JSON.stringify([image.state, image.prompt, image.versions, image.uncertain, image.model, Boolean(running)]);
+  if (tools && tools.dataset.signature === signature) return;
+  const previous = tools ? tools.querySelector("textarea") : null;
+  const draft = previous && previous.value !== previous.defaultValue ? previous.value : null;
+  const wasOpen = Boolean(tools && tools.querySelector("details[open]"));
+  if (tools) tools.remove();
+  tools = make("div", "image-tools");
+  tools.dataset.signature = signature;
+  if (image.uncertain) {
+    tools.appendChild(make("p", "field-note", "KIE may or may not have created this image's task. Check your KIE task history first."));
+    const attach = make("button", "ghost", "Attach task ID");
+    attach.type = "button";
+    attach.addEventListener("click", () => {
+      const task = window.prompt("KIE task ID for " + image.id + " (from your KIE task history):");
+      if (task && task.trim()) imageAction("/api/images/attach", { id: image.id, task_id: task.trim() }, "Task attached. Resume saved image work to fetch it.");
+    });
+    const forget = make("button", "ghost", "Not on KIE? Send it again");
+    forget.type = "button";
+    forget.addEventListener("click", () => {
+      if (!window.confirm("Only do this if KIE's task history has no task for " + image.id + ". Resume then sends it again (paid); if KIE did create one, both are billed. Continue?")) return;
+      imageAction("/api/images/forget", { id: image.id }, "Submission forgotten. Resume saved image work to send it again.");
+    });
+    attach.disabled = forget.disabled = Boolean(running);
+    tools.append(attach, forget);
+  }
+  if (SETTLED_IMAGE.has(image.state) && image.prompt) {
+    const edit = make("details", "image-edit");
+    edit.open = wasOpen;
+    edit.appendChild(make("summary", "", image.edited ? "Prompt (edited) · regenerate" : "Edit prompt and regenerate"));
+    const box = document.createElement("textarea");
+    box.rows = 6;
+    box.value = image.prompt;
+    box.defaultValue = image.prompt;
+    if (draft !== null) box.value = draft;
+    box.setAttribute("aria-label", "Prompt for " + image.id);
+    const price = imagePrice(image.model, (last && last.image_resolution) || "1K");
+    const go = make("button", "go", "Regenerate" + (price !== null ? " · about " + Math.round(price) + " credits" : ""));
+    go.type = "button";
+    go.disabled = Boolean(running);
+    go.addEventListener("click", () => {
+      const prompt = box.value.trim();
+      if (!prompt) { toast("Write a prompt first."); return; }
+      const cost = price !== null ? " About " + credits(price) + ", plus its inspection." : "";
+      if (!window.confirm("Make a new take of " + image.id + " with this prompt?" + cost + " The current version is kept and can be chosen again. Images that use this one are not regenerated.")) return;
+      reviewImage({ id: image.id, action: "regenerate", prompt });
+    });
+    edit.append(box, go);
+    tools.appendChild(edit);
+  }
+  if ((image.versions || []).length) {
+    const strip = make("div", "image-versions");
+    strip.appendChild(make("p", "field-note", "Earlier versions · switching spends no credits"));
+    for (const version of image.versions) {
+      const item = make("div", "image-version");
+      const thumb = make("img");
+      thumb.src = version.src;
+      thumb.alt = version.label + " of " + image.id;
+      thumb.loading = "lazy";
+      const use = make("button", "ghost", "Use " + version.label.toLowerCase());
+      use.type = "button";
+      use.disabled = Boolean(running) || !SETTLED_IMAGE.has(image.state);
+      use.addEventListener("click", () => imageAction("/api/images/version", { id: image.id, version: version.name }, image.id + " now uses " + version.label.toLowerCase() + "."));
+      item.append(thumb, use);
+      strip.appendChild(item);
+    }
+    tools.appendChild(strip);
+  }
+  if (tools.childNodes.length) frame.appendChild(tools);
 }
 
 async function reviewImage(data) {
@@ -618,7 +705,9 @@ function renderInspection(frame, image, running) {
     const title = document.createElement("summary"); title.textContent = "Exact repair instructions";
     const text = document.createElement("pre"); text.textContent = image.repair_prompt;
     details.append(title, text); panel.appendChild(details);
-    line("Repair model: " + image.repair_model + ". Approval spends credits on one repair and its inspection.");
+    const repairPrice = imagePrice(image.repair_model, (last && last.image_resolution) || "1K");
+    line("Repair model: " + image.repair_model + ". Approval spends credits on one repair" +
+      (repairPrice !== null ? " (about " + credits(repairPrice) + ")" : "") + " and its inspection.");
   }
   if (image.repair_unavailable) line(image.repair_unavailable);
   if (image.state === "review") {
@@ -654,8 +743,8 @@ function renderInspection(frame, image, running) {
 function savedImageWorkCanResume(state) {
   const images = state.images || [];
   if (!images.length) return false;
-  if (images.some((image) => image.state === "review")) return false;
-  const open = new Set(["failed", "planned", "polling", "submitting", "downloading", "running", "inspecting"]);
+  // An image waiting for review only holds back the images that use it; the rest can continue.
+  const open = new Set(["failed", "planned", "queued", "polling", "submitting", "downloading", "running", "inspecting"]);
   return images.some((image) => open.has(image.state));
 }
 
@@ -721,6 +810,9 @@ function nextStep(state) {
       ? { text: "The script editor passed the script. Read it, then approve to write the image prompts.", label: "Review the script", view: "pipeline" }
       : { text: "The script editor did not pass this draft. Continue with it or abort.", label: "Review the draft", view: "pipeline" };
   }
+  if (/^The run stopped:/.test(state.note || "") && !state.can_proceed) {
+    return { text: state.note + " Saved files are kept.", label: "Back to Idea", view: "brief" };
+  }
   const waiting = images.filter((image) => image.state === "review").length;
   if (waiting) return { text: waiting + (waiting === 1 ? " image needs" : " images need") + " your decision.", label: "Review images", action: openStillsReview };
   if (stillsPaused(state)) return { text: "Image work is unfinished. Resume it from the Images tab.", label: "Open Images", view: "stills" };
@@ -740,6 +832,23 @@ function syncNextStep(state) {
   button.hidden = !nextStepGoal.label || nextStepGoal.view === document.body.dataset.view;
   setText(button, nextStepGoal.label || "");
   document.getElementById("next-step").classList.toggle("is-busy", Boolean(state.running));
+}
+
+function credits(amount) {
+  const pricing = settingsSchema && settingsSchema.pricing;
+  const rate = pricing ? pricing.usd_per_credit : 0.005;
+  return Math.round(amount).toLocaleString() + " credits (about $" + (amount * rate).toFixed(2) + ")";
+}
+
+function priceSource(estimate) {
+  return estimate && estimate.source ? "KIE prices from " + estimate.source + ", checked " + estimate.checked + ". KIE bills what its price page says on the day." : "";
+}
+
+function imagePrice(model, resolution) {
+  const pricing = settingsSchema && settingsSchema.pricing;
+  const rates = pricing && pricing.images ? pricing.images[model] : null;
+  if (!rates) return null;
+  return rates[resolution] !== undefined ? rates[resolution] : rates["1K"];
 }
 
 function shotLabel(state, id) {
@@ -791,11 +900,15 @@ function syncShotBoard(state) {
       thumb.loading = "lazy";
       card.appendChild(thumb);
     }
+    const cast = (shot.characters || []).join(", ");
+    if (cast || shot.location) card.appendChild(make("p", "shot-meta shot-who", [cast, shot.location].filter(Boolean).join(" · ")));
     card.appendChild(make("p", "shot-action", shot.action));
-    if (shot.framing || shot.audio || shot.notes) {
+    for (const line of shot.dialogue || []) card.appendChild(make("p", "shot-line", line.speaker + ": \u201c" + line.text + "\u201d"));
+    if (shot.framing || shot.camera_move || shot.audio || shot.notes) {
       const more = make("details", "shot-more");
       more.appendChild(make("summary", "", "Camera, audio and notes"));
       if (shot.framing) more.appendChild(make("p", "shot-meta", "Camera · " + shot.framing));
+      if (shot.camera_move) more.appendChild(make("p", "shot-meta", "Move · " + shot.camera_move));
       if (shot.audio) more.appendChild(make("p", "shot-meta", "Audio · " + shot.audio));
       if (shot.notes) more.appendChild(make("p", "shot-meta", "Note · " + shot.notes));
       card.appendChild(more);
@@ -854,7 +967,7 @@ function syncImageExtras(state) {
     let link = frame.querySelector("a.frame-download");
     if (image.src && !link) {
       link = make("a", "frame-download", "Download");
-      link.setAttribute("download", image.id + ".png");
+      link.setAttribute("download", image.id);
       frame.appendChild(link);
     }
     if (link) { link.hidden = !image.src; if (image.src) link.href = image.src; }
@@ -898,6 +1011,15 @@ function syncVideoExtras(state) {
   if (mix) summary.push(mix);
   if (video.mode) summary.push({ std: "720p", pro: "1080p", "4K": "4K" }[video.mode] + (video.sound === false ? " · silent" : " · with sound"));
   setText(document.getElementById("video-summary"), summary.join(" · "));
+  const cost = document.getElementById("video-cost");
+  const estimate = video.estimate;
+  cost.hidden = !estimate;
+  if (estimate) {
+    setText(cost, (estimate.preliminary ? "Estimated with the current video settings: " : "Estimated: ") + credits(estimate.credits) + " for every clip" +
+      (estimate.remaining > 0 && estimate.remaining !== estimate.credits ? " · " + credits(estimate.remaining) + " for the clips not finished yet" : "") +
+      (estimate.unpriced && estimate.unpriced.length ? " · not priced: " + estimate.unpriced.join(", ") : "") + ".");
+    cost.title = priceSource(estimate) + " " + (estimate.extras || "");
+  }
   document.getElementById("download-all").hidden = !clips.some((clip) => clip.state === "done");
 }
 
@@ -966,6 +1088,21 @@ function syncProceed(state) {
   setText(note, approving
     ? "The editor passed these pages. Select a step below to read them. Approving starts the image prompts and image generation. Plan images and image inspection beside this button set the cost."
     : "Sends this script to the image prompts and image generation. The editor's verdict stays on file. Plan images and image inspection beside this button set the cost.");
+  const cost = document.getElementById("proceed-cost");
+  const estimate = state.estimate;
+  if (cost) {
+    cost.hidden = !showProceed || !estimate;
+    if (estimate) {
+      const dry = document.getElementById("dry").checked;
+      const images = estimate.images;
+      const videos = estimate.videos;
+      const seconds = videos.shots.reduce((sum, shot) => sum + shot.seconds, 0);
+      setText(cost, (dry ? "Plan images only: no image credits now. " : "Images now: about " + images.count + " at " + images.resolution + ", " + credits(images.credits) + ". ") +
+        "Video clips later: " + seconds + "s, " + credits(videos.credits) +
+        (videos.unpriced.length ? " (not priced: " + videos.unpriced.join(", ") + ")" : "") + ". Chat calls, inspections and repairs are extra.");
+      cost.title = [images.assumption, priceSource(estimate)].filter(Boolean).join(" ");
+    }
+  }
   if (abort) {
     abort.hidden = !showProceed;
     abort.disabled = !showProceed;
@@ -977,6 +1114,9 @@ function syncProceed(state) {
   if (resume) {
     resume.hidden = !showResume;
     resume.disabled = !showResume;
+    const left = state.images_estimate;
+    setText(resume, left && left.credits ? "Resume saved image work · about " + credits(left.credits) : "Resume saved image work");
+    resume.title = left ? left.count + (left.count === 1 ? " image is" : " images are") + " not finished. Inspections and repairs are extra." : "";
     resume.classList.remove("go");
     resume.classList.add("ghost");
   }
@@ -997,9 +1137,11 @@ function syncImages(state) {
     frame.dataset.kind = image.kind || "";
     const caption = image.error ? image.id + " · " + image.kind + " — " + image.error : image.id + " · " + image.kind;
     setText(frame.querySelector("figcaption"), caption);
-    if (frame.dataset.state !== (image.state || "")) applyFrameState(frame, image);
+    const shown = (image.state || "") + (image.uncertain ? ":uncertain" : "");
+    if (frame.dataset.shown !== shown) { applyFrameState(frame, image); frame.dataset.shown = shown; }
     else if (["done", "review", "inspecting"].includes(image.state)) showDone(frame, image);
     renderInspection(frame, image, state.running);
+    renderImageTools(frame, image, state.running);
   }
   bay.querySelectorAll(".model-col").forEach((col) => {
     const jobs = col.querySelectorAll(".frame[data-job]");
@@ -1317,7 +1459,8 @@ function syncVideo(state) {
       preview.preload = "none";
       host.appendChild(card);
     }
-    setText(card.querySelector("h3"), clip.id + " · " + modelTitle(clip.model || "Video") + " · " + clip.state);
+    const clipStates = { done: "ready", pending: "not started", submitting: "sending", polling: "rendering", downloading: "downloading", failed: "failed", uncertain: "needs checking" };
+    setText(card.querySelector("h3"), shotLabel(state, clip.id) + " · " + modelTitle(clip.model || "Video") + " · " + (clipStates[clip.state] || clip.state));
     setText(card.querySelector("p"), clip.error || "");
     card.dataset.state = clip.state;
     const source = imageOf(state, clip.id);
@@ -1328,8 +1471,22 @@ function syncVideo(state) {
     setText(card.querySelector(".clip-meta"), [planned.duration_seconds ? planned.duration_seconds + "s" : "", shotOf(state, clip.id) ? shotOf(state, clip.id).action : ""].filter(Boolean).join(" · "));
     card.querySelector("video").poster = source && source.src ? source.src : "";
     const action = card.querySelector("button");
-    setText(action, clip.state === "done" ? "Redo this shot · paid" : "Render this shot · paid");
+    const price = typeof planned.credits === "number" ? " · about " + Math.round(planned.credits).toLocaleString() + " credits" : " · paid";
+    setText(action, (clip.state === "done" ? "Redo this shot" : "Render this shot") + price);
     action.disabled = running || !video.ready || !video.saved;
+    let forget = card.querySelector(".forget-clip");
+    if (clip.state === "uncertain" || clip.state === "submitting") {
+      if (!forget) {
+        forget = make("button", "ghost forget-clip", "Not on KIE? Send it again");
+        forget.type = "button";
+        forget.title = "Use this only after checking KIE's task history shows no task for this shot.";
+        forget.addEventListener("click", () => forgetClip(clip.id));
+        card.appendChild(forget);
+      }
+      forget.disabled = running;
+    } else if (forget) {
+      forget.remove();
+    }
     action.hidden = Boolean(video.saved) === false;
     const preview = card.querySelector("video");
     preview.hidden = !clip.src;
@@ -1338,13 +1495,53 @@ function syncVideo(state) {
     download.hidden = !clip.src;
     if (clip.src) { download.href = clip.src + "&download=1"; download.setAttribute("download", clip.id + ".mp4"); }
     const takes = card.querySelector(".takes");
-    takes.replaceChildren();
-    for (const take of clip.takes || []) {
-      const link = make("a", "", "Earlier take · " + take.name);
-      link.href = take.src;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      takes.append(link, document.createElement("br"));
+    const takeKey = JSON.stringify([clip.takes || [], running, clip.state]);
+    if (takes.dataset.key !== takeKey) {
+      takes.dataset.key = takeKey;
+      takes.replaceChildren();
+      for (const take of clip.takes || []) {
+        const row = make("div", "take-row");
+        const link = make("a", "", "Earlier take · " + take.name);
+        link.href = take.src;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        const use = make("button", "ghost", "Use this take");
+        use.type = "button";
+        use.disabled = running || !["done", "failed", "pending"].includes(clip.state);
+        use.addEventListener("click", () => useTake(clip.id, take.name));
+        row.append(link, use);
+        takes.appendChild(row);
+      }
+    }
+    let edit = card.querySelector(".clip-edit");
+    const canEdit = Boolean(video.saved) && Boolean(video.ready) && planned.prompt;
+    if (canEdit && !edit) {
+      edit = make("details", "clip-edit");
+      edit.append(make("summary", "", "Edit prompt"), document.createElement("textarea"), make("button", "go"));
+      const box = edit.querySelector("textarea");
+      box.rows = 7;
+      box.setAttribute("aria-label", "Video prompt for " + clip.id);
+      edit.querySelector("button").type = "button";
+      edit.querySelector("button").addEventListener("click", () => {
+        const text = box.value.trim();
+        if (!text) { toast("Write a prompt first."); return; }
+        const done = card.dataset.state === "done";
+        startVideo(false, done ? { redo: [clip.id], prompts: { [clip.id]: text } } : { shots: [clip.id], prompts: { [clip.id]: text } });
+      });
+      card.insertBefore(edit, takes);
+    }
+    if (edit) {
+      edit.hidden = !canEdit;
+      const box = edit.querySelector("textarea");
+      if (canEdit && box.dataset.planned !== planned.prompt) {
+        // Refresh the text only when the saved prompt changed, never while you are typing.
+        if (box.value === (box.dataset.planned || "") || !box.value) box.value = planned.prompt;
+        box.dataset.planned = planned.prompt;
+      }
+      setText(edit.querySelector("summary"), planned.original_prompt ? "Prompt (edited)" : "Edit prompt");
+      const price = typeof planned.credits === "number" ? " · about " + Math.round(planned.credits).toLocaleString() + " credits" : "";
+      setText(edit.querySelector("button"), (clip.state === "done" ? "Redo with this prompt" : "Render with this prompt") + price);
+      edit.querySelector("button").disabled = running;
     }
   }
   const shots = video.shots || [];
@@ -1354,7 +1551,9 @@ function syncVideo(state) {
     const prompts = document.getElementById("video-prompts");
     prompts.replaceChildren();
     for (const shot of shots) {
-      prompts.append(make("h3", "", shot.id + " · " + shot.duration_seconds + "s · " + (shot.model_name || "Kling 3.0")),
+      prompts.append(make("h3", "", shot.id + " · " + shot.duration_seconds + "s · " + (shot.model_name || "Kling 3.0") +
+        (shot.original_prompt ? " · prompt edited" : "") +
+        (typeof shot.credits === "number" ? " · about " + credits(shot.credits) : "")),
         make("p", "field-note", shot.selection_reason || "Original saved Kling plan."), make("pre", "", shot.prompt));
       const sources = make("p", "field-note");
       for (const [index, source] of (shot.sources || []).entries()) {
@@ -1370,9 +1569,28 @@ function syncVideo(state) {
   document.getElementById("video-plan").hidden = !shots.length;
 }
 
+function paidVideoQuestion(only) {
+  const video = (last && last.video) || {};
+  const quality = { std: "720p", pro: "1080p", "4K": "4K" }[video.mode] || "1080p";
+  const sound = video.sound === false ? "silent" : "with sound";
+  const one = (only.redo || only.shots || [])[0];
+  const planned = (video.shots || []).find((shot) => shot.id === one) || {};
+  const each = typeof planned.credits === "number" ? ", about " + credits(planned.credits) : "";
+  if (only.redo) return "Regenerate " + shotLabel(last || {}, one) + "? This is a paid KIE job (" + quality + ", " + sound + each + "). The current take is kept as an earlier take.";
+  if (only.shots) return "Render " + shotLabel(last || {}, one) + "? This is a paid KIE job (" + quality + ", " + sound + each + ").";
+  const shots = video.shots || (last && last.shots) || [];
+  const seconds = shots.reduce((sum, shot) => sum + (shot.duration_seconds || 0), 0);
+  const pending = (video.clips || []).filter((clip) => clip.state !== "done").length || shots.length;
+  const estimate = video.estimate;
+  const total = estimate ? " Estimated cost: " + credits(video.saved ? estimate.remaining : estimate.credits) + "." : "";
+  return "Generate " + pending + (pending === 1 ? " clip" : " clips") + (seconds ? " (" + seconds + "s of video in total)" : "") + " at " + quality + ", " + sound + "? Each clip is a paid KIE job." + total;
+}
+
 async function startVideo(dryRun, only = {}) {
-  const button = document.getElementById(dryRun ? "plan-video" : "generate-video");
-  button.disabled = true;
+  const single = Boolean(only.shots || only.redo);
+  if (!dryRun && !window.confirm(paidVideoQuestion(only))) return;
+  const button = single ? null : document.getElementById(dryRun ? "plan-video" : "generate-video");
+  if (button) button.disabled = true;
   try {
     const response = await fetch("/api/video", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1380,12 +1598,12 @@ async function startVideo(dryRun, only = {}) {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not start video generation.");
-    setView("video", true);
-    toast(dryRun ? "Saving video plan" : "Video generation started");
+    if (document.body.dataset.view !== "video") setView("video");
+    toast(dryRun ? "Saving the clip plan" : "Video generation started");
     await fetch("/api/status").then((res) => res.json()).then(apply);
   } catch (error) {
     toast(error.message, 6000);
-    button.disabled = Boolean(only.shots || only.redo);
+    if (button) button.disabled = false;
   }
 }
 
@@ -1487,14 +1705,38 @@ function paint(state, prev) {
 
 function apply(state) {
   if (!state || typeof state.revision !== "number") return;
-  if (state.revision === revision) return;
+  // A status fetch can arrive after a newer pushed state; only a new server or a newer revision wins.
+  const sameServer = !state.boot || state.boot === bootSeen;
+  if (sameServer && state.revision <= revision) return;
+  bootSeen = state.boot || bootSeen;
+  if (last && last.folder !== state.folder) forgetProduction();
   const prev = last;
   last = state;
   revision = state.revision;
   paint(state, prev);
 }
 
+let bootSeen = "";
+
+// Per-production caches and choices must not leak into the next production.
+function forgetProduction() {
+  pickedStation = "";
+  shotBoardKey = "";
+  videoPromptKey = "";
+  const ready = document.getElementById("video-ready");
+  if (ready) { delete ready.dataset.touched; }
+  const list = document.getElementById("video-ready-list");
+  if (list) { delete list.dataset.key; }
+  document.getElementById("video-clips").replaceChildren();
+}
+
 function startDust() {}
+
+function ideaCount() {
+  const idea = document.getElementById("idea").value;
+  const chars = idea.length;
+  setText(document.getElementById("idea-count"), idea.trim() ? chars.toLocaleString() + (chars === 1 ? " character" : " characters") : "Empty");
+}
 
 function suggestLabel() {
   ideaCount();
@@ -1530,7 +1772,12 @@ async function suggestBrief() {
     const res = await fetch("/api/brief/suggest", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ idea: idea.value })
+      body: JSON.stringify({
+        idea: idea.value,
+        runtime_seconds: document.getElementById("runtime").value ? Number(document.getElementById("runtime").value) : null,
+        aspect_ratio: document.getElementById("aspect").value || null,
+        max_shots: document.getElementById("max-shots").value ? Number(document.getElementById("max-shots").value) : null
+      })
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.brief) {
@@ -1801,16 +2048,46 @@ function briefEstimate() {
   const imageWord = shots === 1 ? "image" : "images";
   const clipWord = shots === 1 ? "clip" : "clips";
   setText(note, runtime + "s film · up to " + shots + " " + shotWord + " → " + shots + " shot " + imageWord + " and up to " + shots + " video " + clipWord + ", plus character and location images. Each clip is " + range + " seconds." + bounds.note);
+  ideaCost(runtime, shots);
 }
 
-function ideaCount() {
-  const words = document.getElementById("idea").value.trim().split(/\s+/).filter(Boolean).length;
-  setText(document.getElementById("idea-count"), words ? words + (words === 1 ? " word" : " words") : "Empty");
+// A rough figure from the saved model choices. The exact estimate appears beside Approve pages.
+function ideaCost(runtime, shots) {
+  const out = document.getElementById("idea-cost");
+  const pricing = settingsSchema && settingsSchema.pricing;
+  if (!out) return;
+  out.hidden = !pricing || !studioSettings;
+  if (out.hidden) return;
+  const video = studioSettings.video;
+  const key = video.mode + "/" + (video.sound ? "sound" : "silent");
+  const names = video.selection === "auto" ? ["kling", "seedance"] : [video.selection];
+  const rates = names.map((name) => [name, (pricing.video[name] || {})[key]]).filter(([, rate]) => typeof rate === "number");
+  const resolution = studioSettings.images.resolution === "auto" ? "1K" : studioSettings.images.resolution;
+  const perImage = imagePrice(studioSettings.images.cinematic, resolution);
+  const perSecond = rates.map(([name, rate]) => pricing.video_names[name] + " " + rate).join(", ");
+  out.title = "KIE prices from " + pricing.source + ", checked " + pricing.checked + ". " + Object.values(pricing.assumptions || {}).join(" ");
+  if (!runtime) {
+    setText(out, "Cost guide: video " + perSecond + " credits per second at these settings; each image about " + (perImage || "?") + " credits at " + resolution + ". " + pricing.extras);
+    return;
+  }
+  const low = Math.min(...rates.map(([, rate]) => rate)) * runtime;
+  const high = Math.max(...rates.map(([, rate]) => rate)) * runtime;
+  const dollars = (amount) => "$" + (amount * pricing.usd_per_credit).toFixed(2);
+  const videoText = low === high ? credits(low)
+    : Math.round(low).toLocaleString() + "–" + Math.round(high).toLocaleString() + " credits (" + dollars(low) + "–" + dollars(high) + "; per second: " + perSecond + ")";
+  setText(out, "Rough cost · video " + videoText + " · shot images about " + credits(shots * (perImage || 0)) +
+    ", plus character and location images. " + pricing.extras);
 }
 
 async function startRun() {
-  releaseNote();
   const run = document.getElementById("run");
+  if (run.disabled) return;
+  if (!document.getElementById("idea").value.trim()) {
+    toast("Write an idea first, or use Suggest a story.", 4000);
+    document.getElementById("idea").focus();
+    return;
+  }
+  releaseNote();
   run.disabled = true;
   follow = true;
   document.getElementById("follow").classList.add("is-on");
@@ -1868,7 +2145,13 @@ async function pollLibrary() {
       return;
     }
     for (const project of data.projects) {
-      const { section, content } = libraryFolder(project, "production");
+      const { section, head, content } = libraryFolder(project, "production");
+      const open = make("button", "linkish open-production", "Open");
+      open.type = "button";
+      open.title = "Continue " + project.slug + " in the desk";
+      open.setAttribute("aria-label", "Open " + project.slug + " in the desk");
+      open.addEventListener("click", () => openProduction(project.slug));
+      head.appendChild(open);
       for (const [label, items] of [["Documents", project.documents], ["Images", project.images], ["Videos", project.videos || []]]) {
         const groupContent = document.createElement("div");
         groupContent.className = "library-group";
@@ -2297,6 +2580,8 @@ document.getElementById("idea").addEventListener("keydown", (event) => {
   }
 });
 document.getElementById("brief-form").addEventListener("change", briefSummary);
+// Plan images only can sit beside Approve pages, outside the form; the cost line follows it.
+document.getElementById("dry").addEventListener("change", () => { if (last) syncProceed(last); });
 document.getElementById("brief-form").addEventListener("input", briefSummary);
 document.getElementById("track").addEventListener("click", (event) => {
   const station = event.target.closest(".station");
@@ -2322,11 +2607,6 @@ document.getElementById("follow").addEventListener("click", () => {
 });
 document.getElementById("toggle-library").addEventListener("click", toggleLibrary);
 document.getElementById("suggest").addEventListener("click", suggestBrief);
-document.getElementById("sample").addEventListener("click", () => {
-  document.getElementById("idea").value = SAMPLE;
-  document.getElementById("idea").focus();
-  suggestLabel();
-});
 document.getElementById("clear-brief").addEventListener("click", () => {
   document.getElementById("idea").value = "";
   document.getElementById("idea").focus();
@@ -2408,7 +2688,10 @@ document.getElementById("clear-log").addEventListener("click", async () => {
   }
 });
 document.getElementById("new-session").addEventListener("click", async () => {
-  if (!window.confirm("Clear this session and start from a blank brief?")) return;
+  const question = last && last.running
+    ? "A run is in progress. Starting a new production stops it now (tasks already sent to KIE are still billed). Saved files stay on disk. Continue?"
+    : "Start a new production from a blank idea? The current production's files stay on disk and can be opened again from the library.";
+  if (!window.confirm(question)) return;
   try {
     const res = await fetch("/api/session/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     if (!res.ok) throw new Error("clear");
@@ -2420,6 +2703,8 @@ document.getElementById("new-session").addEventListener("click", async () => {
     pickedStation = "";
     document.getElementById("max-shots").value = "";
     document.getElementById("image-count").value = "";
+    document.getElementById("runtime").value = "";
+    document.getElementById("aspect").value = "";
     document.getElementById("inspection-mode").value = "manual";
     selectedRefs.clear();
     uploadedRefs = [];
@@ -2436,7 +2721,7 @@ document.getElementById("new-session").addEventListener("click", async () => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.metaKey || event.ctrlKey || event.altKey) return;
-  const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement && document.activeElement.tagName);
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName);
   if (typing) return;
   const views = ["brief", "pipeline", "stills", "video", "activity", "reader"];
   const index = "123456".indexOf(event.key);
@@ -2525,6 +2810,7 @@ async function proceedDraft() {
 }
 
 async function abortDraft() {
+  if (!window.confirm("Abort this draft? It stops here for good: no image prompts, images or clips will be made from it. Its files stay on disk.")) return;
   const button = document.getElementById("abort-draft");
   const proceed = document.getElementById("proceed");
   button.disabled = true;
@@ -2551,9 +2837,13 @@ async function abortDraft() {
 
 // ---- Idea tab: image, video, and writing models ------------------------------------
 
+let settingsLabelSequence = 0;
 function settingsRow(label, help, control) {
   const row = make("div", "settings-row");
   const text = make("label", "settings-label");
+  text.id = "settings-label-" + (++settingsLabelSequence);
+  const fields = control.matches && control.matches("select, input") ? [control] : [...control.querySelectorAll("select, input")];
+  for (const field of fields) if (!field.getAttribute("aria-label")) field.setAttribute("aria-labelledby", text.id);
   text.append(make("span", "settings-name", label));
   if (help) text.append(make("small", "", help));
   row.append(text, control);
@@ -2635,6 +2925,8 @@ function renderSettings() {
   }
   const resolutions = settingsSchema.images.resolutions.map((id) => ({ id, name: id === "auto" ? "Auto · the image prompts decide (1K)" : id }));
   images.appendChild(settingsRow("Image resolution", "Higher resolution costs more. A model that cannot do a size falls back to Nano Banana.", settingsSelect(resolutions, values.images.resolution, (value) => { values.images.resolution = value; save(); })));
+  const imageParallel = (settingsSchema.images.parallel || [1, 2, 3, 4]).map((count) => ({ id: String(count), name: count + (count === 1 ? " image" : " images") + " at a time" }));
+  images.appendChild(settingsRow("Images generated at once", "More is faster. A shot image still waits for the character and location images it uses.", settingsSelect(imageParallel, String(values.images.parallel || 3), (value) => { values.images.parallel = Number(value); save(); })));
   fillRoles(images, rolesIn("images"), values, save);
 
   const models = settingsSchema.video.models;
@@ -2719,3 +3011,41 @@ async function loadSettings(reset) {
 }
 document.getElementById("settings-reset").addEventListener("click", () => loadSettings(true));
 loadSettings();
+
+
+async function openProduction(slug) {
+  if (last && last.running) { toast("Stop the current run before opening another production.", 4000); return; }
+  try {
+    const res = await fetch("/api/production/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Could not open that production.");
+    const state = await fetch("/api/status").then((r) => r.json());
+    apply(state);
+    setView(openingView(state) || "pipeline", true);
+    toast("Opened " + slug);
+  } catch (error) {
+    toast(error.message, 5000);
+  }
+}
+
+async function useTake(id, name) {
+  try {
+    const res = await fetch("/api/video/take", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shot: id, take: name }) });
+    const reply = await res.json();
+    if (!res.ok) throw new Error(reply.error || "Could not switch takes.");
+    toast(shotLabel(last || {}, id) + " now uses " + name + ". The previous take is kept.");
+  } catch (error) { toast(error.message, 6000); }
+}
+
+async function forgetClip(id) {
+  if (!window.confirm("Check KIE's task history first. If KIE has no task for " + shotLabel(last || {}, id) + ", it will be sent again on the next run (paid). If KIE did create one, both are billed. Continue?")) return;
+  try {
+    const res = await fetch("/api/video/forget", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shot: id }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Could not update that clip.");
+    toast("Marked as not submitted");
+    fetch("/api/status").then((r) => r.json()).then(apply).catch(() => {});
+  } catch (error) {
+    toast(error.message, 5000);
+  }
+}

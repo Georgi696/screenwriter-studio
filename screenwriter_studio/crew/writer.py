@@ -29,10 +29,14 @@ Fountain:
 
 Shot list, one row per clip:
 - The user message gives the maximum shot count. This is a configurable generation budget, not a pacing rule.
-- Choose shot lengths inside the clip range in the user message. Seedance 2.5 can hold a clip for up to 30 seconds. Durations must add up exactly to the locked runtime.
+- Choose shot lengths inside the clip range in the user message; that range follows the chosen video model. Durations must add up exactly to the locked runtime.
 - Consolidate coherently if the list exceeds the limit; preserve the want, turn, and payoff. A tight shot budget means fuller shots, not more shots. Follow the shot rule below.
 - Fragile business (hands exchanging objects, typing, pouring) happens off-screen; show the result.
 - One speaker per shot. American English unless development locked another language.
+- `characters` lists the locked names visible in the shot, spelled exactly as in development; empty when nobody is on screen.
+- `location` copies one locked location exactly.
+- `camera_move` is the one camera movement during the take (push in, pull out, pan, tilt, track, orbit, handheld, crane), or static.
+- `dialogue` holds every line spoken in the shot with its speaker, the same words as the pages. `audio` is sound effects, ambience, and music only.
 - Notes carry continuity: which character, which wardrobe, what the next shot must match.
 - The framing column is the camera. Follow the coverage rule below. Do not add a shot to get a new angle.
 

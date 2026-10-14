@@ -29,7 +29,7 @@ class AbortDraftTest(unittest.TestCase):
             self.addCleanup(replacement.stop)
 
         self.httpd = bind(0)
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         self.thread.start()
         self.port = self.httpd.server_address[1]
 

@@ -78,10 +78,18 @@ def language_codes(language: str) -> set[str]:
 
 
 def has_speech(shot) -> bool:
+    if any(line.text.strip() for line in getattr(shot, "dialogue", None) or []):
+        return True
     text = f"{shot.audio} {shot.action} {shot.notes}".lower()
     text = re.sub(r"\b(?:no|without)\s+(?:spoken\s+)?(?:dialogue|speech|narration|voiceover|voices)\b", "", text)
-    return bool(re.search(r"\b(?:says?|speaks?|speaking|whispers?|shouts?|dialogue|narrat\w*|voice[ -]?over|lip[ -]?sync|sings?|singing)\b", text)
-                or re.search(r'["“「{]', shot.audio))
+    if re.search(r"\b(?:says?|speaks?|speaking|whispers?|shouts?|dialogue|narrator|narration|narrates|voice[ -]?over|lip[ -]?sync)\b", text):
+        return True
+    if re.search(r"\b(?:he|she|they|i|we)\s+sings?\b|\bsings?\s+(?:a|the|her|his|their)\s+(?:song|line|lyric|verse)", text):
+        return True
+    # A quoted line of two or more words is speech; a quoted sound effect ("whoosh") is not.
+    audio = re.sub(r"^\s*(?:sfx|sound|fx)\s*:.*$", "", shot.audio, flags=re.I | re.M)
+    quoted = re.findall(r'["“「]([^"”」]{1,400})["”」]', audio)
+    return any(len(line.split()) >= 2 or line.strip().endswith(("!", "?", ".")) for line in quoted)
 
 
 def capability_error(card: VideoModel, *, duration: int, mode: str, aspect: str,
@@ -124,11 +132,13 @@ def choose_model(development, shot, *, mode: str, sound: bool, selection: str = 
     # Preference thresholds below are editorial choices, not provider limits.
     if shot.duration_seconds >= 10:
         return CARDS[SEEDANCE], "Extended continuous action; prefer Seedance's timeline prompting and longer-form motion continuity."
-    visible_cast = [c.name for c in development.characters
-                    if re.search(r"(?<!\w)" + re.escape(c.name) + r"(?!\w)", shot.action, re.I)]
+    visible_cast = list(getattr(shot, "characters", None) or []) or [
+        c.name for c in development.characters
+        if re.search(r"(?<!\w)" + re.escape(c.name) + r"(?!\w)", shot.action, re.I)]
     if len(visible_cast) >= 2:
         return CARDS[SEEDANCE], "Several named subjects share the action; prefer Seedance's multi-subject staging."
-    moves = re.findall(r"\b(?:pan|tilt|orbit|track|dolly|zoom|rack.focus)\w*\b", shot.framing, re.I)
+    camera = f"{shot.framing} {getattr(shot, 'camera_move', '')}"
+    moves = re.findall(r"\b(?:pan|tilt|orbit|track|dolly|zoom|rack.focus|crane|push|pull)\w*\b", camera, re.I)
     if len(set(move.lower() for move in moves)) >= 2:
         return CARDS[SEEDANCE], "Compound camera movement; prefer Seedance's structured motion and camera instructions."
     return CARDS[KLING], "Short continuous shot from one approved keyframe; prefer Kling's direct image-to-video camera and action control."

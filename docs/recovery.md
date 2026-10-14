@@ -27,7 +27,7 @@ the original production and start a new one for a different version.
 | Unknown submission outcome | Stop for reconciliation; never automatically resubmit. |
 | All clips complete | Nothing is submitted. Use **Redo this shot** (or `--redo s02`) to regenerate one clip; the old take is kept as `s02_v1.mp4`. |
 
-Stop halts local polling, downloads, and encoding. Provider tasks already submitted
+Stop halts local polling and downloads. Provider tasks already submitted
 may still finish and be charged. Only one process can generate video for a given
 production at a time. A file lock is released automatically when that process exits.
 
@@ -41,8 +41,18 @@ python -m screenwriter_studio.videos ../productions/last-train
 ```
 
 Attach only the task created for that shot and request. If KIE confirms no task
-was created, back up `videos/manifest.json`, then change that clip's `state` from
-`uncertain`/`submitting` to `pending` before resuming. Do not delete a manifest to
+was created, mark the submission as never sent; the next run submits it again:
+
+```bash
+python -m screenwriter_studio.videos ../productions/last-train --forget-submission s01
+```
+
+In the desk, the clip card offers **Not on KIE? Send it again** for the same purpose.
+A definite rejection (an HTTP 4xx answer, a refused connection or an unknown host) is
+recorded as a failed submission straight away, because no task can exist; only
+timeouts and server errors after sending are left uncertain. Status checks are retried
+three times before a clip pauses. A clip shorter than its shot is kept as
+`sNN_rejected.mp4` and marked failed, so a resume submits a new take (paid). Do not delete a manifest to
 resolve uncertainty: doing so loses the guard against duplicate charges.
 
 An expired result URL can be refreshed by backing up the video manifest and
@@ -80,16 +90,24 @@ existing paid manifest requires `--resume`; it does not overwrite it silently.
 
 A timeout can occur after the provider accepted a request but before its task ID
 was saved. Automatically retrying could create a second billable job, so the
-generator leaves that record in `submitting` state.
+generator leaves that record in `submitting` state and the image card shows
+**Needs checking**.
 
-Check the provider's job history before changing the manifest:
+Check KIE's task history first, then use the card's buttons or the command line:
 
-1. If the job exists, set that entry's `task_id` and change its `state` to
-   `polling`, then resume.
-2. Remove the entry only if the provider confirms no job was created. Resume
-   can then submit it.
+1. If the task exists, **Attach task ID** (or `--attach-task s01=TASK_ID`). Resume
+   then polls that task instead of submitting again.
+2. If KIE confirms no task was created, **Not on KIE? Send it again** (or
+   `--forget-submission s01`). Resume then submits it; if a task did exist, both are billed.
 
-Preserve the manifest's plan fingerprint. Keep a backup before editing a manifest.
+```bash
+images=../productions/last-train/images
+python -m screenwriter_studio.images.generator "$images/jobs.json" --out "$images" --attach-task s01=YOUR_KIE_TASK_ID
+python -m screenwriter_studio.images.generator "$images/jobs.json" --out "$images" --resume
+```
+
+Both refuse while a batch is running, and neither edits the plan fingerprint. There
+is no need to edit `manifest.json` by hand.
 
 ## Changed plans and older productions
 
@@ -114,7 +132,7 @@ remain in the production directory.
 ## Common problems
 
 - **No API key:** set `KIE_API_KEY` in the repository's `.env` and restart the
-  process. The key is shared by chat and image calls.
+  process. The key is shared by chat, image and video calls.
 - **Script remains rejected:** read `verdict.json` and the numbered files in
   `drafts/`. The workflow stops after two rewrites instead of deleting shots.
 - **Invalid still plan:** inspect `03_still_plan.json`. It must contain one
@@ -133,7 +151,7 @@ remain in the production directory.
 
 New studio plans default to manual image inspection. A paused review is not a
 failed generation: resuming alone does not approve changes or submit repairs.
-Use the current desk's Stills cards, or read `inspection` and `repair_job.prompt`
+Use the current desk's image cards in the Images tab, or read `inspection` and `repair_job.prompt`
 in `images/manifest.json`, then submit the exact current `review_id`:
 
 ```bash

@@ -35,7 +35,7 @@ ART_MODEL = "gpt-6-astra"
 EDITOR_MODEL = "gpt-6-1-sol"
 
 # Stills. Kind -> model. Ratios, reference limits, and request fields are in
-# image_model_card.py, checked against the KIE and vendor docs on 2026-10-09.
+# images/catalog.py, checked against the KIE and vendor docs on 2026-10-09.
 IMAGE_MODEL_BY_KIND = {
     "character": NANO_BANANA_MODEL,
     "location": NANO_BANANA_MODEL,

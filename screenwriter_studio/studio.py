@@ -16,7 +16,9 @@ Every agent authenticates with KIE_API_KEY.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import unicodedata
 import queue
 import re
 import shutil
@@ -29,12 +31,13 @@ from pydantic import ValidationError
 
 from screenwriter_studio.crew.art import art_agent
 from screenwriter_studio.budget import shot_budget
-from screenwriter_studio.videos.catalog import clip_bounds
+from screenwriter_studio.videos.catalog import choose_model, clip_bounds
 from screenwriter_studio.events import StudioEvent
 from screenwriter_studio.crew.development import development_agent
 from screenwriter_studio.crew.editor import editor_agent
 from screenwriter_studio.playbooks import CAMERA_COVERAGE, PLAYBOOKS
 from screenwriter_studio.paths import WORKSPACE_ROOT
+from screenwriter_studio.pricing import production_estimate
 from screenwriter_studio.models import load_kie_api_key
 from screenwriter_studio.settings import chat_agent, load as load_settings
 from screenwriter_studio.schemas import Development, Screenplay, ScriptVerdict, StillPackage
@@ -164,7 +167,11 @@ def _load_saved(folder: Path) -> tuple[Development, Screenplay, ScriptVerdict]:
 
 
 def _slug(value: str) -> str:
-    cleaned = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    ascii_text = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
+    cleaned = re.sub(r"[^a-z0-9]+", "-", ascii_text.lower()).strip("-")
+    if not cleaned and value.strip():
+        # A Cyrillic or CJK title has no ASCII letters; keep productions apart anyway.
+        cleaned = "film-" + hashlib.sha256(value.strip().encode()).hexdigest()[:8]
     return (cleaned or "untitled")[:48]
 
 
@@ -320,10 +327,78 @@ def _reference_note(references: list[dict] | None) -> str:
 _SETTINGS = "run_settings.json"
 
 
-def _save_settings(folder: Path, *, image_count: int | None, references: list[dict]) -> None:
+def _save_settings(folder: Path, *, image_count: int | None, references: list[dict], brief: str = "") -> None:
     """What proceed() needs to continue the same run after a pause."""
-    payload = {"image_count": image_count, "references": references}
+    payload = {"image_count": image_count, "references": references, "brief": brief}
     (folder / _SETTINGS).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _saved_brief(folder: Path) -> str:
+    try:
+        data = json.loads((folder / _SETTINGS).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return str(data.get("brief") or "") if isinstance(data, dict) else ""
+
+
+def _reusable_plan(folder: Path, development: Development, screenplay: Screenplay,
+                   image_count: int | None, reference_ids: list[str]) -> StillPackage | None:
+    """A valid image plan saved by an earlier attempt that stopped before any image was made."""
+    path = folder / "03_still_plan.json"
+    if not path.is_file() or _image_work_started(folder):
+        return None
+    try:
+        package = StillPackage.model_validate_json(path.read_text(encoding="utf-8"))
+        validate_still_package(package, development, screenplay, image_count=image_count, reference_ids=reference_ids)
+    except (OSError, ValueError, ValidationError):
+        return None
+    return package
+
+
+def _playbook(job_type: str) -> str:
+    """Match a free-text job type ("Vertical social ad") to a playbook instead of silently using narrative."""
+    text = (job_type or "").lower()
+    for name in ("vertical", "ad", "explainer", "trailer", "sketch", "narrative"):
+        if re.search(rf"\b{name}\b", text):
+            return PLAYBOOKS[name]
+    return PLAYBOOKS["narrative"]
+
+
+def video_feasibility(development: Development, screenplay: Screenplay, *, image_count: int | None = None,
+                      locked_count: int = 0, values: dict | None = None) -> list[str]:
+    """Reasons one clip per shot would be impossible with the current settings.
+
+    Checked before the art director and any image is paid for: shot lengths and the
+    runtime, a video model for every shot at the chosen quality, sound and language,
+    and an image budget large enough for one image per shot plus its references.
+    """
+    video = (values or load_settings())["video"]
+    issues = _script_issues(development, screenplay, video["selection"])
+    for shot in screenplay.shots:
+        try:
+            choose_model(development, shot, mode=video["mode"], sound=video["sound"], selection=video["selection"])
+        except ValueError as exc:
+            issues.append(str(exc))
+    if image_count is not None:
+        needed = len(screenplay.shots) + max(0, len(development.characters) + len(development.locations) - locked_count)
+        if image_count < needed:
+            issues.append(
+                f"Images to generate is {image_count}, but {len(screenplay.shots)} shot images plus character and "
+                f"location sheets need about {needed}. Every shot needs its own image to become a clip."
+            )
+    return issues
+
+
+def _estimate_line(development: Development, screenplay: Screenplay, image_count: int | None,
+                   references: list[dict] | None) -> str:
+    """The credit estimate for the images and clips that approving these pages leads to."""
+    locked_count = sum(1 for item in references or [] if item.get("mode", "lock") == "lock")
+    try:
+        estimate = production_estimate(development, screenplay, values=load_settings(),
+                                       image_count=image_count, locked_count=locked_count)
+    except (KeyError, TypeError, ValueError):
+        return ""
+    return estimate["text"] + "\n\n"
 
 
 def _load_settings(folder: Path) -> tuple[int | None, list[dict]]:
@@ -389,11 +464,19 @@ class ScreenwriterStudio:
         if image_count is not None and (type(image_count) is not int or not 1 <= image_count <= 240):
             raise ValueError("Image count must be an integer between 1 and 240.")
         planned = _plan_references(reference_choices(references))
+        selection = load_settings()["video"]["selection"]
         if runtime_seconds is not None:
-            shot_budget(runtime_seconds, max_shots, load_settings()["video"]["selection"])
+            shot_budget(runtime_seconds, max_shots, selection)
+        shortest, longest = clip_bounds(selection)
+        runtime_range = None
+        if max_shots is not None and runtime_seconds is None:
+            # Without a runtime, Development must pick one this many shots can fill.
+            runtime_range = (max(6, max_shots * shortest), min(720, max_shots * longest))
         locks = []
         if max_shots is not None:
             locks.append(f"The user allows at most {max_shots} shots.")
+        if runtime_range:
+            locks.append(f"With at most {max_shots} shots, the runtime must be between {runtime_range[0]} and {runtime_range[1]} seconds.")
         if image_count is not None and max_shots is None:
             locks.append(
                 f"The user allows at most {image_count} generated stills. That number is the still budget."
@@ -434,11 +517,14 @@ class ScreenwriterStudio:
                 "aspect_ratio": aspect_ratio or development.aspect_ratio,
                 "max_shots": max_shots,
             })
-            shot_budget(development.runtime_seconds, development.max_shots, load_settings()["video"]["selection"])
+            if runtime_range and not runtime_range[0] <= development.runtime_seconds <= runtime_range[1]:
+                # Keep the paid Development result instead of failing on its runtime choice.
+                development = development.model_copy(update={"runtime_seconds": min(max(development.runtime_seconds, runtime_range[0]), runtime_range[1])})
+            shot_budget(development.runtime_seconds, development.max_shots, selection)
             folder = _project_dir(development.slug or development.title)
             folder.mkdir(parents=True, exist_ok=True)
             stored = _copy_references(folder, planned)
-            _save_settings(folder, image_count=image_count, references=stored)
+            _save_settings(folder, image_count=image_count, references=stored, brief=idea)
             (folder / "00_development.json").write_text(
                 development.model_dump_json(indent=2) + "\n", encoding="utf-8"
             )
@@ -462,6 +548,9 @@ class ScreenwriterStudio:
                 yield StudioEvent("reviewing", f"**Script editor** is reading draft {attempt + 1}.\n\n")
                 verdict = await self._edit(development, screenplay, previous_issues)
                 (drafts / f"{attempt + 1:02d}_verdict.json").write_text(verdict.model_dump_json(indent=2) + "\n", encoding="utf-8")
+                # The latest draft is always on disk, so a stop or an error mid-loop can be continued.
+                (folder / "01_screenplay.json").write_text(screenplay.model_dump_json(indent=2) + "\n", encoding="utf-8")
+                (folder / "verdict.json").write_text(verdict.model_dump_json(indent=2) + "\n", encoding="utf-8")
                 if verdict.passed:
                     yield StudioEvent("approved", "The editor passed the draft.\n\n")
                     break
@@ -495,7 +584,10 @@ class ScreenwriterStudio:
             if approval:
                 yield StudioEvent(
                     "awaiting",
-                    "The pages are waiting for your approval. Approve them to start the art director and stills.\n\n",
+                    "The pages are waiting for your approval. Approve them in the desk, or run "
+                    f"`python -m screenwriter_studio --proceed {folder.relative_to(WORKSPACE_ROOT)}` from the workspace, "
+                    "to write the image prompts and generate the images.\n\n"
+                    + _estimate_line(development, screenplay, image_count, stored),
                 )
                 return
 
@@ -524,6 +616,7 @@ class ScreenwriterStudio:
         if inspection_mode not in {"manual", "auto"}:
             raise ValueError("Inspection mode must be manual or auto.")
         development, screenplay, verdict = _load_saved(folder)
+        brief = brief or _saved_brief(folder)
         if _image_work_started(folder):
             raise ValueError("Image work is already saved. Resume it instead of starting again.")
         stopped = _stop_event(cancel)
@@ -571,13 +664,27 @@ class ScreenwriterStudio:
 
     async def _produce(self, folder, development, screenplay, brief, *, dry_run, inspection_mode, cancel=None, image_count=None, references=None):
         _raise_if_stopped(cancel)
-        yield StudioEvent("art", "**Art director** is writing the still jobs.\n\n")
-        package = await self._art(development, screenplay, references=references, image_count=image_count)
-        (folder / "03_still_plan.json").write_text(package.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        locked_count = sum(1 for item in references or [] if item.get("mode", "lock") == "lock")
+        problems = video_feasibility(development, screenplay, image_count=image_count, locked_count=locked_count)
+        if problems:
+            listed = "\n".join(f"- {problem}" for problem in problems)
+            yield StudioEvent("failed",
+                "These shots could not all become video clips with the current settings, so no image prompts or "
+                f"images were paid for:\n{listed}\n\nChange Models and quality in the Idea tab (video model, "
+                "quality or sound), or start again with a different length or shot count.\n\n")
+            return
         reference_ids = [item["id"] for item in references] if references else []
-        validate_still_package(
-            package, development, screenplay, image_count=image_count, reference_ids=reference_ids,
-        )
+        package = _reusable_plan(folder, development, screenplay, image_count, reference_ids)
+        if package is not None:
+            yield StudioEvent("art", "**Art director** plan from the last attempt is reused; no new prompts were paid for.\n\n")
+        else:
+            yield StudioEvent("art", "**Art director** is writing the still jobs.\n\n"
+                              + _estimate_line(development, screenplay, image_count, references))
+            package = await self._art(development, screenplay, references=references, image_count=image_count)
+            (folder / "03_still_plan.json").write_text(package.model_dump_json(indent=2) + "\n", encoding="utf-8")
+            validate_still_package(
+                package, development, screenplay, image_count=image_count, reference_ids=reference_ids,
+            )
         images = folder / "images"
         _raise_if_stopped(cancel)
         yield StudioEvent("stills", "**Stills** is calling KIE.ai.\n\n")
@@ -628,7 +735,10 @@ class ScreenwriterStudio:
             max_turns=3,
         )
         verdict = result.final_output_as(ScriptVerdict)
-        extra = _script_issues(development, screenplay)
+        if not verdict.passed and not verdict.issues:
+            # Nothing to fix: rewriting blind would only spend two more drafts.
+            verdict.passed = True
+        extra = _script_issues(development, screenplay) + _shot_issues(development, screenplay)
         if extra:
             verdict.issues = extra + verdict.issues
         if verdict.issues:
@@ -674,7 +784,7 @@ def writer_user_message(
     stays bounded in run(); this only stops the stale brief from riding along.
     See https://github.com/kunwardhruv/Supervisor-Multi-Agent-Content-Team
     """
-    playbook = PLAYBOOKS.get(development.job_type, PLAYBOOKS["narrative"])
+    playbook = _playbook(development.job_type)
     selection = load_settings()["video"]["selection"]
     budget = shot_budget(development.runtime_seconds, development.max_shots, selection)
     clip = _clip_sentence(selection)
@@ -690,6 +800,7 @@ def writer_user_message(
             "clip_seconds": clip,
             "beats": [beat.model_dump() for beat in development.beats],
             "character_names": [character.name for character in development.characters],
+            "locations": development.locations,
         }
         message = "\n\n".join(
             [
@@ -834,17 +945,62 @@ def _script_issues(development: Development, screenplay: Screenplay, selection: 
     return issues
 
 
-def _shots_markdown(screenplay: Screenplay) -> str:
-    rows = ["| # | Dur | Framing | Action | Audio | Notes |", "|---|---|---|---|---|---|"]
+_VOICE_OVER = {"narrator", "v.o.", "voice-over", "voiceover"}
+
+
+def _plain(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _shot_issues(development: Development, screenplay: Screenplay) -> list[str]:
+    """Editor notes the code can check exactly. They send a draft back but never block paid work."""
+    issues = []
+    cast = {_plain(character.name): character.name for character in development.characters}
+    places = [_plain(place) for place in development.locations]
     for shot in screenplay.shots:
+        spoken = sum(len(line.text.split()) for line in shot.dialogue)
+        spoken += sum(len(line.split()) for line in re.findall(r'["“「]([^"”」]{1,600})["”」]', shot.audio))
+        if spoken > 3 * shot.duration_seconds:
+            issues.append(
+                f"Shot {shot.number} has {spoken} spoken words in {shot.duration_seconds}s; keep it to about "
+                f"{int(2.5 * shot.duration_seconds)} so the generated speech is not rushed or cut off."
+            )
+        unknown = [name for name in shot.characters if _plain(name) not in cast]
+        if unknown and cast:
+            issues.append(f"Shot {shot.number} lists {', '.join(unknown)} in characters; use the locked names exactly: "
+                          f"{', '.join(cast.values())}.")
+        place = _plain(shot.location)
+        if place and places and not any(place == known or place in known or known in place for known in places):
+            issues.append(f"Shot {shot.number} location \"{shot.location}\" is not a locked location; copy one exactly: "
+                          + "; ".join(development.locations) + ".")
+        speakers = {_plain(line.speaker) for line in shot.dialogue if line.text.strip()}
+        if len(speakers) > 1:
+            issues.append(f"Shot {shot.number} has {len(speakers)} speakers; keep one speaker per shot and move the "
+                          "other lines to the neighbouring shots or cut them.")
+        strangers = sorted(speaker for speaker in speakers if speaker not in cast and speaker not in _VOICE_OVER)
+        if strangers and cast:
+            issues.append(f"Shot {shot.number} dialogue speaker {', '.join(strangers)} is not a locked character; "
+                          "use a locked name or NARRATOR.")
+    return issues
+
+
+def _shots_markdown(screenplay: Screenplay) -> str:
+    rows = ["| # | Dur | Framing | Move | Cast | Location | Action | Dialogue | Audio | Notes |",
+            "|---|---|---|---|---|---|---|---|---|---|"]
+    for shot in screenplay.shots:
+        dialogue = " / ".join(f'{line.speaker}: "{line.text}"' for line in shot.dialogue)
         cells = [
             str(shot.number),
             f"{shot.duration_seconds}s",
-            shot.framing.replace("|", "/"),
-            shot.action.replace("|", "/"),
-            shot.audio.replace("|", "/"),
-            shot.notes.replace("|", "/"),
+            shot.framing,
+            shot.camera_move,
+            ", ".join(shot.characters),
+            shot.location,
+            shot.action,
+            dialogue,
+            shot.audio,
+            shot.notes,
         ]
-        rows.append("| " + " | ".join(cells) + " |")
+        rows.append("| " + " | ".join(cell.replace("|", "/").replace("\n", " ") for cell in cells) + " |")
     notes = "\n".join(f"- {note}" for note in screenplay.notes)
     return "\n".join(rows) + ("\n\n" + notes if notes else "") + "\n"

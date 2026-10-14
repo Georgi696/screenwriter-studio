@@ -34,6 +34,19 @@ def digest(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+STRUCTURED_SHOT_FIELDS = ("camera_move", "characters", "location", "dialogue")
+
+
+def screenplay_digest(screenplay: Screenplay) -> str:
+    """Empty structured shot fields are left out, so plans saved before those fields existed still match."""
+    data = screenplay.model_dump()
+    for shot in data["shots"]:
+        for key in STRUCTURED_SHOT_FIELDS:
+            if not shot.get(key):
+                shot.pop(key, None)
+    return digest(data)
+
+
 def file_digest(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -44,6 +57,11 @@ def local_file(folder: Path, name: str) -> Path:
     if not path.is_absolute():
         path = folder / path
     path = path.resolve()
+    if not path.is_relative_to(folder.resolve()):
+        # Manifests store absolute paths; after the productions folder moves, look in images/.
+        moved = (folder / "images" / path.name).resolve()
+        if moved.is_relative_to(folder.resolve()) and moved.is_file():
+            return moved
     if not path.is_relative_to(folder.resolve()) or not path.is_file():
         raise ValueError("A required production file is missing or outside this production.")
     return path
@@ -139,7 +157,7 @@ def build_plan(folder: Path, *, mode: str = "pro", sound: bool = True,
         if hash_images:
             item["image_sha256"] = file_digest(source)
         shots.append(item)
-    common = {"mode": mode, "sound": sound, "screenplay_sha256": digest(screenplay.model_dump()),
+    common = {"mode": mode, "sound": sound, "screenplay_sha256": screenplay_digest(screenplay),
             "aspect_ratio": development.aspect_ratio,
             "runtime_seconds": development.runtime_seconds, "shots": shots}
     if legacy:

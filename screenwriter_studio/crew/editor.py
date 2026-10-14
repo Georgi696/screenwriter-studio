@@ -25,6 +25,7 @@ Set passed to false if any of these are true:
   The fix is to keep the beats that carry the story and move the rest to audio or notes.
   Do not ask for a new shot, a separate shot, or a split. A longer shot list is not a fix.
 - A character cue is not preceded by a blank line, or a heading does not start with INT. or EXT.
+- A shot's `audio` holds spoken lines instead of its `dialogue`, or a shot's `dialogue` differs from the words the pages give that moment.
 
 Each issue names the beat or the line and the smallest change that fixes it.
 When the draft passes, issues is empty and passed is true.
