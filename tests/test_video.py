@@ -13,7 +13,6 @@ from unittest import mock
 
 from tests.fixtures import _piece
 from screenwriter_studio.videos import service
-from screenwriter_studio.videos.assembly import assemble, probe, run_command
 from screenwriter_studio.videos.plan import build_plan, digest, read_json, write_json
 from screenwriter_studio.videos.web import stream_video, video_file, video_status
 
@@ -77,14 +76,13 @@ class VideoPlanTest(unittest.TestCase):
         self.assertEqual(len(build_plan(self.folder)["shots"]), 1)
 
     def test_preview_spends_no_credits_and_leaves_live_manifest_alone(self):
-        with mock.patch.object(service, "_request") as request, mock.patch.object(service, "hosted_reference_url") as upload, mock.patch.object(service, "require_tools") as tools:
+        with mock.patch.object(service, "_request") as request, mock.patch.object(service, "hosted_reference_url") as upload:
             result = service.render_video(self.folder, dry_run=True)
         self.assertEqual(result["status"], "planned")
         self.assertTrue((self.folder / "videos/jobs.preview.json").is_file())
         self.assertFalse((self.folder / "videos/manifest.json").exists())
         request.assert_not_called()
         upload.assert_not_called()
-        tools.assert_not_called()
 
     def test_external_keyframe_is_rejected(self):
         path = self.folder / "images/manifest.json"
@@ -100,7 +98,7 @@ class VideoPlanTest(unittest.TestCase):
 class VideoRecoveryTest(unittest.TestCase):
     def setUp(self):
         VideoPlanTest.setUp(self)
-        for name in ("require_tools", "validate_keyframes", "validate_clip"):
+        for name in ("validate_keyframes", "validate_clip"):
             patcher = mock.patch.object(service, name)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -117,15 +115,8 @@ class VideoRecoveryTest(unittest.TestCase):
         download = mock.patch.object(service, "download_video", side_effect=lambda url, path, cancel: path.write_bytes(b"clip"))
         self.download = download.start()
         self.addCleanup(download.stop)
-        def finish(folder, plan, cancel):
-            path = folder / "videos/final.mp4"
-            path.write_bytes(b"final")
-            return path
-        assembly = mock.patch.object(service, "assemble", side_effect=finish)
-        self.assembly = assembly.start()
-        self.addCleanup(assembly.stop)
 
-    def test_success_is_not_submitted_or_assembled_again(self):
+    def test_finished_clips_are_not_submitted_again(self):
         self.assertEqual(service.render_video(self.folder)["status"], "complete")
         request = self.create.call_args.kwargs["payload"]
         self.assertEqual(request["model"], "kling-3.0/video")
@@ -133,7 +124,6 @@ class VideoRecoveryTest(unittest.TestCase):
         self.assertFalse(request["input"]["multi_shots"])
         service.render_video(self.folder)
         self.create.assert_called_once()
-        self.assembly.assert_called_once()
 
     def _two_shots(self):
         script = read_json(self.folder / "01_screenplay.json")
@@ -177,11 +167,10 @@ class VideoRecoveryTest(unittest.TestCase):
         self.assertEqual(service.render_video(self.folder)["status"], "complete")
         self.assertEqual(self.create.call_count, 2)
 
-    def test_single_shot_renders_then_rest_assembles(self):
+    def test_single_shot_renders_then_rest_completes(self):
         self._two_shots()
         self.assertEqual(service.render_video(self.folder, shots=["s01"])["status"], "partial")
         self.assertEqual(self.create.call_count, 1)
-        self.assembly.assert_not_called()
         self.assertEqual(service.render_video(self.folder)["status"], "complete")
         self.assertEqual(self.create.call_count, 2)
 
@@ -196,7 +185,6 @@ class VideoRecoveryTest(unittest.TestCase):
         self.assertEqual((videos / "s02_v1.mp4").read_bytes(), b"clip")
         self.assertEqual((videos / "s02.mp4").read_bytes(), b"new take")
         self.assertEqual((videos / "s01.mp4").read_bytes(), b"clip")
-        self.assertEqual(self.assembly.call_count, 2)
         with self.assertRaisesRegex(ValueError, "Unknown shot"):
             service.render_video(self.folder, shots=["s09"])
 
@@ -274,16 +262,6 @@ class VideoRecoveryTest(unittest.TestCase):
         self.assertEqual(self.create.call_count, 2)
         self.assertEqual(result["clips"][0]["attempts"][0]["task_id"], "task-1")
 
-    def test_assembly_failure_reuses_finished_clip(self):
-        finish = self.assembly.side_effect
-        self.assembly.side_effect = RuntimeError("encoder failed")
-        with self.assertRaises(RuntimeError):
-            service.render_video(self.folder)
-        self.assembly.side_effect = finish
-        service.render_video(self.folder)
-        self.create.assert_called_once()
-        self.download.assert_called_once()
-
     def test_changed_input_and_settings_cannot_reuse_saved_jobs(self):
         service.render_video(self.folder)
         with self.assertRaisesRegex(ValueError, "changed"):
@@ -317,12 +295,38 @@ class VideoRecoveryTest(unittest.TestCase):
         self.create.assert_not_called()
 
 
+class ClipDownloadTest(unittest.TestCase):
+    def test_zip_holds_finished_clips_in_shot_order_and_shot_plan_is_public(self):
+        import zipfile
+        from screenwriter_studio.videos.web import clips_zip
+        from screenwriter_studio.web.server import shot_plan
+        with tempfile.TemporaryDirectory() as root:
+            folder = production(root)
+            out = folder / "videos"
+            out.mkdir()
+            for name, data in (("s01.mp4", b"one"), ("s02.mp4", b"two"), ("s02_v1.mp4", b"old")):
+                (out / name).write_bytes(data)
+            write_json(out / "manifest.json", {"clips": [
+                {"id": "s01", "state": "done"}, {"id": "s02", "state": "done"}, {"id": "s03", "state": "pending"}]})
+            handler = mock.Mock()
+            handler.wfile = io.BytesIO()
+            self.assertTrue(clips_zip(handler, folder))
+            with zipfile.ZipFile(io.BytesIO(handler.wfile.getvalue())) as bundle:
+                self.assertEqual(bundle.namelist(), ["s01.mp4", "s02.mp4"])
+            write_json(out / "manifest.json", {"clips": [{"id": "s01", "state": "pending"}]})
+            self.assertFalse(clips_zip(mock.Mock(), folder))
+            plan = shot_plan(folder)
+            self.assertEqual(plan["shots"][0]["id"], "s01")
+            self.assertEqual(plan["aspect_ratio"], "16:9")
+            self.assertEqual(shot_plan(None)["shots"], [])
+
+
 class VideoDeliveryTest(unittest.TestCase):
     def test_ranges_download_and_private_paths(self):
         with tempfile.TemporaryDirectory() as root:
             folder = production(root)
             (folder / "videos").mkdir()
-            path = folder / "videos/final.mp4"
+            path = folder / "videos/s02.mp4"
             path.write_bytes(b"0123456789")
             for requested, expected, code in (("bytes=2-5", b"2345", 206), ("bytes=-3", b"789", 206), ("bytes=7-", b"789", 206), (None, b"0123456789", 200), ("bytes=20-", b"", 416), ("bytes=0-1,4-5", b"", 416)):
                 handler = mock.Mock()
@@ -331,20 +335,19 @@ class VideoDeliveryTest(unittest.TestCase):
                 stream_video(handler, path, attachment=True)
                 handler.send_response.assert_called_once_with(code)
                 self.assertEqual(handler.wfile.getvalue(), expected)
-            self.assertEqual(video_file(Path(root), "film/videos/final.mp4"), path.resolve())
-            for name in ("../film/videos/final.mp4", str(path), "film/.env", "film/images/s01.png"):
+            self.assertEqual(video_file(Path(root), "film/videos/s02.mp4"), path.resolve())
+            for name in ("../film/videos/s02.mp4", str(path), "film/.env", "film/images/s01.png"):
                 self.assertIsNone(video_file(Path(root), name))
             (folder / "videos/s01.mp4").symlink_to(Path(root).parent / "private.mp4")
             self.assertIsNone(video_file(Path(root), "film/videos/s01.mp4"))
 
-    def test_status_exposes_no_local_paths_and_reports_missing_ffmpeg(self):
+    def test_status_exposes_no_local_paths_and_needs_no_ffmpeg(self):
         with tempfile.TemporaryDirectory() as root:
             folder = production(root)
-            with mock.patch("screenwriter_studio.videos.web.require_tools", side_effect=ValueError("Install FFmpeg")):
+            with mock.patch("shutil.which", return_value=None):
                 status = video_status(folder)
-            self.assertFalse(status["ready"])
+            self.assertTrue(status["ready"])
             self.assertTrue(status["can_plan"])
-            self.assertEqual(status["message"], "Install FFmpeg")
             self.assertNotIn(str(folder), json.dumps(status))
 
 
@@ -410,7 +413,7 @@ class VideoHTTPTest(unittest.TestCase):
             headers={"Content-Type": "application/json"}, method="POST"), timeout=5)
 
     def test_route_preflights_inputs_and_prevents_concurrent_work(self):
-        with mock.patch.object(self.server, "_ensure_loop"), mock.patch.object(self.server, "require_tools"), mock.patch.object(self.server, "_commit_future") as commit:
+        with mock.patch.object(self.server, "_ensure_loop"), mock.patch.object(self.server, "_commit_future") as commit:
             commit.side_effect = lambda serial, cancel, coro: coro.close()
             with self.post({"mode": "std", "sound": False}) as response:
                 self.assertEqual(response.status, 202)
@@ -422,7 +425,7 @@ class VideoHTTPTest(unittest.TestCase):
             commit.assert_called_once()
 
     def test_single_shot_and_redo_reach_the_renderer_and_are_validated(self):
-        with mock.patch.object(self.server, "_ensure_loop"), mock.patch.object(self.server, "require_tools"), \
+        with mock.patch.object(self.server, "_ensure_loop"), \
                 mock.patch.object(self.server, "_commit_future") as commit, \
                 mock.patch.object(self.server, "_drive_video", new=mock.Mock(return_value=None)) as drive:
             commit.side_effect = lambda serial, cancel, coro: None
@@ -462,8 +465,8 @@ class VideoHTTPTest(unittest.TestCase):
 
     def test_mp4_endpoint_supports_seek_and_library_discovery(self):
         (self.folder / "videos").mkdir()
-        (self.folder / "videos/final.mp4").write_bytes(b"0123456789")
-        request = urllib.request.Request(self.url + "/video-media?path=film/videos/final.mp4", headers={"Range": "bytes=4-7"})
+        (self.folder / "videos/s01.mp4").write_bytes(b"0123456789")
+        request = urllib.request.Request(self.url + "/video-media?path=film/videos/s01.mp4", headers={"Range": "bytes=4-7"})
         with urllib.request.urlopen(request, timeout=5) as response:
             self.assertEqual(response.status, 206)
             self.assertEqual(response.headers["Content-Type"], "video/mp4")
@@ -471,38 +474,10 @@ class VideoHTTPTest(unittest.TestCase):
             self.assertEqual(response.read(), b"4567")
         with urllib.request.urlopen(self.url + "/api/library", timeout=5) as response:
             library = json.load(response)
-        self.assertEqual(library["projects"][0]["videos"][0]["path"], "film/videos/final.mp4")
+        self.assertEqual(library["projects"][0]["videos"][0]["path"], "film/videos/s01.mp4")
         with self.assertRaises(urllib.error.HTTPError) as caught:
             urllib.request.urlopen(self.url + "/video-media?path=../private.mp4", timeout=5)
         self.assertEqual(caught.exception.code, 404)
-
-
-@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg integration requires ffmpeg and ffprobe")
-class VideoAssemblyTest(unittest.TestCase):
-    def test_real_mixed_audio_clips_keep_duration_order_and_aspect(self):
-        with tempfile.TemporaryDirectory() as root:
-            folder = Path(root)
-            out = folder / "videos"
-            out.mkdir()
-            for name, colour, sound in (("s01", "red", True), ("s02", "blue", False)):
-                args = ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color=c={colour}:s=160x90:r=24:d=3"]
-                if sound:
-                    args += ["-f", "lavfi", "-i", "sine=frequency=440:duration=3"]
-                run_command(args + ["-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out / f"{name}.mp4")])
-            plan = {"mode": "std", "sound": True, "aspect_ratio": "16:9", "runtime_seconds": 6,
-                    "shots": [{"id": "s01", "duration_seconds": 3}, {"id": "s02", "duration_seconds": 3}]}
-            final = assemble(folder, plan)
-            info = probe(final)
-            video = next(s for s in info["streams"] if s["codec_type"] == "video")
-            self.assertEqual((video["width"], video["height"]), (1280, 720))
-            self.assertAlmostEqual(float(info["format"]["duration"]), 6, delta=0.2)
-            self.assertTrue(any(s["codec_type"] == "audio" for s in info["streams"]))
-            for second, dominant in ((1, 0), (4, 2)):
-                result = __import__("subprocess").run([
-                    "ffmpeg", "-v", "error", "-ss", str(second), "-i", str(final),
-                    "-frames:v", "1", "-vf", "scale=1:1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-",
-                ], capture_output=True, check=True).stdout
-                self.assertGreater(result[dominant], 200)
 
 
 if __name__ == "__main__":

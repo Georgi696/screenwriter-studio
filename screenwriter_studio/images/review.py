@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 from uuid import uuid4
 
-from screenwriter_studio.images.inspection import Inspection, inspect_image
+from screenwriter_studio.images.inspection import Inspection, inspect_image, normalize_review
 from screenwriter_studio.models import ART_MODEL
 
 MAX_REPAIRS = 2
@@ -160,6 +160,7 @@ def run_reviewed(spec, out, ordered, records, api_key, checkpoint, keep,
 def _run_review_loop(spec, out, ordered, records, api_key, checkpoint, keep, on_start, cancel, decision, urls, stopped, begin_repair, aspect, resolution, settings, mode):
     from screenwriter_studio.images.generator import (
         run_job, _ref_list, choose, build_payload, card_for, prompt_length_error, locked_files, style_reference_ids,
+        job_aspect,
     )
     locked = locked_files(spec)
     styles = style_reference_ids(spec)
@@ -235,7 +236,7 @@ def _run_review_loop(spec, out, ordered, records, api_key, checkpoint, keep, on_
                     review = inspect_image(record, job, spec.get("inspection_context", {}),
                                            references, api_key=api_key,
                                            model=settings.get("model", ART_MODEL))
-                    review = Inspection.model_validate(review).model_dump()
+                    review = Inspection.model_validate(normalize_review(review)).model_dump()
                 except Exception as exc:
                     message = str(exc).replace(api_key, "[redacted]") if api_key else str(exc)
                     review = {"verdict": "review", "summary": "Inspection unavailable. Human review required.",
@@ -270,7 +271,7 @@ def _run_review_loop(spec, out, ordered, records, api_key, checkpoint, keep, on_
                         length_error = prompt_length_error(model, proposed["prompt"])
                         if length_error:
                             raise ValueError(length_error)
-                        build_payload(model, proposed["prompt"], aspect, resolution, refs)
+                        build_payload(model, proposed["prompt"], job_aspect(proposed, aspect), resolution, refs)
                         proposed["model"] = model
                         record["repair_job"] = proposed
                     except (ValueError, KeyError) as exc:

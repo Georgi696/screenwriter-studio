@@ -174,6 +174,20 @@
     white-space: nowrap;
   }
   .tab.is-on { color: var(--ink); }
+  .tab .step {
+    display: inline-grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    font-size: 11px;
+    line-height: 1;
+  }
+  .tab.is-on .step { border-color: var(--accent); color: var(--accent); }
+  .tab.is-complete .step { background: var(--accent); border-color: var(--accent); color: transparent; position: relative; }
+  .tab.is-complete .step::after { content: "✓"; position: absolute; inset: 0; display: grid; place-items: center; color: #fff; }
+  .tab-divider { align-self: stretch; width: 1px; margin: 10px 8px; background: var(--line); flex: none; }
   .tab .count {
     min-width: 1.4em;
     padding: 0 6px;
@@ -928,7 +942,7 @@
   .cell { display: grid; place-items: center; margin: 0; min-height: 64px; padding: 14px 10px; background: #f6f3ee; }
   .frame:has(img:not([hidden])) .cell { display: block; aspect-ratio: auto; min-height: 0; padding: 0; }
   .cell img { width: 100%; height: auto; object-fit: cover; object-position: center top; display: block; }
-  .frame[data-kind="keyframe"]:has(img:not([hidden])) .cell img { aspect-ratio: 16 / 9; object-fit: cover; object-position: center center; }
+  .frame[data-kind="keyframe"]:has(img:not([hidden])) .cell img { aspect-ratio: var(--shot-ratio, 16 / 9); object-fit: cover; object-position: center center; max-height: 480px; }
   .hold { padding: 0 12px; color: var(--muted); font-size: 13px; text-align: center; }
   .flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
   .frame.exposing .flash { animation: expose 0.45s ease-out; }
@@ -1232,3 +1246,70 @@
 .frame[data-state="review"] { border-color: var(--accent); }
 .image-review details { padding: 10px 0; }
 .image-review summary { cursor: pointer; font-weight: 600; }
+
+/* Next-step strip: always answers "what do I do now?" */
+#next-step { display: flex; align-items: center; gap: 14px; margin: 0 0 20px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--accent-soft); }
+#next-step .next-label { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+#next-step p { flex: 1; margin: 0; min-width: 0; }
+#next-step.is-busy { background: rgba(23, 21, 18, 0.05); }
+#next-step.is-busy .next-label::after { content: " · working"; }
+
+/* Shot list board (Story tab) */
+#shot-board { margin: 28px 0; }
+body:not([data-view="pipeline"]) #shot-board { display: none !important; }
+#shot-board .board-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+#shot-board h2 { margin: 0; }
+#shot-board-summary { margin: 0; color: var(--muted); }
+#shot-meter { display: flex; gap: 3px; height: 10px; margin: 10px 0 18px; }
+#shot-meter .seg { min-width: 6px; border-radius: 3px; background: rgba(23, 21, 18, 0.12); }
+#shot-meter .seg.is-image { background: #b9b0a2; }
+#shot-meter .seg.is-clip { background: var(--accent); }
+#shot-cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+.shot-card { border: 1px solid var(--line); border-radius: 10px; padding: 14px; background: rgba(255, 255, 255, 0.55); min-width: 0; }
+.shot-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.shot-thumb { display: block; width: 100%; max-height: 220px; object-fit: cover; border-radius: 6px; margin-bottom: 8px; background: #171717; }
+.shot-action { margin: 0 0 6px; overflow-wrap: anywhere; }
+.shot-meta { margin: 0 0 4px; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.shot-status { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.shot-chip { border: 1px solid var(--line); border-radius: 999px; background: transparent; padding: 3px 10px; font-size: 12px; color: var(--muted); }
+.shot-chip.is-done { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+/* Images tab */
+#image-summary { margin: 4px 0 12px; font-weight: 600; }
+#image-summary[data-alert="1"] { color: var(--accent); }
+body:not([data-view="stills"]) #image-summary, body:not([data-view="stills"]) #image-empty { display: none !important; }
+#image-empty { margin: 24px 0; padding: 28px; border: 1px dashed var(--line); border-radius: 12px; max-width: 560px; }
+#image-empty h3 { margin: 0 0 6px; }
+.frame-download { display: inline-block; margin: 6px 12px 10px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; font-size: 12.5px; color: var(--ink); text-decoration: none; }
+.frame-download:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Video clips tab */
+#video-ready { margin: 14px 0; }
+#video-ready summary { cursor: pointer; font-weight: 600; }
+#video-ready-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.ready-row { display: flex; align-items: center; gap: 12px; }
+.ready-thumb { width: 56px; height: 40px; object-fit: cover; border-radius: 4px; background: rgba(23, 21, 18, 0.1); flex: none; }
+.ready-text { color: var(--bad, #b3261e); font-size: 13px; }
+.ready-row.is-ok .ready-text { color: var(--muted); }
+#video-summary { margin: 10px 0; color: var(--muted); }
+.clip-thumb { display: block; width: 100%; max-height: 260px; object-fit: cover; border-radius: 6px; margin: 8px 0; }
+.clip-meta { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; overflow-wrap: anywhere; }
+.video-clip .takes { font-size: 12.5px; margin-top: 6px; }
+.video-clip button { margin-top: 10px; }
+
+#format-estimate[data-bad="1"] { color: var(--bad, #b3261e); font-weight: 600; }
+#aspect { width: 100%; }
+.shot-more { margin-top: 6px; }
+.shot-more summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+
+/* Models and quality */
+#settings-section .section-head { flex-wrap: wrap; }
+#settings-reset { margin-left: auto; }
+.settings-group { border-top: 1px solid var(--line); padding: 10px 0; }
+.settings-group summary { cursor: pointer; font-weight: 700; padding: 4px 0 8px; }
+.settings-row { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(180px, 1.2fr); gap: 12px; align-items: center; margin: 8px 0; }
+.settings-label { display: grid; gap: 2px; }
+.settings-name { font-weight: 600; }
+.settings-label small { color: var(--muted); font-size: 12.5px; }
+.settings-row select { width: 100%; }
+@media (max-width: 720px) { .settings-row { grid-template-columns: 1fr; } }

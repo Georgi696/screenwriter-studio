@@ -2,9 +2,12 @@
 
 from pathlib import Path
 import re
+import shutil
+import tempfile
 from urllib.parse import quote
+import zipfile
 
-from screenwriter_studio.videos.assembly import require_tools
+from screenwriter_studio import settings as studio_settings
 from screenwriter_studio.videos.plan import build_plan, read_json
 
 
@@ -14,27 +17,31 @@ def media_url(folder: Path, name: str) -> str:
 
 def video_status(folder: Path | None, *, options: dict | None = None) -> dict:
     result = {"ready": False, "can_plan": False, "status": "waiting", "clips": [],
-              "message": "Finish and approve a keyframe for every shot to generate the final video."}
+              "message": "Finish and approve an image for every shot to generate its video clip."}
     if folder is None:
         return result
     try:
         saved_path = folder / "videos/manifest.json"
         saved = read_json(saved_path) if saved_path.exists() else {}
         saved_plan = read_json(folder / "videos/jobs.json") if saved else {}
-        options = options or {}
+        defaults = studio_settings.load()["video"]
+        options = {**defaults, **(options or {})}
         if saved:
             options = saved_plan
         result.update(status=saved.get("status", "waiting"), saved=bool(saved),
                       mode=options.get("mode", "pro"), sound=options.get("sound", True),
-                      selection=options.get("selection", "kling" if saved_plan.get("version") == 1 else "auto"))
+                      selection=options.get("selection", "kling" if saved_plan.get("version") == 1 else defaults["selection"]))
         for clip in saved.get("clips", []):
             item = {key: clip.get(key, "") for key in ("id", "state", "error", "model")}
             name = f"{clip['id']}.mp4"
             if re.fullmatch(r"s\d+\.mp4", name) and clip.get("state") == "done" and (folder / "videos" / name).is_file():
                 item["src"] = media_url(folder, name)
+            # Earlier takes kept by "redo" stay viewable and downloadable.
+            item["takes"] = [{"name": take["file"], "src": media_url(folder, take["file"])}
+                             for take in clip.get("history", [])
+                             if re.fullmatch(r"s\d+_v\d+\.mp4", take.get("file", "")) and (folder / "videos" / take["file"]).is_file()]
             result["clips"].append(item)
-        if saved.get("status") == "complete" and (folder / "videos/final.mp4").is_file():
-            result["src"] = media_url(folder, "final.mp4")
+        result["complete"] = saved.get("status") == "complete"
         plan = build_plan(folder, mode=result["mode"], sound=result["sound"], selection=result["selection"],
                           hash_images=False, frozen_plan=saved_plan or None)
         if saved_plan:
@@ -46,9 +53,8 @@ def video_status(folder: Path | None, *, options: dict | None = None) -> dict:
                       aspect_ratio=plan["aspect_ratio"])
         # Local paths are only needed by the backend.
         result["shots"] = [{k: v for k, v in shot.items() if k != "image"} for shot in plan["shots"]]
-        require_tools()
         result.update(ready=True, message=saved.get("error") or (
-            "Final video ready." if result.get("src") else "Ready to animate the approved keyframes."))
+            "All clips are ready." if result["complete"] else "Ready to animate the approved images."))
     except (OSError, ValueError, KeyError, TypeError) as exc:
         result["message"] = str(exc) if not isinstance(exc, FileNotFoundError) else "Finish and approve the stills before generating video."
     return result
@@ -58,7 +64,7 @@ def video_file(root: Path, raw: str) -> Path | None:
     parts = Path(raw).parts
     if len(parts) != 3 or parts[0] in {".", ".."} or parts[1] != "videos":
         return None
-    if not re.fullmatch(r"(?:final|s\d+)\.mp4", parts[2]):
+    if not re.fullmatch(r"(?:final|s\d+(?:_v\d+)?)\.mp4", parts[2]):
         return None
     path = (root / raw).resolve()
     if not path.is_relative_to(root.resolve()) or not path.is_file():
@@ -108,3 +114,30 @@ def stream_video(handler, path: Path, *, attachment: bool = False) -> None:
                 break
             handler.wfile.write(chunk)
             remaining -= len(chunk)
+
+
+def clips_zip(handler, folder: Path) -> bool:
+    """Send every finished clip in shot order as one download. Clips are already compressed, so nothing is re-packed."""
+    try:
+        manifest = read_json(folder / "videos/manifest.json")
+    except (OSError, ValueError):
+        return False
+    names = [f"{clip['id']}.mp4" for clip in manifest.get("clips", [])
+             if clip.get("state") == "done" and re.fullmatch(r"s\d+", str(clip.get("id")))
+             and (folder / "videos" / f"{clip['id']}.mp4").is_file()]
+    if not names:
+        return False
+    with tempfile.TemporaryFile() as archive:
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_STORED) as bundle:
+            for name in names:
+                bundle.write(folder / "videos" / name, name)
+        size = archive.tell()
+        archive.seek(0)
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/zip")
+        handler.send_header("Content-Length", str(size))
+        handler.send_header("Content-Disposition", f'attachment; filename="{folder.name}-clips.zip"')
+        handler.send_header("X-Content-Type-Options", "nosniff")
+        handler.end_headers()
+        shutil.copyfileobj(archive, handler.wfile, 1024 * 1024)
+    return True

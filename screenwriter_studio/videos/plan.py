@@ -86,7 +86,7 @@ def build_plan(folder: Path, *, mode: str = "pro", sound: bool = True,
     pending = [job["id"] for job in spec.get("jobs", [])
                if images.get(job["id"], {}).get("state") != "done"]
     if pending:
-        raise ValueError("Finish and approve the stills first: " + ", ".join(pending))
+        raise ValueError("Finish and approve the images first: " + ", ".join(pending))
     keyframes = {job["id"] for job in spec.get("jobs", []) if job.get("kind") in {"keyframe", "scene"}}
     shots = []
     for shot in screenplay.shots:

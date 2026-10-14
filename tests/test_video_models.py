@@ -145,8 +145,7 @@ class VideoRoutingPlanTest(unittest.TestCase):
         self.assertEqual(payload(original, original["shots"][0], "https://host/frame.png")["model"], KLING)
 
     def test_preview_shows_selected_model_reasons_and_official_sources(self):
-        with mock.patch("screenwriter_studio.videos.web.require_tools"):
-            status = video_status(self.folder, options={"selection": "seedance", "mode": "std", "sound": False})
+        status = video_status(self.folder, options={"selection": "seedance", "mode": "std", "sound": False})
         self.assertTrue(status["can_plan"])
         self.assertEqual(status["selection"], "seedance")
         shot = status["shots"][0]

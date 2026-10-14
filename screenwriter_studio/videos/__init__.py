@@ -1,1 +1,1 @@
-"""Approved keyframes → documented per-shot model routing → final MP4."""
+"""Approved shot images → documented per-shot model routing → one MP4 clip per shot."""

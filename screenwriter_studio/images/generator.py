@@ -66,8 +66,14 @@ POSTER_KINDS = {"poster", "title", "logo", "ui", "text"}
 PRODUCT_KINDS = {"product", "packshot"}
 
 
+def job_aspect(job: dict, aspect: str) -> str:
+    """A job may frame itself differently from the film, e.g. a portrait character sheet."""
+    return str(job.get("aspect_ratio") or aspect)
+
+
 def choose(job: dict, aspect: str, resolution: str) -> tuple[str, str]:
     """Return (model, reason). An explicit model wins when the ratio is legal."""
+    aspect = job_aspect(job, aspect)
     explicit = (job.get("model") or "").strip()
     kind = (job.get("kind") or "keyframe").strip().lower()
     refs = _ref_list(job)
@@ -383,6 +389,7 @@ def run_job(
     locked: dict[str, Path] | None = None,
 ) -> dict:
     prompt = (job.get("prompt") or "").strip()
+    aspect = job_aspect(job, aspect)
     job_id = str(job["id"])
     record = {**(previous or {}), "id": job_id, "kind": job.get("kind") or "keyframe"}
     if not prompt:

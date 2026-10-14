@@ -244,6 +244,38 @@ class DeskPageTest(unittest.TestCase):
             self._post_json("/api/run", {"idea": "test", "max_shots": 6})
             start.assert_called_once_with("test", False, False, 6, "manual")
 
+    def test_settings_route_saves_validates_and_resets(self):
+        from screenwriter_studio import settings
+        body = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/settings", timeout=5).read())
+        self.assertEqual(body["values"], settings.DEFAULTS)
+        self.assertIn("kling", [m["id"] for m in body["schema"]["video"]["models"]])
+        chosen = json.loads(json.dumps(settings.DEFAULTS))
+        chosen["video"].update(selection="kling", mode="4K", parallel=2)
+        saved = json.loads(self._post_json("/api/settings", {"values": chosen}))
+        self.assertEqual(saved["values"]["video"]["mode"], "4K")
+        self.assertEqual(settings.load()["video"]["parallel"], 2)
+        chosen["video"].update(selection="seedance")
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self._post_json("/api/settings", {"values": chosen})
+        self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(settings.load()["video"]["selection"], "kling")
+        json.loads(self._post_json("/api/settings", {"reset": True}))
+        self.assertEqual(settings.load(), settings.DEFAULTS)
+
+    def test_run_passes_and_validates_length_and_format(self):
+        from unittest import mock
+        with mock.patch("screenwriter_studio.web.server.start_crew") as start:
+            self._post_json("/api/run", {"idea": "test", "runtime_seconds": 30, "aspect_ratio": "9:16", "max_shots": 4})
+            start.assert_called_once_with("test", False, False, 4, "manual", runtime_seconds=30, aspect_ratio="9:16")
+        bad = ({"runtime_seconds": 5}, {"runtime_seconds": "30"}, {"runtime_seconds": 721},
+               {"aspect_ratio": "4:3"}, {"runtime_seconds": 30, "max_shots": 20}, {"runtime_seconds": 60, "max_shots": 2})
+        for extra in bad:
+            with mock.patch("screenwriter_studio.web.server.start_crew") as start:
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    self._post_json("/api/run", {"idea": "test", **extra})
+                self.assertEqual(caught.exception.code, 400, extra)
+                start.assert_not_called()
+
     def test_inspection_mode_and_review_route(self):
         with mock.patch("screenwriter_studio.web.server.start_crew") as start:
             self._post_json("/api/run", {"idea": "test", "inspection_mode": "auto"})

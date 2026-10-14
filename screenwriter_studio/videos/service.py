@@ -1,4 +1,4 @@
-"""Paid video jobs with durable checkpoints and explicit resume semantics."""
+"""Paid video-clip jobs with durable checkpoints and explicit resume semantics."""
 
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
@@ -10,10 +10,9 @@ import urllib.request
 from screenwriter_studio.images.generator import (
     CREATE_URL, POLL_URL, JobFailed, _first_url, _request, _within, hosted_reference_url,
 )
+from screenwriter_studio import settings as studio_settings
 from screenwriter_studio.models import load_kie_api_key
-from screenwriter_studio.videos.assembly import (
-    assemble, check_cancel, require_tools, validate_clip, validate_keyframes,
-)
+from screenwriter_studio.videos.probe import check_cancel, validate_clip, validate_keyframes
 from screenwriter_studio.videos.plan import build_plan, digest, file_digest, payload, read_json, write_json
 
 POLL_INTERVAL = 5
@@ -83,9 +82,11 @@ def render_video(folder: Path, *, mode: str | None = None, sound: bool | None = 
         saved_path = out / "manifest.json"
         saved = read_json(saved_path) if saved_path.exists() else None
         saved_plan = read_json(out / "jobs.json") if saved else None
-        mode = mode if mode is not None else (saved_plan or {}).get("mode", "pro")
-        sound = sound if sound is not None else (saved_plan or {}).get("sound", True)
-        selection = selection if selection is not None else (saved_plan or {}).get("selection", "kling" if saved_plan else "auto")
+        defaults = studio_settings.load()["video"]
+        # A started production keeps its own choices; a new one follows the Idea-tab settings.
+        mode = mode if mode is not None else (saved_plan or {}).get("mode", defaults["mode"])
+        sound = sound if sound is not None else (saved_plan or {}).get("sound", defaults["sound"])
+        selection = selection if selection is not None else (saved_plan or {}).get("selection", "kling" if saved_plan else defaults["selection"])
         plan = build_plan(folder, mode=mode, sound=sound, selection=selection, frozen_plan=saved_plan)
         fingerprint = digest(plan)
         if saved and saved.get("fingerprint") != fingerprint:
@@ -93,7 +94,6 @@ def render_video(folder: Path, *, mode: str | None = None, sound: bool | None = 
         if dry_run:
             write_json(out / "jobs.preview.json", plan)
             return {"status": "planned", "plan": plan}
-        require_tools()
         # Validate every provider request before uploading images or submitting a task.
         for shot in plan["shots"]:
             payload(plan, shot, "https://preflight.invalid/frame.png")
@@ -131,11 +131,6 @@ def render_video(folder: Path, *, mode: str | None = None, sound: bool | None = 
                 for field in ("task_id", "url", "sha256", "request"):
                     clip.pop(field, None)
                 clip.update(history=history, state="pending", error="")
-        if not regenerate and saved and saved.get("status") == "complete":
-            final = out / "final.mp4"
-            if final.is_file() and file_digest(final) == saved.get("final_sha256"):
-                return saved
-
         def work(shot, clip):
             check_cancel(cancel)
             path = out / f"{shot['id']}.mp4"
@@ -189,7 +184,7 @@ def render_video(folder: Path, *, mode: str | None = None, sound: bool | None = 
             # Every worker finishes (or fails) before the first error is raised,
             # so no already-paid task is abandoned mid-poll.
             errors = []
-            with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL, max(1, len(chosen)))) as pool:
+            with ThreadPoolExecutor(max_workers=min(studio_settings.load()["video"]["parallel"], max(1, len(chosen)))) as pool:
                 futures = [pool.submit(work, shot, clip) for shot, clip in chosen]
                 for future in futures:
                     try:
@@ -202,9 +197,7 @@ def render_video(folder: Path, *, mode: str | None = None, sound: bool | None = 
             if any(clip.get("state") != "done" for clip in manifest["clips"]):
                 checkpoint(status="partial", error="")
                 return manifest
-            checkpoint(status="assembling")
-            final = assemble(folder, plan, cancel)
-            checkpoint(status="complete", final_sha256=file_digest(final), error="")
+            checkpoint(status="complete", error="")
         except Exception as exc:
             checkpoint(status="paused", error=str(exc))
             raise

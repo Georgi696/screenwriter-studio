@@ -36,6 +36,7 @@ from screenwriter_studio.crew.editor import editor_agent
 from screenwriter_studio.playbooks import CAMERA_COVERAGE, PLAYBOOKS
 from screenwriter_studio.paths import WORKSPACE_ROOT
 from screenwriter_studio.models import load_kie_api_key
+from screenwriter_studio.settings import chat_agent
 from screenwriter_studio.schemas import Development, Screenplay, ScriptVerdict, StillPackage
 from screenwriter_studio.images.service import validate_still_package, render_stills
 from screenwriter_studio.crew.writer import writer_agent
@@ -598,7 +599,7 @@ class ScreenwriterStudio:
 
     async def _develop(self, idea: str, lock_block: str) -> Development:
         result = await Runner.run(
-            development_agent,
+            chat_agent("development", development_agent),
             f"{lock_block}Brief:\n{idea.strip()}",
             max_turns=3,
         )
@@ -612,7 +613,7 @@ class ScreenwriterStudio:
         references: list[dict] | None = None,
     ) -> Screenplay:
         result = await Runner.run(
-            writer_agent,
+            chat_agent("writer", writer_agent),
             writer_user_message(development, previous, issues, references),
             max_turns=4,
         )
@@ -620,7 +621,7 @@ class ScreenwriterStudio:
 
     async def _edit(self, development: Development, screenplay: Screenplay) -> ScriptVerdict:
         result = await Runner.run(
-            editor_agent,
+            chat_agent("editor", editor_agent),
             editor_user_message(development, screenplay),
             max_turns=3,
         )
@@ -640,7 +641,7 @@ class ScreenwriterStudio:
         image_count: int | None = None,
     ) -> StillPackage:
         result = await Runner.run(
-            art_agent,
+            chat_agent("art", art_agent),
             art_user_message(development, screenplay, references, image_count),
             max_turns=4,
         )

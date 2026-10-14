@@ -73,14 +73,25 @@ class ReviewTest(unittest.TestCase):
             self.run_batch(resume=True, decision=self.decision(actor, 'repair'))
         self.assertEqual(self.generate.call_count, before)
 
+    def test_contradictory_model_verdicts_become_reviews_with_findings_kept(self):
+        from screenwriter_studio.images.inspection import normalize_review
+        self.assertEqual(normalize_review({**ACCEPT, "uncertainty": "hidden by smoke"})["verdict"], "review")
+        self.assertEqual(normalize_review({**ACCEPT, "changes": ["x"]})["verdict"], "review")
+        self.assertEqual(normalize_review({**REPAIR, "changes": []})["verdict"], "review")
+        self.assertEqual(normalize_review(ACCEPT)["verdict"], "accept")
+        self.assertEqual(normalize_review(REPAIR)["verdict"], "repair")
+        Inspection.model_validate(normalize_review({**ACCEPT, "uncertainty": "hidden by smoke"}))
+
     def test_resume_of_broken_last_image_returns_and_keep_needs_no_provider(self):
         self.spec["jobs"] = [self.spec["jobs"][0]]
         self.inspect.return_value = {**ACCEPT, "uncertainty": "visible through the smoke."}
         first = self.run_batch()
         image = first["images"][0]
         self.assertEqual(image["state"], "review")
-        self.assertEqual(image["inspection"]["summary"], "Inspection unavailable. Human review required.")
-        self.assertIn("require review", image["inspection"]["uncertainty"])
+        # The model's own findings are kept; its self-contradicting "accept" is downgraded for a person.
+        self.assertEqual(image["inspection"]["summary"], "Accurate enough")
+        self.assertEqual(image["inspection"]["verdict"], "review")
+        self.assertEqual(image["inspection"]["uncertainty"], "visible through the smoke.")
         self.assertTrue(Path(image["path"]).is_file())
         original = Path(image["path"]).read_bytes()
         gate = threading.Event()

@@ -3,9 +3,9 @@
 Run the commands below from the repository root with the virtual environment
 activated. Replace `last-train` with your production folder.
 
-## Resume final video
+## Resume video clips
 
-Use **Resume final video** in the desk, or run:
+Use **Resume video clips** in the desk, or run:
 
 ```bash
 python -m screenwriter_studio.videos ../productions/last-train
@@ -25,8 +25,7 @@ the original production and start a new one for a different version.
 | Saved result URL | Retry its download. |
 | Explicit provider failure | Submit a retry and preserve the previous attempt; charges may apply. |
 | Unknown submission outcome | Stop for reconciliation; never automatically resubmit. |
-| All clips complete, assembly interrupted | Run FFmpeg again using the saved clips. |
-| Complete final MP4 | Return the existing final video. |
+| All clips complete | Nothing is submitted. Use **Redo this shot** (or `--redo s02`) to regenerate one clip; the old take is kept as `s02_v1.mp4`. |
 
 Stop halts local polling, downloads, and encoding. Provider tasks already submitted
 may still finish and be charged. Only one process can generate video for a given
@@ -49,12 +48,11 @@ resolve uncertainty: doing so loses the guard against duplicate charges.
 An expired result URL can be refreshed by backing up the video manifest and
 removing only that clip's `url` field, keeping its `task_id`. Resume polls the
 existing task again. A completed clip that is shorter than the required shot
-blocks assembly rather than silently stretching the story.
+is rejected rather than silently accepted (when `ffprobe` is installed).
 
-Missing `ffmpeg` or `ffprobe`, invalid keyframe dimensions, and incomplete still
-approval are checked before submitting video jobs. Reinstall FFmpeg or finish
-the still review, then resume. The free `--dry-run` plan needs neither FFmpeg nor
-an API key.
+Invalid keyframe dimensions (checked when `ffprobe` is installed) and incomplete image
+approval are checked before submitting video jobs. Fix them, then resume. The free
+`--dry-run` plan needs neither FFmpeg nor an API key.
 
 ## Resume a still batch
 

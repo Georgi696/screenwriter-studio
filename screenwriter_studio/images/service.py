@@ -7,6 +7,7 @@ from pathlib import Path
 from screenwriter_studio.budget import select_stills
 from screenwriter_studio.images.catalog import card_for, prompt_length_error
 from screenwriter_studio.images.generator import _ref_list, choose, run_batch, waves
+from screenwriter_studio import settings as studio_settings
 from screenwriter_studio.models import ART_MODEL
 from screenwriter_studio.schemas import Development, Screenplay, StillPackage
 
@@ -90,6 +91,16 @@ def apply_style_references(jobs: list[dict], style_ids: list[str], aspect: str, 
     return styled
 
 
+def portrait_characters(jobs: list[dict]) -> list[dict]:
+    """A full-body reference in a wide frame wastes most of its pixels on backdrop.
+
+    Characters are framed 3:4 so the face, hair and distinguishing marks stay readable
+    when the sheet is attached to later shots. Other jobs keep the film's ratio.
+    """
+    return [{**job, "aspect_ratio": "3:4"} if job.get("kind") == "character" and not job.get("aspect_ratio") else job
+            for job in jobs]
+
+
 def render_stills(
     package: StillPackage,
     out: Path,
@@ -104,14 +115,14 @@ def render_stills(
 ) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     style_ids = [item["id"] for item in locked_references or [] if item.get("mode") == "style"]
+    chosen = studio_settings.load()
+    jobs, resolution = studio_settings.apply_images(portrait_characters([job.model_dump() for job in package.jobs]), package.resolution, chosen)
     spec = {
-        "inspection": {"mode": inspection_mode, "model": ART_MODEL},
+        "inspection": {"mode": inspection_mode, "model": chosen["chat"]["inspection"]},
         "inspection_context": inspection_context or {},
         "aspect_ratio": package.aspect_ratio,
-        "resolution": package.resolution,
-        "jobs": apply_style_references(
-            [job.model_dump() for job in package.jobs], style_ids, package.aspect_ratio, package.resolution,
-        ),
+        "resolution": resolution,
+        "jobs": apply_style_references(jobs, style_ids, package.aspect_ratio, resolution),
     }
     if locked_references:
         spec["locked_references"] = locked_references

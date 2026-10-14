@@ -52,7 +52,7 @@ const MODEL_NAMES = {
 };
 
 function modelTitle(model) {
-  const raw = String(model || "Still");
+  const raw = String(model || "Image");
   return MODEL_NAMES[raw] || raw.replace(/[-_/]+/g, " ");
 }
 
@@ -142,6 +142,7 @@ function setView(name, fromUser) {
     tab.setAttribute("aria-selected", on ? "true" : "false");
     if (on) tab.classList.remove("has-news");
   });
+  if (last) syncNextStep(last);
   document.body.classList.remove("is-entering");
   void document.body.offsetWidth;
   document.body.classList.add("is-entering");
@@ -333,7 +334,7 @@ function takeFolder(fileList) {
   }
   const groups = [...grouped.values()].filter((group) => group.documents.length || group.images.length);
   if (!groups.length) {
-    toast("That folder has no scripts or stills");
+    toast("That folder has no scripts or images");
     return;
   }
   renderOpenedFolder(groups);
@@ -682,13 +683,236 @@ function openingView(state) {
   return "";
 }
 
+// Mark each numbered step once its work is finished, so the tab bar reads as a checklist.
+function syncTabProgress(state) {
+  const images = state.images || [];
+  const finished = {
+    brief: Boolean(state.folder),
+    pipeline: (state.done || []).includes("art") || images.length > 0,
+    stills: images.length > 0 && images.every((image) => image.state === "done"),
+    video: Boolean(state.video && state.video.complete)
+  };
+  for (const [name, done] of Object.entries(finished)) {
+    document.querySelector('.tab[data-tab="' + name + '"]').classList.toggle("is-complete", done);
+  }
+}
+
+function shotOf(state, id) {
+  return (state.shots || []).find((shot) => shot.id === id) || null;
+}
+
+function imageOf(state, id) {
+  return (state.images || []).find((image) => image.id === id) || null;
+}
+
+function clipOf(state, id) {
+  return ((state.video && state.video.clips) || []).find((clip) => clip.id === id) || null;
+}
+
+function nextStep(state) {
+  const images = state.images || [];
+  const video = state.video || {};
+  const clips = video.clips || [];
+  if (state.running) return { text: state.note || "The crew is working." };
+  if (state.can_proceed) {
+    return state.pages_passed
+      ? { text: "The script editor passed the script. Read it, then approve to write the image prompts.", label: "Review the script", view: "pipeline" }
+      : { text: "The script editor did not pass this draft. Continue with it or abort.", label: "Review the draft", view: "pipeline" };
+  }
+  const waiting = images.filter((image) => image.state === "review").length;
+  if (waiting) return { text: waiting + (waiting === 1 ? " image needs" : " images need") + " your decision.", label: "Review images", action: openStillsReview };
+  if (stillsPaused(state)) return { text: "Image work is unfinished. Resume it from the Images tab.", label: "Open Images", view: "stills" };
+  if (images.length && !video.saved) return { text: "All images are approved. Next, turn each one into a video clip.", label: "Go to Video clips", view: "video" };
+  if (video.saved && !video.complete) return { text: "Some video clips are unfinished.", label: "Go to Video clips", view: "video" };
+  if (video.complete) return { text: "All " + clips.length + " clips are ready. Download them and combine them in your editor.", label: "Download all clips", href: "/video-zip" };
+  if (!state.folder) return { text: "Describe your film to begin.", label: "Go to Idea", view: "brief" };
+  return { text: "Open the Story tab to follow the crew.", label: "Go to Story", view: "pipeline" };
+}
+
+let nextStepGoal = null;
+function syncNextStep(state) {
+  nextStepGoal = nextStep(state);
+  setText(document.getElementById("next-step-text"), nextStepGoal.text);
+  const button = document.getElementById("next-step-action");
+  // No point offering a jump to the tab the user is already on.
+  button.hidden = !nextStepGoal.label || nextStepGoal.view === document.body.dataset.view;
+  setText(button, nextStepGoal.label || "");
+  document.getElementById("next-step").classList.toggle("is-busy", Boolean(state.running));
+}
+
+function shotLabel(state, id) {
+  const shot = shotOf(state, id);
+  return shot ? "Shot " + shot.number + " · " + shot.duration_seconds + "s" : id;
+}
+
+function shotChip(text, mode, view) {
+  const chip = make("button", "shot-chip is-" + mode, text);
+  chip.type = "button";
+  chip.addEventListener("click", () => setView(view, true));
+  return chip;
+}
+
+let shotBoardKey = "";
+function syncShotBoard(state) {
+  const board = document.getElementById("shot-board");
+  const shots = state.shots || [];
+  board.hidden = !shots.length;
+  if (!shots.length) { shotBoardKey = ""; return; }
+  const key = JSON.stringify([shots, (state.images || []).map((i) => [i.id, i.state, i.src]), ((state.video || {}).clips || []).map((c) => [c.id, c.state])]);
+  if (key === shotBoardKey) return;
+  shotBoardKey = key;
+  const total = shots.reduce((sum, shot) => sum + shot.duration_seconds, 0);
+  const runtime = state.runtime_seconds || total;
+  setText(document.getElementById("shot-board-summary"),
+    shots.length + (shots.length === 1 ? " shot · " : " shots · ") + total + "s" +
+    (total !== runtime ? " (the film is locked at " + runtime + "s)" : ""));
+  const meter = document.getElementById("shot-meter");
+  const cards = document.getElementById("shot-cards");
+  meter.replaceChildren();
+  cards.replaceChildren();
+  for (const shot of shots) {
+    const image = imageOf(state, shot.id);
+    const clip = clipOf(state, shot.id);
+    const imageReady = Boolean(image && image.state === "done");
+    const segment = make("span", "seg" + (clip && clip.state === "done" ? " is-clip" : imageReady ? " is-image" : ""));
+    segment.style.flexGrow = String(shot.duration_seconds);
+    segment.title = "Shot " + shot.number + " · " + shot.duration_seconds + "s";
+    meter.appendChild(segment);
+    const card = make("li", "shot-card");
+    const head = make("div", "shot-head");
+    head.append(make("strong", "", "Shot " + shot.number), make("span", "detail-chip", shot.duration_seconds + "s"));
+    card.appendChild(head);
+    if (image && image.src) {
+      const thumb = make("img", "shot-thumb");
+      thumb.src = image.src;
+      thumb.alt = "Image for shot " + shot.number;
+      thumb.loading = "lazy";
+      card.appendChild(thumb);
+    }
+    card.appendChild(make("p", "shot-action", shot.action));
+    if (shot.framing || shot.audio || shot.notes) {
+      const more = make("details", "shot-more");
+      more.appendChild(make("summary", "", "Camera, audio and notes"));
+      if (shot.framing) more.appendChild(make("p", "shot-meta", "Camera · " + shot.framing));
+      if (shot.audio) more.appendChild(make("p", "shot-meta", "Audio · " + shot.audio));
+      if (shot.notes) more.appendChild(make("p", "shot-meta", "Note · " + shot.notes));
+      card.appendChild(more);
+    }
+    const status = make("div", "shot-status");
+    status.appendChild(shotChip(imageReady ? "Image ready" : image ? "Image " + (image.state || "pending") : "No image yet", imageReady ? "done" : "wait", "stills"));
+    status.appendChild(shotChip(clip && clip.state === "done" ? "Clip ready" : clip ? "Clip " + clip.state : "No clip yet", clip && clip.state === "done" ? "done" : "wait", "video"));
+    card.appendChild(status);
+    cards.appendChild(card);
+  }
+}
+
+function syncImageExtras(state) {
+  const images = state.images || [];
+  const bay = document.getElementById("image-bay");
+  const ratio = String(state.aspect_ratio || "16:9").replace(":", " / ");
+  bay.style.setProperty("--shot-ratio", ratio);
+  const counts = { done: 0, review: 0, failed: 0, running: 0 };
+  for (const image of images) {
+    if (image.state === "done") counts.done += 1;
+    else if (image.state === "review") counts.review += 1;
+    else if (image.state === "failed") counts.failed += 1;
+    else counts.running += 1;
+  }
+  const parts = [counts.done + " of " + images.length + " images ready"];
+  if (counts.review) parts.push(counts.review + " need your review");
+  if (counts.running) parts.push(counts.running + " in progress or waiting");
+  if (counts.failed) parts.push(counts.failed + " failed");
+  const summary = document.getElementById("image-summary");
+  summary.hidden = !images.length;
+  summary.dataset.alert = counts.review || counts.failed ? "1" : "";
+  setText(summary, parts.join(" · "));
+  const empty = document.getElementById("image-empty");
+  empty.hidden = images.length > 0;
+  if (!images.length) {
+    const action = document.getElementById("image-empty-action");
+    if (state.can_proceed) {
+      setText(document.getElementById("image-empty-text"), "Approve the script first. The image prompts are written after that, then one image is generated per shot.");
+      setText(action, "Review the script");
+    } else if (state.running) {
+      setText(document.getElementById("image-empty-text"), "The crew is still working. Images appear here as they are generated.");
+      setText(action, "Follow progress");
+    } else {
+      setText(document.getElementById("image-empty-text"), "Images appear here once a script is approved. Start a production in the Idea tab, or open one from the library.");
+      setText(action, "Go to Idea");
+    }
+    action.dataset.view = state.can_proceed || state.running ? "pipeline" : "brief";
+  }
+  // Captions name the shot an image belongs to, and finished images can be saved.
+  for (const image of images) {
+    const frame = document.getElementById("frame-" + String(image.id).replace(/[^A-Za-z0-9_-]/g, "_"));
+    if (!frame) continue;
+    const shot = shotOf(state, image.id);
+    const caption = frame.querySelector("figcaption");
+    if (shot && !image.error) setText(caption, "Shot " + shot.number + " · " + shot.duration_seconds + "s · " + (shot.framing || image.kind));
+    let link = frame.querySelector("a.frame-download");
+    if (image.src && !link) {
+      link = make("a", "frame-download", "Download");
+      link.setAttribute("download", image.id + ".png");
+      frame.appendChild(link);
+    }
+    if (link) { link.hidden = !image.src; if (image.src) link.href = image.src; }
+  }
+}
+
+function syncVideoExtras(state) {
+  const shots = state.shots || [];
+  const video = state.video || {};
+  const clips = video.clips || [];
+  const details = document.getElementById("video-ready");
+  details.hidden = !shots.length;
+  if (shots.length) {
+    const readyCount = shots.filter((shot) => (imageOf(state, shot.id) || {}).state === "done").length;
+    setText(document.getElementById("video-ready-title"), "Shots and images · " + readyCount + " of " + shots.length + " ready");
+    const key = JSON.stringify(shots.map((shot) => [shot.id, (imageOf(state, shot.id) || {}).state, (imageOf(state, shot.id) || {}).src]));
+    const list = document.getElementById("video-ready-list");
+    if (list.dataset.key !== key) {
+      list.dataset.key = key;
+      list.replaceChildren();
+      for (const shot of shots) {
+        const image = imageOf(state, shot.id);
+        const ok = Boolean(image && image.state === "done");
+        const row = make("li", "ready-row" + (ok ? " is-ok" : ""));
+        if (image && image.src) { const thumb = make("img", "ready-thumb"); thumb.src = image.src; thumb.alt = ""; thumb.loading = "lazy"; row.appendChild(thumb); }
+        else row.appendChild(make("span", "ready-thumb is-empty"));
+        row.append(make("strong", "", "Shot " + shot.number + " · " + shot.duration_seconds + "s"),
+          make("span", "ready-text", ok ? "Image approved" : image ? "Image " + (image.state || "pending") + ": finish it in the Images tab" : "No image yet: generate it in the Images tab"));
+        list.appendChild(row);
+      }
+      if (!details.dataset.touched) details.open = readyCount < shots.length;
+    }
+  }
+  const planned = video.shots || [];
+  const seconds = (planned.length ? planned : shots).reduce((sum, shot) => sum + shot.duration_seconds, 0);
+  const models = {};
+  for (const shot of planned) models[shot.model_name || "Kling 3.0"] = (models[shot.model_name || "Kling 3.0"] || 0) + 1;
+  const summary = [];
+  if (shots.length) summary.push(shots.length + (shots.length === 1 ? " clip" : " clips") + " · " + seconds + "s of video");
+  const mix = Object.entries(models).map(([name, count]) => name + " × " + count).join(", ");
+  if (mix) summary.push(mix);
+  if (video.mode) summary.push({ std: "720p", pro: "1080p", "4K": "4K" }[video.mode] + (video.sound === false ? " · silent" : " · with sound"));
+  setText(document.getElementById("video-summary"), summary.join(" · "));
+  document.getElementById("download-all").hidden = !clips.some((clip) => clip.state === "done");
+}
+
+function syncExtras(state) {
+  syncNextStep(state);
+  syncShotBoard(state);
+  syncImageExtras(state);
+  syncVideoExtras(state);
+}
+
 function loopLabel(state) {
   if (state.can_proceed && !state.running) return state.pages_passed ? "Approval waiting" : "Draft needs a decision";
   if (reviewWaiting(state)) return "Review waiting";
-  if (stillsPaused(state)) return "Stills paused";
+  if (stillsPaused(state)) return "Images paused";
   if (state.returning) return "Rewrite in flight";
   if ((state.overridden || []).includes("editor")) return "Editor overridden";
-  return "Editor loop ready";
+  return "Script editor ready";
 }
 
 function openStillsReview() {
@@ -747,8 +971,8 @@ function syncProceed(state) {
   const approving = state.pages_passed === true;
   setText(button, approving ? "Approve pages" : "Proceed with this draft");
   setText(note, approving
-    ? "The editor passed these pages. Select a step below to read them. Approving starts the art director and stills. Plan stills and image inspection beside this button set the cost."
-    : "Sends these pages to the art director and stills. The editor's verdict stays on file. Plan stills and image inspection beside this button set the cost.");
+    ? "The editor passed these pages. Select a step below to read them. Approving starts the image prompts and image generation. Plan images and image inspection beside this button set the cost."
+    : "Sends this script to the image prompts and image generation. The editor's verdict stays on file. Plan images and image inspection beside this button set the cost.");
   if (abort) {
     abort.hidden = !showProceed;
     abort.disabled = !showProceed;
@@ -815,11 +1039,11 @@ function syncLog(lines) {
 
 const STEP_INFO = {
   brief: { step: "Brief", empty: "Write a brief and start production." },
-  development: { step: "Step 1", empty: "Development starts when the brief is sent." },
+  development: { step: "Step 1", empty: "Development starts when the idea is sent." },
   writer: { step: "Step 2", empty: "The screenwriter starts after development locks the story." },
   editor: { step: "Step 3", empty: "The script editor reads each draft after it is written." },
-  approval: { step: "Step 4", empty: "Your approval comes after the script editor passes the pages." },
-  art: { step: "Step 5", empty: "The art director writes the still jobs after the pages are approved." }
+  approval: { step: "Step 4", empty: "Your approval comes after the script editor passes." },
+  art: { step: "Step 5", empty: "The image prompts are written after the script is approved." }
 };
 let pickedStation = "";
 let detailKey = "";
@@ -897,7 +1121,7 @@ const STAGE_OUTPUT = {
     const text = d.brief || state.brief || "";
     if (!text) return false;
     host.appendChild(make("p", "detail-lede", text));
-    if (d.image_count) detailField(host, "Image limit", d.image_count + " new stills");
+    if (d.image_count) detailField(host, "Image limit", d.image_count + " new images");
     const refs = d.references || [];
     if (refs.length) {
       host.appendChild(make("h4", "", "Reference images"));
@@ -962,11 +1186,11 @@ const STAGE_OUTPUT = {
   },
   approval(host, d, state) {
     let text = "";
-    if (d.approved) text = "You approved these pages. The art director and stills continued from them.";
+    if (d.approved) text = "You approved this script. The image prompts and image generation continued from it.";
     else if (d.aborted) text = "This draft was aborted. The pages stay in the production folder.";
     else if (d.waiting && d.passed) text = "The editor passed these pages. Read the script and the shot list, then choose Approve pages above. Abort draft stops here and keeps every file.";
     else if (d.waiting) text = "The editor did not pass these pages after two rewrites. You can proceed with them anyway, or abort the draft.";
-    else if ((state.done || []).includes("art") || (state.images || []).length) text = "This run continued to stills without waiting for approval.";
+    else if ((state.done || []).includes("art") || (state.images || []).length) text = "This run continued to images without waiting for approval.";
     if (!text) return false;
     host.appendChild(make("p", "detail-lede", text));
     return true;
@@ -974,7 +1198,7 @@ const STAGE_OUTPUT = {
   art(host, d) {
     const jobs = d.jobs || [];
     if (!jobs.length) return false;
-    host.appendChild(make("p", "detail-meta", jobs.length + " still jobs · " + (d.submitted ? "sent to stills" : "planned")));
+    host.appendChild(make("p", "detail-meta", jobs.length + " image jobs · " + (d.submitted ? "sent to generation" : "planned")));
     const list = make("ol", "job-list");
     for (const job of jobs) {
       const item = document.createElement("li");
@@ -1062,78 +1286,23 @@ function pickStation(id) {
 }
 
 let videoPromptKey = "";
-let videoSettingsFolder = "";
-let videoPreview = null;
-let videoPreviewRequest = 0;
-function videoPreviewBasis(state) {
-  return JSON.stringify([state.folder, state.images, state.video]);
-}
-function videoOptions() {
-  return { mode: document.getElementById("video-mode").value,
-    sound: document.getElementById("video-sound").checked,
-    selection: document.getElementById("video-model").value };
-}
-async function refreshVideoPreview() {
-  const request = ++videoPreviewRequest;
-  const folder = last && last.folder;
-  const basis = last && videoPreviewBasis(last);
-  const options = videoOptions();
-  document.getElementById("generate-video").disabled = true;
-  document.getElementById("plan-video").disabled = true;
-  setText(document.getElementById("video-message"), "Checking models for these settings…");
-  try {
-    const response = await fetch("/api/video/preview", {method: "POST",
-      headers: {"Content-Type": "application/json"}, body: JSON.stringify(options)});
-    if (!response.ok) throw new Error("Could not preview video model choices.");
-    const data = await response.json();
-    if (request !== videoPreviewRequest || !last || last.folder !== folder || data.folder !== folder ||
-        JSON.stringify(options) !== JSON.stringify(videoOptions())) return;
-    if (basis !== videoPreviewBasis(last)) { refreshVideoPreview(); return; }
-    videoPreview = {folder, basis, options: JSON.stringify(options), video: data.video};
-    syncVideo(last);
-  } catch (error) { if (request === videoPreviewRequest) toast(error.message, 5000); }
-}
+// Model, quality and sound come from the Idea tab's settings. The server applies them
+// to the saved production, so this tab only reports what will be used.
 function syncVideo(state) {
-  let video = state.video || {};
+  const video = state.video || {};
   const running = Boolean(state.running);
-  const mode = document.getElementById("video-mode");
-  const sound = document.getElementById("video-sound");
-  const model = document.getElementById("video-model");
-  if (video.saved || videoSettingsFolder !== state.folder) {
-    mode.value = video.mode || "pro";
-    sound.checked = video.sound !== false;
-    model.value = video.selection || "auto";
-    videoSettingsFolder = state.folder;
-    videoPreview = null;
-  }
-  const cachedPreview = !video.saved && videoPreview && videoPreview.folder === state.folder &&
-    videoPreview.basis === videoPreviewBasis(state) && videoPreview.options === JSON.stringify(videoOptions());
-  if (cachedPreview) {
-    video = videoPreview.video;
-  }
-  const defaults = {mode: video.mode || "pro", sound: video.sound !== false, selection: video.selection || "auto"};
-  if (!video.saved && !running && !cachedPreview && JSON.stringify(defaults) !== JSON.stringify(videoOptions())) {
-    refreshVideoPreview();
-    return;
-  }
   setText(document.getElementById("video-message"),
-    state.active === "video" && running ? state.note : video.message || "Approve the stills to continue.");
-  mode.disabled = sound.disabled = model.disabled = running || Boolean(video.saved);
+    state.active === "video" && running ? state.note : video.message || "Approve the images to continue.");
+  const names = {auto: "Auto-chosen models", kling: "Kling 3.0", seedance: "Seedance 2.5"};
+  const quality = {std: "Standard 720p", pro: "Pro 1080p", "4K": "4K"};
+  setText(document.getElementById("video-settings-note"),
+    (names[video.selection] || names.auto) + " · " + (quality[video.mode] || quality.pro) + " · " +
+    (video.sound === false ? "silent" : "with sound") +
+    (video.saved ? " · locked for this production once clips are generated." : " · change these in the Idea tab."));
   document.getElementById("plan-video").disabled = running || !video.can_plan;
   const generate = document.getElementById("generate-video");
-  generate.disabled = running || !video.ready || Boolean(video.src);
-  setText(generate, video.src ? "Final video ready" : video.saved ? "Resume final video" : "Generate final video");
-  const player = document.getElementById("final-video");
-  const download = document.getElementById("download-video");
-  const src = video.src || "";
-  if ((player.getAttribute("src") || "") !== src) {
-    player.pause();
-    if (src) player.src = src;
-    else { player.removeAttribute("src"); player.load(); }
-  }
-  player.hidden = download.hidden = !src;
-  if (src) download.href = src + "&download=1";
-  else download.removeAttribute("href");
+  generate.disabled = running || !video.ready || Boolean(video.complete);
+  setText(generate, video.complete ? "All clips ready" : video.saved ? "Resume video clips" : "Generate video clips");
   const host = document.getElementById("video-clips");
   const clips = video.clips || [];
   const ids = new Set(clips.map((clip) => clip.id));
@@ -1143,7 +1312,7 @@ function syncVideo(state) {
     if (!card) {
       card = make("article", "video-clip");
       card.dataset.clip = clip.id;
-      card.append(make("h3"), make("p"), make("video"), make("button", "ghost"));
+      card.append(make("h3"), make("img", "clip-thumb"), make("div", "clip-meta"), make("p"), make("video"), make("a", "video-download", "Download clip"), make("div", "takes"), make("button", "ghost"));
       card.querySelector("button").type = "button";
       card.querySelector("button").addEventListener("click", () => {
         const done = card.dataset.state === "done";
@@ -1158,6 +1327,13 @@ function syncVideo(state) {
     setText(card.querySelector("h3"), clip.id + " · " + modelTitle(clip.model || "Video") + " · " + clip.state);
     setText(card.querySelector("p"), clip.error || "");
     card.dataset.state = clip.state;
+    const source = imageOf(state, clip.id);
+    const planned = (video.shots || []).find((shot) => shot.id === clip.id) || {};
+    const thumb = card.querySelector(".clip-thumb");
+    thumb.hidden = Boolean(clip.src) || !(source && source.src);
+    if (source && source.src && thumb.getAttribute("src") !== source.src) { thumb.src = source.src; thumb.alt = "First frame of " + clip.id; }
+    setText(card.querySelector(".clip-meta"), [planned.duration_seconds ? planned.duration_seconds + "s" : "", shotOf(state, clip.id) ? shotOf(state, clip.id).action : ""].filter(Boolean).join(" · "));
+    card.querySelector("video").poster = source && source.src ? source.src : "";
     const action = card.querySelector("button");
     setText(action, clip.state === "done" ? "Redo this shot · paid" : "Render this shot · paid");
     action.disabled = running || !video.ready || !video.saved;
@@ -1165,6 +1341,18 @@ function syncVideo(state) {
     const preview = card.querySelector("video");
     preview.hidden = !clip.src;
     if (clip.src && preview.getAttribute("src") !== clip.src) preview.src = clip.src;
+    const download = card.querySelector("a.video-download");
+    download.hidden = !clip.src;
+    if (clip.src) { download.href = clip.src + "&download=1"; download.setAttribute("download", clip.id + ".mp4"); }
+    const takes = card.querySelector(".takes");
+    takes.replaceChildren();
+    for (const take of clip.takes || []) {
+      const link = make("a", "", "Earlier take · " + take.name);
+      link.href = take.src;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      takes.append(link, document.createElement("br"));
+    }
   }
   const shots = video.shots || [];
   const promptKey = JSON.stringify(shots);
@@ -1195,7 +1383,7 @@ async function startVideo(dryRun, only = {}) {
   try {
     const response = await fetch("/api/video", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...videoOptions(), ...only, dry_run: dryRun })
+      body: JSON.stringify({ ...only, dry_run: dryRun })
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not start video generation.");
@@ -1208,11 +1396,16 @@ async function startVideo(dryRun, only = {}) {
   }
 }
 
+document.getElementById("next-step-action").addEventListener("click", () => {
+  const goal = nextStepGoal || {};
+  if (goal.action) goal.action();
+  else if (goal.href) window.location.href = goal.href;
+  else if (goal.view) setView(goal.view, true);
+});
+document.getElementById("image-empty-action").addEventListener("click", (event) => setView(event.currentTarget.dataset.view || "brief", true));
+document.getElementById("video-ready").addEventListener("toggle", (event) => { event.currentTarget.dataset.touched = "1"; });
 document.getElementById("plan-video").addEventListener("click", () => startVideo(true));
 document.getElementById("generate-video").addEventListener("click", () => startVideo(false));
-for (const id of ["video-model", "video-mode", "video-sound"]) {
-  document.getElementById(id).addEventListener("change", refreshVideoPreview);
-}
 
 function paint(state, prev) {
   const stage = document.getElementById("stage");
@@ -1264,7 +1457,7 @@ function paint(state, prev) {
   moveToken(state.station || "brief", !first);
   token.classList.toggle("is-hidden", !!state.returning);
   const label = document.getElementById("return-label");
-  setText(label, state.returning ? "Script page sent back" : "Editor loop, up to two rewrites");
+  setText(label, state.returning ? "Script sent back" : "Editor loop · up to two rewrites");
   label.classList.toggle("is-live", !!state.returning);
   if (state.returning && !(prev && prev.returning)) {
     playReturn(first);
@@ -1285,11 +1478,14 @@ function paint(state, prev) {
   const stepsDone = document.querySelectorAll(".station.is-done").length;
   setText(document.getElementById("count-pipeline"), String(stepsDone));
   setText(document.getElementById("count-stills"), String((state.images || []).length));
+  setText(document.getElementById("count-video"), String(((state.video && state.video.clips) || []).filter((clip) => clip.state === "done").length));
   setText(document.getElementById("count-activity"), String((state.log || []).length));
-  setText(document.getElementById("stat-steps"), stepsDone + " of " + stationRow().length + " done");
+  setText(document.getElementById("stat-steps"), stepsDone + " of " + stationRow().length + " steps done");
   const stillCount = (state.images || []).length;
-  setText(document.getElementById("stat-stills"), stillCount + (stillCount === 1 ? " still" : " stills"));
+  setText(document.getElementById("stat-stills"), stillCount + (stillCount === 1 ? " image" : " images"));
   setText(document.getElementById("stat-loop"), loopLabel(state));
+  syncTabProgress(state);
+  syncExtras(state);
   if (!viewChosen) {
     const nextView = openingView(state);
     if (nextView) setView(nextView);
@@ -1502,8 +1698,8 @@ function renderReferences() {
     if (slug && project.slug === slug) mine.push(...images);
     else others.push(...images.map((item) => ({ ...item, name: project.slug + "/" + item.name })));
   }
-  fillReferenceGrid(current, mine, slug ? "No stills in this production yet." : "No production is on the desk yet.");
-  fillReferenceGrid(document.getElementById("reference-other"), others, "No other stills in the library.");
+  fillReferenceGrid(current, mine, slug ? "No images in this production yet." : "No production is on the desk yet.");
+  fillReferenceGrid(document.getElementById("reference-other"), others, "No other images in the library.");
   fillReferenceGrid(
     document.getElementById("reference-uploads"),
     uploadedRefs.map((item) => ({ path: item.id, name: item.name, src: item.src })),
@@ -1562,17 +1758,43 @@ function gateChoice() {
 function briefSummary() {
   const out = document.getElementById("brief-summary");
   if (!out) return;
-  const gate = { approve: "Waits for your approval", auto: "Continues to stills automatically", pages: "Stops after the pages" }[gateChoice()];
+  const gate = { approve: "Waits for your approval", auto: "Continues to images automatically", pages: "Stops after the script" }[gateChoice()];
   const parts = [gate];
   if (gateChoice() !== "pages") {
-    parts.push(document.getElementById("dry").checked ? "Plans stills, no image credits" : (document.getElementById("inspection-mode").value === "auto" ? "Auto inspection" : "Manual inspection"));
+    parts.push(document.getElementById("dry").checked ? "Writes image prompts, no image credits" : (document.getElementById("inspection-mode").value === "auto" ? "Auto inspection" : "Manual inspection"));
   }
   const shots = document.getElementById("max-shots").value;
   const images = document.getElementById("image-count").value;
+  const runtime = document.getElementById("runtime").value;
+  const aspect = document.getElementById("aspect").value;
+  if (runtime) parts.push(runtime + "s");
+  if (aspect) parts.push(aspect);
   if (shots) parts.push("Up to " + shots + " shots");
   if (images) parts.push("Up to " + images + " images");
   if (selectedRefs.size) parts.push("References: " + referenceSummary().replace(" · ", ", "));
+  if (last && last.folder && !last.running) parts.push("Starts a new production; saved files stay");
   out.textContent = parts.join(" · ");
+  briefEstimate();
+}
+
+// Shot counts follow budget.py: at least one per 15s, at most one per 3s, one per 8s by default.
+function briefEstimate() {
+  const note = document.getElementById("format-estimate");
+  const run = document.getElementById("run");
+  const runtime = Number(document.getElementById("runtime").value);
+  const maxShots = Number(document.getElementById("max-shots").value);
+  let problem = "";
+  if (runtime && (!Number.isInteger(runtime) || runtime < 6 || runtime > 720)) problem = "Length must be a whole number between 6 and 720 seconds.";
+  else if (maxShots && (!Number.isInteger(maxShots) || maxShots < 1 || maxShots > 240)) problem = "Maximum shots must be between 1 and 240.";
+  const low = runtime ? Math.max(1, Math.ceil(runtime / 15)) : 0;
+  const high = runtime ? Math.min(240, Math.max(1, Math.floor(runtime / 3))) : 0;
+  if (!problem && runtime && maxShots && (maxShots < low || maxShots > high)) problem = "For " + runtime + " seconds, maximum shots must be between " + low + " and " + high + ".";
+  note.dataset.bad = problem ? "1" : "";
+  run.disabled = Boolean(problem) || Boolean(last && last.running);
+  if (problem) { setText(note, problem); return; }
+  if (!runtime) { setText(note, "Leave these empty and the idea decides. Shots last 3–15 seconds and together fill the length exactly."); return; }
+  const shots = maxShots || Math.max(low, Math.floor(runtime / 8));
+  setText(note, runtime + "s film · up to " + shots + (shots === 1 ? " shot" : " shots") + " → " + shots + " shot images and up to " + shots + " video clips, plus character and location images. Each clip is 3–15 seconds.");
 }
 
 function ideaCount() {
@@ -1598,6 +1820,8 @@ async function startRun() {
         dry_run: document.getElementById("dry").checked,
         inspection_mode: document.getElementById("inspection-mode").value,
         max_shots: document.getElementById("max-shots").value ? Number(document.getElementById("max-shots").value) : null,
+        runtime_seconds: document.getElementById("runtime").value ? Number(document.getElementById("runtime").value) : null,
+        aspect_ratio: document.getElementById("aspect").value || null,
         image_count: document.getElementById("image-count").value === "" ? null : Number(document.getElementById("image-count").value),
         references: [...selectedRefs].map(([path, mode]) => ({ path, mode }))
       })
@@ -1963,7 +2187,7 @@ function showReaderDocument(name, text) {
   readerSource = String(text == null ? "" : text);
   readerFormat = readerFormatFor(name);
   readerMode = readerFormat ? "preview" : "source";
-  document.getElementById("reader-title").textContent = name || "Reader";
+  document.getElementById("reader-title").textContent = name || "Viewer";
   releaseReaderImage();
   paintReader();
   syncReaderEmpty();
@@ -2004,7 +2228,7 @@ function resetReader() {
   preview.hidden = true;
   preview.replaceChildren();
   releaseReaderImage();
-  document.getElementById("reader-title").textContent = "Reader";
+  document.getElementById("reader-title").textContent = "Viewer";
   syncPreviewButton();
   syncReaderEmpty();
 }
@@ -2049,9 +2273,9 @@ async function openFile(path) {
       showReaderImage(data.name || "Image", data.src);
       return;
     }
-    showReaderDocument(data.name || "Reader", data.text || data.error || "That file is not in a production folder.");
+    showReaderDocument(data.name || "Viewer", data.text || data.error || "That file is not in a production folder.");
   } catch (error) {
-    showReaderDocument("Reader", "That file is not in a production folder.");
+    showReaderDocument("Viewer", "That file is not in a production folder.");
   }
 }
 
@@ -2115,7 +2339,7 @@ document.getElementById("log-end").addEventListener("click", () => {
 });
 document.getElementById("preview-reader").addEventListener("click", toggleReaderPreview);
 document.getElementById("copy-reader").addEventListener("click", () => {
-  copyText(readerSource, "Reader copied");
+  copyText(readerSource, "Text copied");
 });
 document.getElementById("still-tools").addEventListener("click", (event) => {
   const chip = event.target.closest("[data-filter]");
@@ -2172,7 +2396,7 @@ document.getElementById("clear-log").addEventListener("click", async () => {
   try {
     const res = await fetch("/api/log/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     if (!res.ok) throw new Error("clear");
-    toast("Activity cleared");
+    toast("Log cleared");
   } catch (error) {
     toast("Could not clear the activity");
   }
@@ -2199,7 +2423,7 @@ document.getElementById("new-session").addEventListener("click", async () => {
     resetReader();
     openPath = null;
     setView("brief");
-    toast("New session");
+    toast("New production");
   } catch (error) {
     toast("Could not start a new session");
   }
@@ -2317,3 +2541,139 @@ async function abortDraft() {
     proceed.disabled = false;
   }
 }
+
+
+// ---- Models and quality (Idea tab) -------------------------------------------------
+let studioSettings = null;
+let settingsSchema = null;
+
+function settingsRow(label, help, control) {
+  const row = make("div", "settings-row");
+  const text = make("label", "settings-label");
+  text.append(make("span", "settings-name", label));
+  if (help) text.append(make("small", "", help));
+  row.append(text, control);
+  return row;
+}
+
+function settingsSelect(options, value, onChange) {
+  const select = document.createElement("select");
+  select.className = "limit";
+  for (const option of options) {
+    const node = document.createElement("option");
+    node.value = option.id;
+    node.textContent = option.name;
+    select.appendChild(node);
+  }
+  select.value = value;
+  select.disabled = options.length < 2;
+  select.addEventListener("change", () => onChange(select.value));
+  return select;
+}
+
+function modelNote(text, sources) {
+  const note = make("p", "field-note", text);
+  for (const [index, source] of (sources || []).entries()) {
+    let host = "docs";
+    try { host = new URL(source).hostname.replace(/^(www|docs)\./, ""); } catch (_) { /* The link text falls back to "docs". */ }
+    const link = make("a", "", " · " + host + (sources.length > 1 ? "" : ""));
+    link.title = "Source " + (index + 1);
+    link.href = safeUrl(source);
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    note.append(link);
+  }
+  return note;
+}
+
+function renderSettings() {
+  const host = document.getElementById("settings-host");
+  if (!studioSettings || !settingsSchema) return;
+  const values = studioSettings;
+  host.replaceChildren();
+  const group = (title, open) => {
+    const box = make("details", "settings-group");
+    box.open = open;
+    box.appendChild(make("summary", "", title));
+    host.appendChild(box);
+    return box;
+  };
+  const save = () => saveSettings();
+
+  const crew = group("Crew · chat models", true);
+  for (const role of settingsSchema.chat.roles) {
+    crew.appendChild(settingsRow(role.label, role.help, settingsSelect(settingsSchema.chat.models, values.chat[role.id], (value) => { values.chat[role.id] = value; save(); })));
+  }
+  crew.appendChild(make("p", "field-note", "Models differ in cost and quality. Premium models write better stories; the lighter one is faster for checklist work."));
+
+  const images = group("Images", true);
+  for (const item of settingsSchema.images.groups) {
+    images.appendChild(settingsRow(item.label, item.help, settingsSelect(item.options, values.images[item.id], (value) => { values.images[item.id] = value; save(); })));
+    const chosen = item.options.find((option) => option.id === values.images[item.id]) || item.options[0];
+    const detail = chosen.resolutions.length ? chosen.resolutions.join(" / ") : "fixed quality";
+    images.appendChild(modelNote(chosen.note + " " + (chosen.max_references ? "Up to " + chosen.max_references + " reference images" : "No reference images") + " · resolution " + detail + ".", chosen.sources));
+  }
+  const resolutions = settingsSchema.images.resolutions.map((id) => ({ id, name: id === "auto" ? "Auto · the image prompts decide (1K)" : id }));
+  images.appendChild(settingsRow("Image resolution", "Higher resolution costs more. A model that cannot do a size falls back to Nano Banana.", settingsSelect(resolutions, values.images.resolution, (value) => { values.images.resolution = value; save(); })));
+
+  const video = group("Video clips", true);
+  const models = settingsSchema.video.models;
+  const selected = models.find((model) => model.id === values.video.selection) || models[0];
+  video.appendChild(settingsRow("Video model", "Auto chooses per shot from timing, speech, subjects and camera.", settingsSelect(models, values.video.selection, (value) => {
+    values.video.selection = value;
+    const allowed = models.find((model) => model.id === value).modes;
+    if (!allowed.includes(values.video.mode)) values.video.mode = allowed.includes("pro") ? "pro" : allowed[0];
+    save();
+  })));
+  if (selected.id !== "auto") video.appendChild(modelNote(selected.note, selected.sources));
+  const modes = selected.modes.map((id) => ({ id, name: settingsSchema.video.modes[id] }));
+  video.appendChild(settingsRow("Video quality", values.video.selection === "seedance" ? "Seedance offers up to 1080p on this endpoint." : "4K is only produced by Kling; Auto routes 4K shots to it.", settingsSelect(modes, values.video.mode, (value) => { values.video.mode = value; save(); })));
+  const sound = document.createElement("input");
+  sound.type = "checkbox";
+  sound.checked = values.video.sound;
+  sound.addEventListener("change", () => { values.video.sound = sound.checked; save(); });
+  const soundLabel = make("label", "check");
+  soundLabel.append(sound, document.createTextNode(" Generate dialogue and sound from the shot notes"));
+  video.appendChild(soundLabel);
+  const parallel = settingsSchema.video.parallel.map((count) => ({ id: String(count), name: count + (count === 1 ? " clip" : " clips") + " at a time" }));
+  video.appendChild(settingsRow("Clips generated at once", "More is faster; each running clip is billed as usual.", settingsSelect(parallel, String(values.video.parallel), (value) => { values.video.parallel = Number(value); save(); })));
+}
+
+let settingsSaveTimer = 0;
+async function saveSettings() {
+  renderSettings();
+  clearTimeout(settingsSaveTimer);
+  settingsSaveTimer = setTimeout(async () => {
+    try {
+      const response = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values: studioSettings }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not save settings.");
+      studioSettings = data.values;
+      renderSettings();
+      toast("Settings saved");
+      fetch("/api/status").then((res) => res.json()).then(apply).catch(() => {});
+    } catch (error) {
+      toast(error.message, 5000);
+      loadSettings();
+    }
+  }, 250);
+}
+
+async function loadSettings(reset) {
+  try {
+    const response = reset
+      ? await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reset: true }) })
+      : await fetch("/api/settings");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not load settings.");
+    studioSettings = data.values;
+    if (data.schema) settingsSchema = data.schema;
+    if (!settingsSchema) settingsSchema = await fetch("/api/settings").then((res) => res.json()).then((body) => body.schema);
+    renderSettings();
+    if (reset) toast("Settings reset to defaults");
+  } catch (error) {
+    setText(document.querySelector("#settings-host .field-note"), error.message);
+  }
+}
+document.getElementById("settings-reset").addEventListener("click", () => loadSettings(true));
+loadSettings();

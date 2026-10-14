@@ -50,10 +50,11 @@ from screenwriter_studio.images.generator import run_batch
 from screenwriter_studio.images.review import apply_live_keep, validate_decision
 from screenwriter_studio.paths import WORKSPACE_ROOT
 from screenwriter_studio.events import StudioEvent
-from screenwriter_studio.videos.assembly import require_tools
 from screenwriter_studio.videos.plan import build_plan, read_json as read_video_json
 from screenwriter_studio.videos.service import render_video
-from screenwriter_studio.videos.web import video_file, video_status, stream_video
+from screenwriter_studio import settings as studio_settings
+from screenwriter_studio.budget import shot_budget
+from screenwriter_studio.videos.web import clips_zip, video_file, video_status, stream_video
 
 STATIC = Path(__file__).resolve().parent / "static"
 PAGE = STATIC / "desk.html"
@@ -67,7 +68,7 @@ _MAX_TEXT = 200_000
 _MAX_IMAGE = 8_000_000
 _REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 _STOP_NOTE = "Generation stopped. Saved images can be resumed."
-_VIDEO_STOP_NOTE = "Generation stopped. Use Resume final video to continue saved work."
+_VIDEO_STOP_NOTE = "Generation stopped. Use Resume video clips to continue saved work."
 _ABORT_NOTE = "This draft was aborted. The pages remain in the folder."
 
 _lock = threading.Lock()
@@ -109,7 +110,7 @@ def _restore() -> None:
         _board.running = False
         _board.active = _board.edge = None
         _board.returning = False
-        _board.note = "Previous run was interrupted. Resume saved work in Stills or Final Video, or from the command line."
+        _board.note = "Previous run was interrupted. Resume saved work in the Images or Video clips tab, or from the command line."
     # The manifest is authoritative if a checkpoint reached disk before the last UI event.
     if _board.folder:
         folder = Path(_board.folder)
@@ -169,15 +170,34 @@ def public_view() -> dict:
             {"id": "development", "name": "Development", "model": DEVELOPMENT_MODEL},
             {"id": "writer", "name": "Screenwriter", "model": WRITER_MODEL},
             {"id": "editor", "name": "Script editor", "model": EDITOR_MODEL},
-            {"id": "art", "name": "Art director", "model": ART_MODEL},
+            {"id": "art", "name": "Image prompts", "model": ART_MODEL},
         ]
         payload["image_agents"] = [
             {"model": model, "kinds": kinds} for model, kinds in _image_agents()
         ]
+        payload.update(shot_plan(production_path(_board.folder)))
         payload["can_proceed"] = (not _board.running) and can_proceed(_board.folder)
         payload["pages_passed"] = saved_verdict(_board.folder)
         payload["video"] = json.loads(scrub(json.dumps(video_status(production_path(_board.folder))), _secret()))
         return payload
+
+
+def shot_plan(folder: Path | None) -> dict:
+    """The saved shot list, so every tab can tie an image or clip back to its shot."""
+    empty = {"shots": [], "runtime_seconds": 0, "aspect_ratio": ""}
+    if folder is None:
+        return empty
+    try:
+        development = json.loads((folder / "00_development.json").read_text(encoding="utf-8"))
+        screenplay = json.loads((folder / "01_screenplay.json").read_text(encoding="utf-8"))
+        shots = [{"id": f"s{int(shot['number']):02d}", "number": int(shot["number"]),
+                  "duration_seconds": int(shot["duration_seconds"]),
+                  **{key: str(shot.get(key) or "") for key in ("framing", "action", "audio", "notes")}}
+                 for shot in screenplay["shots"]]
+        return {"shots": shots, "runtime_seconds": int(development.get("runtime_seconds") or 0),
+                "aspect_ratio": str(development.get("aspect_ratio") or "")}
+    except (OSError, ValueError, KeyError, TypeError):
+        return empty
 
 
 def saved_verdict(folder: str) -> bool | None:
@@ -607,12 +627,12 @@ async def _consume(serial: int, stream) -> None:
         _finish(serial, note)
 
 
-async def _drive(serial: int, idea: str, pages_only: bool, dry_run: bool, max_shots: int | None, inspection_mode: str, cancel: threading.Event, image_count: int | None = None, references: list | None = None, approval: bool = False) -> None:
+async def _drive(serial: int, idea: str, pages_only: bool, dry_run: bool, max_shots: int | None, inspection_mode: str, cancel: threading.Event, image_count: int | None = None, references: list | None = None, approval: bool = False, runtime_seconds: int | None = None, aspect_ratio: str | None = None) -> None:
     studio = ScreenwriterStudio()
     await _consume(serial, studio.run(
         idea, pages_only=pages_only, dry_run=dry_run, max_shots=max_shots,
         inspection_mode=inspection_mode, cancel=cancel, image_count=image_count, references=references,
-        approval=approval,
+        approval=approval, runtime_seconds=runtime_seconds, aspect_ratio=aspect_ratio,
     ))
 
 
@@ -696,7 +716,7 @@ def stop_run() -> None:
         future.cancel()
 
 
-def start_crew(idea: str, pages_only: bool, dry_run: bool, max_shots: int | None = None, inspection_mode: str = "manual", image_count: int | None = None, references: list | None = None, approval: bool = False) -> None:
+def start_crew(idea: str, pages_only: bool, dry_run: bool, max_shots: int | None = None, inspection_mode: str = "manual", image_count: int | None = None, references: list | None = None, approval: bool = False, runtime_seconds: int | None = None, aspect_ratio: str | None = None) -> None:
     global _run_serial, _cancel
     _ensure_loop()
     with _lock:
@@ -717,7 +737,7 @@ def start_crew(idea: str, pages_only: bool, dry_run: bool, max_shots: int | None
     _cut(previous_cancel, previous_future)
     _commit_future(
         serial, cancel,
-        _drive(serial, idea, pages_only, dry_run, max_shots, inspection_mode, cancel, image_count=image_count, references=references, approval=approval),
+        _drive(serial, idea, pages_only, dry_run, max_shots, inspection_mode, cancel, image_count=image_count, references=references, approval=approval, runtime_seconds=runtime_seconds, aspect_ratio=aspect_ratio),
     )
 
 
@@ -899,8 +919,8 @@ async def _drive_video(serial, folder, mode, sound, dry_run, cancel, selection=N
                                          selection=selection, dry_run=dry_run, on_update=update, cancel=cancel,
                                          shots=shots, regenerate=redo)
         note = {"planned": "Video plan saved in videos/jobs.preview.json. No credits spent.",
-                "partial": "Clips saved. Render the remaining shots to assemble the final video."}.get(
-            result["status"], "Final video ready. Open Final Video to play or download it.")
+                "partial": "Clips saved. Render the remaining shots to finish the set."}.get(
+            result["status"], "All video clips are ready. Open the Video clips tab to play or download them.")
     except asyncio.CancelledError:
         cancel.set()
         raise
@@ -937,12 +957,11 @@ def start_video(data: dict) -> None:
             raise ValueError("No saved production is selected.")
         saved = folder / "videos/jobs.json"
         settings = read_video_json(saved) if (folder / "videos/manifest.json").exists() else {}
-        mode = mode if mode is not None else settings.get("mode", "pro")
-        sound = sound if sound is not None else settings.get("sound", True)
-        selection = selection if selection is not None else settings.get("selection", "kling" if settings else "auto")
+        defaults = studio_settings.load()["video"]
+        mode = mode if mode is not None else settings.get("mode", defaults["mode"])
+        sound = sound if sound is not None else settings.get("sound", defaults["sound"])
+        selection = selection if selection is not None else settings.get("selection", "kling" if settings else defaults["selection"])
         build_plan(folder, mode=mode, sound=sound, selection=selection, hash_images=False, frozen_plan=settings or None)
-        if not dry_run:
-            require_tools()
         previous_cancel, previous_future = _cancel, _future
         cancel = threading.Event()
         _cancel = cancel
@@ -951,7 +970,7 @@ def start_video(data: dict) -> None:
         _board.running = True
         _board.active = "video"
         _board.edge = None
-        _board.note = "Planning video." if dry_run else "Generating final video from approved keyframes."
+        _board.note = "Planning video." if dry_run else "Generating video clips from the approved images."
         _replace(_board)
     _cut(previous_cancel, previous_future)
     _commit_future(serial, cancel, _drive_video(serial, folder, mode, sound, dry_run, cancel, selection, shots, redo))
@@ -1012,6 +1031,9 @@ class DeskHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._json(404, {"error": str(exc)})
             return
+        if route == "/api/settings":
+            self._json(200, {"values": studio_settings.load(), "schema": studio_settings.schema()})
+            return
         if route == "/api/library":
             projects, signature = library_catalog()
             self._json(200, {"signature": signature, "projects": projects})
@@ -1024,6 +1046,12 @@ class DeskHandler(BaseHTTPRequestHandler):
             return
         if route == "/library-media":
             self._library_media(query.get("path", [""])[0])
+            return
+        if route == "/video-zip":
+            with _lock:
+                folder = production_path(_board.folder)
+            if folder is None or not clips_zip(self, folder):
+                self._send(404, b"No finished clips", "text/plain")
             return
         if route == "/video-media":
             path = video_file(PRODUCTIONS, query.get("path", [""])[0])
@@ -1069,11 +1097,19 @@ class DeskHandler(BaseHTTPRequestHandler):
                 return
             self._json(200, saved)
             return
-        if parsed.path not in {"/api/run", "/api/brief/suggest", "/api/images/review", "/api/proceed", "/api/video", "/api/video/preview"}:
+        if parsed.path not in {"/api/run", "/api/brief/suggest", "/api/images/review", "/api/proceed", "/api/video", "/api/video/preview", "/api/settings"}:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return
         data = self._read_json()
         if data is None:
+            return
+        if parsed.path == "/api/settings":
+            try:
+                values = studio_settings.save(studio_settings.DEFAULTS if data.get("reset") is True else data.get("values"))
+            except ValueError as exc:
+                self._json(400, {"error": str(exc)})
+                return
+            self._json(200, {"values": values})
             return
         if parsed.path == "/api/video/preview":
             with _lock:
@@ -1117,6 +1153,19 @@ class DeskHandler(BaseHTTPRequestHandler):
         if max_shots is not None and (type(max_shots) is not int or not 1 <= max_shots <= 240):
             self._json(400, {"error": "Shot limit must be an integer between 1 and 240."})
             return
+        runtime, ratio = data.get("runtime_seconds"), data.get("aspect_ratio")
+        if runtime is not None and (type(runtime) is not int or not 6 <= runtime <= 720):
+            self._json(400, {"error": "Runtime must be a whole number of seconds between 6 and 720."})
+            return
+        if ratio is not None and ratio not in ("16:9", "9:16", "1:1"):
+            self._json(400, {"error": "Aspect ratio must be 16:9, 9:16, or 1:1."})
+            return
+        if runtime is not None and max_shots is not None:
+            try:
+                shot_budget(runtime, max_shots)
+            except ValueError as exc:
+                self._json(400, {"error": str(exc)})
+                return
         try:
             image_count = parse_image_count(data.get("image_count"))
             references = parse_references(data.get("references"))
@@ -1134,6 +1183,10 @@ class DeskHandler(BaseHTTPRequestHandler):
             kwargs["references"] = references
         if data.get("approval") is True:
             kwargs["approval"] = True
+        if runtime is not None:
+            kwargs["runtime_seconds"] = runtime
+        if ratio is not None:
+            kwargs["aspect_ratio"] = ratio
         start_crew(idea.strip() or DEFAULT_IDEA, bool(data.get("pages_only")), bool(data.get("dry_run")), max_shots, mode, **kwargs)
         self._json(202, {"ok": True})
 

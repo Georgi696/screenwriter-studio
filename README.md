@@ -1,16 +1,16 @@
 # Screenwriter Studio
 
-An AI-assisted pre-production desk for short films intended for social media.
-Turn an idea into a developed story, a reviewed screenplay, a timed shot list,
-reference-linked character, location, and keyframe stills, and a final generated video.
+An AI-assisted desk for short films intended for social media. An idea becomes a
+developed story, a reviewed screenplay with a shot list, one generated image per shot
+(from prompts written by the art director), and one animated video clip per image.
 
-After still approval, generate animated shots with native audio and assemble a
-downloadable MP4. Captions, separate music/voice mixing, and publishing remain future stages.
+The clips are the end product: download them and combine them in your own editor.
+The studio does not merge clips, add captions, mix music or publish.
 
 ## Workflow
 
 ```text
-Brief → Development → Screenplay + shot list → Script review → Art plan → Stills → Image inspection → Final Video
+Idea → Development → Screenwriter → Script editor → Your approval → Image prompts → Images → Image inspection → Video clips
                               ↑                     │
                               └── up to two rewrites┘
 ```
@@ -19,6 +19,13 @@ Python controls the sequence. Each creative agent returns a structured result,
 and the script must pass both editorial review and deterministic checks before
 image generation starts. A failed draft stays failed; the studio never deletes
 shots to manufacture an approval.
+
+A shot is one video clip: every shot gets one image, and every image is animated into
+that shot's clip. The desk is organised as numbered steps: **1 Idea** (brief and options),
+**2 Story** (development, screenwriter, script editor, your approval, image prompts),
+**3 Images** (generation, inspection, approval) and **4 Video clips** (one animated clip per image). **Log** and **Viewer** sit beside them
+for the activity history and for reading saved files. Keys `1`–`6` switch tabs, and a tick
+appears on a step once it is finished.
 
 The local browser desk provides a brief editor, live crew progress, still and
 video viewers, an activity log, and a library of saved production documents and media.
@@ -45,6 +52,24 @@ python -m screenwriter_studio --ui
 
 Open the printed `http://127.0.0.1:…` address on the same computer. The desk is
 local-only and does not create a public tunnel.
+
+## Models and quality
+
+The **Idea** tab has a **Models and quality** section. Choices are saved automatically in
+`.state/studio_settings.json` and used by every stage:
+
+- **Crew:** the chat model for development, screenwriter, script editor, image prompts and
+  the image inspector.
+- **Images:** the model for readable-text images and for product images, and a forced
+  resolution (or Auto, where the image prompts decide). Shot, character and location images
+  need reference-image support, so Nano Banana 2.1 is the only choice there.
+- **Video clips:** Auto, Kling 3.0 or Seedance 2.5; quality (the list follows the chosen
+  model, and 4K is Kling only); sound; and how many clips are generated at once (1–4).
+
+Only models with a checked KIE request format are listed (`images/catalog.py`,
+`videos/catalog.py`, `models.py`). To offer another KIE model, add its verified card to the
+matching catalog and list it in `settings.py`; the desk draws the settings from that
+registry. A production keeps the video settings it started with once clips exist.
 
 ## Run a production
 
@@ -87,7 +112,7 @@ identity, wardrobe, props, composition, continuity and obvious visual defects.
 Minor cosmetic imperfections should pass; this is an accuracy check, not a
 promise of perfect images.
 
-- **Manual (default):** usable images pass. Others pause in the Stills tab with
+- **Manual (default):** usable images pass. Others pause in the Images tab with
   findings, proposed changes, details to preserve, and expandable exact repair
   instructions. View the full image, then choose **Approve these changes**,
   **Keep this image**, or **Inspect again**. No repair starts without approval.
@@ -107,28 +132,28 @@ for human review. A normal image preview (`--dry-run`) never inspects images.
 The request format follows the [OpenAI image-input documentation](https://developers.openai.com/api/docs/guides/images-vision);
 KIE compatibility is tested with mocked responses, not live paid calls.
 
-After interruption, use **Resume saved image work** in Stills. This continues the
+After interruption, use **Resume saved image work** in the Images tab. This continues the
 current production, without rerunning the screenplay. Legacy jobs without an
 `inspection` setting keep their existing generation behavior. Modes are saved
 in the plan; changing the brief selector only affects new productions.
 
-## Generate the final video
+## Generate the video clips
 
-Open **Final Video** after the stills are complete and approved. Every screenplay
+Open the **Video clips** tab after the images are complete and approved. Every screenplay
 shot needs its own keyframe (`s01`, `s02`, etc.). Productions with a smaller image
 budget than their shot count cannot generate a complete video until all keyframes exist.
 
-Leave **Model selection** on **Auto** to choose a suitable model for each shot,
+Leave **Video model** on **Auto** to choose a suitable model for each shot,
 or require **Kling 3.0** or **Seedance 2.5** for the production. Choose **Standard
 (720p)**, **Pro (1080p, default)**, or **4K**, and whether to generate dialogue and
-sound from the shot notes. **Save video plan · free** writes an offline
-plan without uploads or model calls. **Generate final video** makes additional paid
+sound from the shot notes. **Preview clip plan · free** writes an offline
+plan without uploads or model calls. **Generate video clips** makes additional paid
 KIE calls, one per shot; higher quality and audio affect cost. It is a separate,
 explicit step and never starts automatically after still generation.
 
-Final assembly requires `ffmpeg` and `ffprobe` on PATH. On macOS, install them with
-`brew install ffmpeg`; on Debian/Ubuntu, use `sudo apt install ffmpeg`. Restart the
-desk after installation. Missing tools are reported before paid video submissions.
+`ffprobe` (part of FFmpeg) is optional. When it is on PATH the studio checks keyframe
+proportions and clip durations; without it those checks are skipped. Clips are never
+re-encoded or merged. Up to three clips are generated at the same time.
 
 The adapters use the official [KIE Kling 3.0](https://docs.kie.ai/market/kling/kling-3-0)
 and [KIE Seedance 2.5](https://docs.kie.ai/market/bytedance/seedance-2-5) contracts,
@@ -157,15 +182,15 @@ paid submission instead of silently changing quality, duration, or spoken langua
 Native dialogue, lip sync and voice consistency depend on the model; there is no
 separate dialogue recording or audio inspection stage.
 
-FFmpeg normalizes clips to H.264/AAC at 24 fps and assembles them in shot order.
-Silent clips receive a silent audio track so cuts retain their timing. The result
-is `videos/final.mp4`, playable and downloadable in Final Video and available in
-the library alongside the individual clips.
+Each clip is saved untouched as `videos/s01.mp4`, `videos/s02.mp4` and so on, playable
+and downloadable from its card in the Video clips tab and listed in the library. If a
+clip is not right, **Redo this shot** regenerates just that one (paid). The previous
+take is kept as `s02_v1.mp4` and stays downloadable.
 
 From the command line:
 
 ```bash
-# Offline plan, no credits or FFmpeg required:
+# Offline plan, no credits required:
 python -m screenwriter_studio.videos ../productions/last-train --dry-run
 
 # Generate, or resume the same saved production:
@@ -192,7 +217,7 @@ original version-1 Kling productions continue using their original requests.
 Stop or interruption preserves saved task IDs, downloaded clips, and results.
 Resume retries explicitly failed provider jobs, which may cost credits, but does
 not automatically resubmit an uncertain submission. See
-[video recovery](docs/recovery.md#resume-final-video) for details.
+[video recovery](docs/recovery.md#resume-video-clips) for details.
 
 ## Saved work
 
@@ -215,7 +240,7 @@ workspace/
         │   ├── jobs.json        # locked video prompts and keyframe fingerprints
         │   ├── manifest.json    # provider task IDs, clip states, recovery history
         │   ├── s01.mp4          # original generated clip
-        │   └── final.mp4        # assembled film
+        │   └── s02_v1.mp4       # earlier take, kept after a redo
         └── images/
             ├── jobs.json
             ├── manifest.json    # saved task IDs, progress, results, and errors
@@ -286,7 +311,7 @@ screenwriter_studio/
 │   ├── prompts.py       # separate Kling and Seedance prompt templates
 │   ├── plan.py          # approved keyframes and deterministic video prompts
 │   ├── service.py       # resumable provider tasks, downloads, and checkpoints
-│   ├── assembly.py      # FFmpeg normalization and final MP4 assembly
+│   ├── probe.py         # optional ffprobe checks on keyframes and clips
 │   └── web.py           # public summaries and seekable video delivery
 └── web/
     ├── server.py        # local HTTP routes and event streaming
