@@ -235,7 +235,8 @@ def _run_review_loop(spec, out, ordered, records, api_key, checkpoint, keep, on_
                 try:
                     review = inspect_image(record, job, spec.get("inspection_context", {}),
                                            references, api_key=api_key,
-                                           model=settings.get("model", ART_MODEL))
+                                           model=settings.get("model", ART_MODEL),
+                                           effort=settings.get("effort"))
                     review = Inspection.model_validate(normalize_review(review)).model_dump()
                 except Exception as exc:
                     message = str(exc).replace(api_key, "[redacted]") if api_key else str(exc)

@@ -52,6 +52,23 @@ _LANGUAGE_NAMES = {
 }
 
 
+def clip_bounds(selection: str = "auto") -> tuple[int, int]:
+    """Shortest and longest clip this video choice can generate.
+
+    Auto may use either model, so a clip can be as short as Kling and as long as Seedance.
+    """
+    if selection == "kling":
+        card = CARDS[KLING]
+        return card.duration_min, card.duration_max
+    if selection == "seedance":
+        card = CARDS[SEEDANCE]
+        return card.duration_min, card.duration_max
+    if selection == "auto":
+        return (min(card.duration_min for card in CARDS.values()),
+                max(card.duration_max for card in CARDS.values()))
+    raise ValueError("Choose auto, kling, or seedance model selection.")
+
+
 def language_codes(language: str) -> set[str]:
     text = language.lower().strip()
     matches = {code for code, names in _LANGUAGE_NAMES.items()

@@ -39,7 +39,11 @@ class SettingsTest(unittest.TestCase):
     def test_schema_lists_only_models_with_verified_contracts(self):
         schema = settings.schema()
         self.assertEqual([m["id"] for m in schema["video"]["models"]], ["auto", "kling", "seedance"])
+        durations = {model["id"]: (model["duration_min"], model["duration_max"]) for model in schema["video"]["models"]}
+        self.assertEqual(durations, {"auto": (3, 30), "kling": (3, 15), "seedance": (4, 30)})
         self.assertEqual([m["id"] for m in schema["images"]["groups"][0]["options"]], ["nano-banana-2-1"])
+        self.assertEqual([role["group"] for role in schema["chat"]["roles"]], ["story", "story", "story", "images", "images"])
+        self.assertEqual([model["id"] for model in schema["chat"]["models"]], ["gpt-6-astra", "gpt-6-1-sol", "gpt-6-sol", "gpt-6-luna"])
 
     def test_characters_are_portrait_and_a_job_ratio_wins(self):
         jobs = portrait_characters([{"id": "a", "kind": "character"}, {"id": "s01", "kind": "keyframe"},
@@ -52,3 +56,28 @@ class SettingsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReasoningEffortTest(unittest.TestCase):
+    def tearDown(self):
+        settings.PATH.unlink(missing_ok=True)
+
+    def test_effort_is_validated_and_defaults_send_nothing(self):
+        self.assertEqual(set(settings.validate({})["effort"].values()), {"default"})
+        with self.assertRaises(ValueError):
+            settings.validate({"effort": {"writer": "max"}})
+        self.assertEqual(settings.reasoning_field("default"), {})
+        self.assertEqual(settings.reasoning_field(None), {})
+        self.assertEqual(settings.reasoning_field("low"), {"reasoning": {"effort": "low"}})
+        self.assertEqual([e["id"] for e in settings.schema()["chat"]["efforts"]], ["default", "low", "medium", "high"])
+
+    def test_chat_agent_applies_model_and_effort_only_when_chosen(self):
+        from screenwriter_studio.crew.writer import writer_agent
+        self.assertIs(settings.chat_agent("writer", writer_agent), writer_agent)
+        settings.save({"effort": {"writer": "high"}})
+        tuned = settings.chat_agent("writer", writer_agent)
+        self.assertIsNot(tuned, writer_agent)
+        self.assertEqual(tuned.model_settings.reasoning.effort, "high")
+        self.assertIs(tuned.model, writer_agent.model)
+        self.assertEqual(tuned.instructions, writer_agent.instructions)
+        self.assertIsNone(writer_agent.model_settings.reasoning)

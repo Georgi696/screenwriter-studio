@@ -102,8 +102,8 @@ class DeskPageTest(unittest.TestCase):
         self.assertIn('class="stop"', page)
         self.assertIn(">Stop</button>", page)
         self.assertNotIn('id="stop" class="ghost"', page)
-        self.assertEqual(page.count('aria-label="What is this?"'), 3)
-        self.assertEqual(page.count(">?</button>"), 3)
+        self.assertEqual(page.count('aria-label="What is this?"'), 9)
+        self.assertEqual(page.count(">?</button>"), 9)
         self.assertNotIn(">What is this?</button>", page)
         self.assertIn("Suggest a story", page)
         self.assertIn("Strengthen this", self._get("/static/desk.js").decode())
@@ -268,7 +268,7 @@ class DeskPageTest(unittest.TestCase):
             self._post_json("/api/run", {"idea": "test", "runtime_seconds": 30, "aspect_ratio": "9:16", "max_shots": 4})
             start.assert_called_once_with("test", False, False, 4, "manual", runtime_seconds=30, aspect_ratio="9:16")
         bad = ({"runtime_seconds": 5}, {"runtime_seconds": "30"}, {"runtime_seconds": 721},
-               {"aspect_ratio": "4:3"}, {"runtime_seconds": 30, "max_shots": 20}, {"runtime_seconds": 60, "max_shots": 2})
+               {"aspect_ratio": "4:3"}, {"runtime_seconds": 30, "max_shots": 20}, {"runtime_seconds": 60, "max_shots": 1})
         for extra in bad:
             with mock.patch("screenwriter_studio.web.server.start_crew") as start:
                 with self.assertRaises(urllib.error.HTTPError) as caught:

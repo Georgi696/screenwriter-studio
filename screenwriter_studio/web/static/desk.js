@@ -17,6 +17,8 @@ let readerSource = "";
 let readerFormat = "";
 let readerMode = "source";
 let follow = true;
+let studioSettings = null;
+let settingsSchema = null;
 let stillFilter = "all";
 let toastTimer = 0;
 let viewChosen = false;
@@ -906,15 +908,6 @@ function syncExtras(state) {
   syncVideoExtras(state);
 }
 
-function loopLabel(state) {
-  if (state.can_proceed && !state.running) return state.pages_passed ? "Approval waiting" : "Draft needs a decision";
-  if (reviewWaiting(state)) return "Review waiting";
-  if (stillsPaused(state)) return "Images paused";
-  if (state.returning) return "Rewrite in flight";
-  if ((state.overridden || []).includes("editor")) return "Editor overridden";
-  return "Script editor ready";
-}
-
 function openStillsReview() {
   setView("stills", true);
   requestAnimationFrame(() => {
@@ -1298,7 +1291,7 @@ function syncVideo(state) {
   setText(document.getElementById("video-settings-note"),
     (names[video.selection] || names.auto) + " · " + (quality[video.mode] || quality.pro) + " · " +
     (video.sound === false ? "silent" : "with sound") +
-    (video.saved ? " · locked for this production once clips are generated." : " · change these in the Idea tab."));
+    (video.saved ? " · locked for this production once clips are generated." : " · change these in Video on the Idea tab."));
   document.getElementById("plan-video").disabled = running || !video.can_plan;
   const generate = document.getElementById("generate-video");
   generate.disabled = running || !video.ready || Boolean(video.complete);
@@ -1480,10 +1473,6 @@ function paint(state, prev) {
   setText(document.getElementById("count-stills"), String((state.images || []).length));
   setText(document.getElementById("count-video"), String(((state.video && state.video.clips) || []).filter((clip) => clip.state === "done").length));
   setText(document.getElementById("count-activity"), String((state.log || []).length));
-  setText(document.getElementById("stat-steps"), stepsDone + " of " + stationRow().length + " steps done");
-  const stillCount = (state.images || []).length;
-  setText(document.getElementById("stat-stills"), stillCount + (stillCount === 1 ? " image" : " images"));
-  setText(document.getElementById("stat-loop"), loopLabel(state));
   syncTabProgress(state);
   syncExtras(state);
   if (!viewChosen) {
@@ -1777,24 +1766,41 @@ function briefSummary() {
   briefEstimate();
 }
 
-// Shot counts follow budget.py: at least one per 15s, at most one per 3s, one per 8s by default.
+// Shot counts follow budget.py. The longest clip is the selected video model's limit.
+function clipBounds() {
+  const models = settingsSchema && settingsSchema.video ? settingsSchema.video.models : [];
+  const id = studioSettings && studioSettings.video ? studioSettings.video.selection : "auto";
+  const model = models.find((item) => item.id === id);
+  const kling = models.find((item) => item.id === "kling");
+  if (!model || !Number.isInteger(model.duration_min) || !Number.isInteger(model.duration_max)) {
+    return { id: "auto", min: 3, max: 30, note: " A clip longer than 15 seconds uses Seedance 2.5." };
+  }
+  const note = id === "auto" && kling ? " A clip longer than " + kling.duration_max + " seconds uses Seedance 2.5." : "";
+  return { id, min: model.duration_min, max: model.duration_max, note };
+}
+
 function briefEstimate() {
   const note = document.getElementById("format-estimate");
   const run = document.getElementById("run");
   const runtime = Number(document.getElementById("runtime").value);
   const maxShots = Number(document.getElementById("max-shots").value);
+  const bounds = clipBounds();
   let problem = "";
   if (runtime && (!Number.isInteger(runtime) || runtime < 6 || runtime > 720)) problem = "Length must be a whole number between 6 and 720 seconds.";
   else if (maxShots && (!Number.isInteger(maxShots) || maxShots < 1 || maxShots > 240)) problem = "Maximum shots must be between 1 and 240.";
-  const low = runtime ? Math.max(1, Math.ceil(runtime / 15)) : 0;
-  const high = runtime ? Math.min(240, Math.max(1, Math.floor(runtime / 3))) : 0;
+  const low = runtime ? Math.max(1, Math.ceil(runtime / bounds.max)) : 0;
+  const high = runtime ? Math.min(240, Math.max(1, Math.floor(runtime / bounds.min))) : 0;
   if (!problem && runtime && maxShots && (maxShots < low || maxShots > high)) problem = "For " + runtime + " seconds, maximum shots must be between " + low + " and " + high + ".";
   note.dataset.bad = problem ? "1" : "";
   run.disabled = Boolean(problem) || Boolean(last && last.running);
+  const range = bounds.min + "–" + bounds.max;
   if (problem) { setText(note, problem); return; }
-  if (!runtime) { setText(note, "Leave these empty and the idea decides. Shots last 3–15 seconds and together fill the length exactly."); return; }
+  if (!runtime) { setText(note, "Leave these empty and the idea decides. Shots last " + range + " seconds and together fill the length exactly." + bounds.note); return; }
   const shots = maxShots || Math.max(low, Math.floor(runtime / 8));
-  setText(note, runtime + "s film · up to " + shots + (shots === 1 ? " shot" : " shots") + " → " + shots + " shot images and up to " + shots + " video clips, plus character and location images. Each clip is 3–15 seconds.");
+  const shotWord = shots === 1 ? "shot" : "shots";
+  const imageWord = shots === 1 ? "image" : "images";
+  const clipWord = shots === 1 ? "clip" : "clips";
+  setText(note, runtime + "s film · up to " + shots + " " + shotWord + " → " + shots + " shot " + imageWord + " and up to " + shots + " video " + clipWord + ", plus character and location images. Each clip is " + range + " seconds." + bounds.note);
 }
 
 function ideaCount() {
@@ -2297,7 +2303,7 @@ document.getElementById("track").addEventListener("click", (event) => {
   if (station) pickStation(station.dataset.station);
 });
 document.getElementById("detail-follow").addEventListener("click", () => pickStation(""));
-for (const name of ["idea", "gate", "dry"]) {
+for (const name of ["idea", "film", "gate", "images", "models", "references", "video", "writing", "dry"]) {
   document.getElementById("help-" + name).addEventListener("click", () => {
     const copy = document.getElementById("help-" + name + "-copy");
     const button = document.getElementById("help-" + name);
@@ -2543,9 +2549,7 @@ async function abortDraft() {
 }
 
 
-// ---- Models and quality (Idea tab) -------------------------------------------------
-let studioSettings = null;
-let settingsSchema = null;
+// ---- Idea tab: image, video, and writing models ------------------------------------
 
 function settingsRow(label, help, control) {
   const row = make("div", "settings-row");
@@ -2586,27 +2590,43 @@ function modelNote(text, sources) {
   return note;
 }
 
-function renderSettings() {
-  const host = document.getElementById("settings-host");
-  if (!studioSettings || !settingsSchema) return;
-  const values = studioSettings;
-  host.replaceChildren();
-  const group = (title, open) => {
-    const box = make("details", "settings-group");
-    box.open = open;
-    box.appendChild(make("summary", "", title));
-    host.appendChild(box);
-    return box;
-  };
-  const save = () => saveSettings();
+function rolesIn(group) {
+  return settingsSchema.chat.roles.filter((role) => (role.group || "story") === group);
+}
 
-  const crew = group("Crew · chat models", true);
-  for (const role of settingsSchema.chat.roles) {
-    crew.appendChild(settingsRow(role.label, role.help, settingsSelect(settingsSchema.chat.models, values.chat[role.id], (value) => { values.chat[role.id] = value; save(); })));
+function fillRoles(host, roles, values, save) {
+  for (const role of roles) {
+    const controls = make("div", "settings-pair");
+    controls.append(settingsSelect(settingsSchema.chat.models, values.chat[role.id], (value) => {
+      values.chat[role.id] = value;
+      save();
+    }));
+    if (settingsSchema.chat.efforts && values.effort) {
+      const effort = settingsSelect(settingsSchema.chat.efforts, values.effort[role.id] || "default", (value) => {
+        values.effort[role.id] = value;
+        save();
+      });
+      effort.title = "Reasoning effort. Higher thinks longer and costs more.";
+      effort.setAttribute("aria-label", role.label + " reasoning effort");
+      controls.append(effort);
+    }
+    host.appendChild(settingsRow(role.label, role.help, controls));
+    const chosen = settingsSchema.chat.models.find((model) => model.id === values.chat[role.id]);
+    if (chosen) host.appendChild(modelNote(chosen.note, chosen.sources));
   }
-  crew.appendChild(make("p", "field-note", "Models differ in cost and quality. Premium models write better stories; the lighter one is faster for checklist work."));
+}
 
-  const images = group("Images", true);
+function renderSettings() {
+  const images = document.getElementById("settings-images");
+  const video = document.getElementById("settings-video");
+  const writing = document.getElementById("settings-writing");
+  if (!studioSettings || !settingsSchema || !images || !video || !writing) return;
+  const values = studioSettings;
+  const save = () => saveSettings();
+  images.replaceChildren();
+  video.replaceChildren();
+  writing.replaceChildren();
+
   for (const item of settingsSchema.images.groups) {
     images.appendChild(settingsRow(item.label, item.help, settingsSelect(item.options, values.images[item.id], (value) => { values.images[item.id] = value; save(); })));
     const chosen = item.options.find((option) => option.id === values.images[item.id]) || item.options[0];
@@ -2615,8 +2635,8 @@ function renderSettings() {
   }
   const resolutions = settingsSchema.images.resolutions.map((id) => ({ id, name: id === "auto" ? "Auto · the image prompts decide (1K)" : id }));
   images.appendChild(settingsRow("Image resolution", "Higher resolution costs more. A model that cannot do a size falls back to Nano Banana.", settingsSelect(resolutions, values.images.resolution, (value) => { values.images.resolution = value; save(); })));
+  fillRoles(images, rolesIn("images"), values, save);
 
-  const video = group("Video clips", true);
   const models = settingsSchema.video.models;
   const selected = models.find((model) => model.id === values.video.selection) || models[0];
   video.appendChild(settingsRow("Video model", "Auto chooses per shot from timing, speech, subjects and camera.", settingsSelect(models, values.video.selection, (value) => {
@@ -2628,15 +2648,31 @@ function renderSettings() {
   if (selected.id !== "auto") video.appendChild(modelNote(selected.note, selected.sources));
   const modes = selected.modes.map((id) => ({ id, name: settingsSchema.video.modes[id] }));
   video.appendChild(settingsRow("Video quality", values.video.selection === "seedance" ? "Seedance offers up to 1080p on this endpoint." : "4K is only produced by Kling; Auto routes 4K shots to it.", settingsSelect(modes, values.video.mode, (value) => { values.video.mode = value; save(); })));
+  const parallel = settingsSchema.video.parallel.map((count) => ({ id: String(count), name: count + (count === 1 ? " clip" : " clips") + " at a time" }));
+  video.appendChild(settingsRow("Clips generated at once", "More is faster; each running clip is billed as usual.", settingsSelect(parallel, String(values.video.parallel), (value) => { values.video.parallel = Number(value); save(); })));
   const sound = document.createElement("input");
   sound.type = "checkbox";
   sound.checked = values.video.sound;
   sound.addEventListener("change", () => { values.video.sound = sound.checked; save(); });
-  const soundLabel = make("label", "check");
+  const soundLabel = make("label", "check settings-check");
   soundLabel.append(sound, document.createTextNode(" Generate dialogue and sound from the shot notes"));
   video.appendChild(soundLabel);
-  const parallel = settingsSchema.video.parallel.map((count) => ({ id: String(count), name: count + (count === 1 ? " clip" : " clips") + " at a time" }));
-  video.appendChild(settingsRow("Clips generated at once", "More is faster; each running clip is billed as usual.", settingsSelect(parallel, String(values.video.parallel), (value) => { values.video.parallel = Number(value); save(); })));
+  fillRoles(video, rolesIn("video"), values, save);
+
+  fillRoles(writing, rolesIn("story"), values, save);
+  writing.appendChild(make("p", "field-note", "Astra is the strongest. Luna is the faster GPT-6. Sol is the lighter choice for the script editor."));
+  briefEstimate();
+}
+
+async function responseJson(response) {
+  const text = await response.text();
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch (error) {
+    throw new Error(response.status === 404
+      ? "The desk needs a restart to load these settings. Stop it, run it again, and refresh this page."
+      : "The desk returned a response that could not be read.");
+  }
 }
 
 let settingsSaveTimer = 0;
@@ -2646,7 +2682,7 @@ async function saveSettings() {
   settingsSaveTimer = setTimeout(async () => {
     try {
       const response = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ values: studioSettings }) });
-      const data = await response.json();
+      const data = await responseJson(response);
       if (!response.ok) throw new Error(data.error || "Could not save settings.");
       studioSettings = data.values;
       renderSettings();
@@ -2664,15 +2700,21 @@ async function loadSettings(reset) {
     const response = reset
       ? await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reset: true }) })
       : await fetch("/api/settings");
-    const data = await response.json();
+    const data = await responseJson(response);
     if (!response.ok) throw new Error(data.error || "Could not load settings.");
     studioSettings = data.values;
     if (data.schema) settingsSchema = data.schema;
     if (!settingsSchema) settingsSchema = await fetch("/api/settings").then((res) => res.json()).then((body) => body.schema);
+    const status = document.getElementById("settings-status");
+    if (status) status.hidden = true;
     renderSettings();
     if (reset) toast("Settings reset to defaults");
   } catch (error) {
-    setText(document.querySelector("#settings-host .field-note"), error.message);
+    const status = document.getElementById("settings-status");
+    if (status) {
+      status.hidden = false;
+      setText(status, error.message);
+    }
   }
 }
 document.getElementById("settings-reset").addEventListener("click", () => loadSettings(true));

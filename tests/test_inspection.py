@@ -227,11 +227,16 @@ class ReviewTest(unittest.TestCase):
             result = inspect_image({'path': str(self.out/'candidate.png')}, self.spec['jobs'][1],
                                    self.spec['inspection_context'], [('actor', self.out/'ref.png')], api_key='fake')
         self.assertEqual(result, ACCEPT)
+        self.assertNotIn('reasoning', client.responses.create.call_args.kwargs)
         content = client.responses.create.call_args.kwargs['input'][0]['content']
         images = [c for c in content if c['type'] == 'input_image']
         self.assertEqual(len(images), 2)
         self.assertTrue(all(c['image_url'].startswith('data:image/png;base64,') for c in images))
         self.assertIn('Red coat', content[0]['text'])
+        with patch('screenwriter_studio.images.inspection.kie_responses_client', return_value=manager):
+            inspect_image({'path': str(self.out/'candidate.png')}, self.spec['jobs'][1],
+                          self.spec['inspection_context'], [], api_key='fake', effort='medium')
+        self.assertEqual(client.responses.create.call_args.kwargs['reasoning'], {'effort': 'medium'})
 
 
 class InspectionResponseTest(unittest.TestCase):

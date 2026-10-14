@@ -17,22 +17,40 @@ from screenwriter_studio.images.catalog import (
     CARD_BY_ID, EDIT_CARD, GPT_CARD, NANO_CARD, RESOLUTION_VALUES, SEEDREAM_CARD,
 )
 from screenwriter_studio.paths import STATE_DIR
-from screenwriter_studio.videos.catalog import CARDS as VIDEO_CARDS, KLING, SEEDANCE
+from screenwriter_studio.videos.catalog import CARDS as VIDEO_CARDS, KLING, SEEDANCE, clip_bounds
 
 PATH = Path(os.environ.get("STUDIO_SETTINGS_PATH") or STATE_DIR / "studio_settings.json")
 
 CHAT_MODELS = (
     {"id": "gpt-6-astra", "name": "GPT-6 Astra",
-     "note": "Premium reasoning model, 272K context. Best for story, scripts and image prompts."},
+     "note": "Premium reasoning model, 272K context. Best for story, scripts and image prompts.",
+     "sources": ("https://docs.kie.ai/market/chat/gpt-6-astra",)},
     {"id": "gpt-6-1-sol", "name": "GPT-6.1 Sol",
-     "note": "Current agent model on the same endpoint. Lighter and quicker; suited to checklist work."},
+     "note": "Close to Astra, lighter and quicker. Accepts images and strict JSON. Suited to the script editor.",
+     "sources": ("https://docs.kie.ai/market/chat/gpt-6-1-sol",)},
+    {"id": "gpt-6-sol", "name": "GPT-6 Sol",
+     "note": "Earlier Sol on the same endpoint. Accepts images and strict JSON.",
+     "sources": ("https://docs.kie.ai/market/chat/gpt-6-sol",)},
+    {"id": "gpt-6-luna", "name": "GPT-6 Luna",
+     "note": "Faster, more affordable GPT-6 on the same endpoint. Accepts images and strict JSON.",
+     "sources": ("https://docs.kie.ai/market/chat/gpt-6-luna",)},
 )
 CHAT_ROLES = (
-    {"id": "development", "label": "Development", "help": "Locks the story, beats, cast and look."},
-    {"id": "writer", "label": "Screenwriter", "help": "Writes the screenplay and the shot list."},
-    {"id": "editor", "label": "Script editor", "help": "Passes or sends back each draft."},
-    {"id": "art", "label": "Image prompts", "help": "Writes one image prompt per character, location and shot."},
-    {"id": "inspection", "label": "Image inspector", "help": "Looks at each generated image. The model must accept image input."},
+    {"id": "development", "group": "story", "label": "Development", "help": "Locks the story, beats, cast and look."},
+    {"id": "writer", "group": "story", "label": "Screenwriter", "help": "Writes the screenplay and the shot list."},
+    {"id": "editor", "group": "story", "label": "Script editor", "help": "Passes or sends back each draft."},
+    {"id": "art", "group": "images", "label": "Image prompts", "help": "Writes one image prompt per character, location and shot."},
+    {"id": "inspection", "group": "images", "label": "Image inspector", "help": "Looks at each generated image. The model must accept image input."},
+)
+# Reasoning effort per role. "default" sends no reasoning field, so the model's own default
+# applies. "low" is already used on this endpoint by the brief suggester; medium and high are
+# the other values of the OpenAI Responses enum the SDK sends. KIE's chat pages did not
+# publish the enum when this was written, so a rejected value surfaces as a run error.
+EFFORTS = (
+    {"id": "default", "name": "Effort · model default"},
+    {"id": "low", "name": "Effort · low (fastest)"},
+    {"id": "medium", "name": "Effort · medium"},
+    {"id": "high", "name": "Effort · high (most thorough)"},
 )
 IMAGE_GROUPS = (
     {"id": "cinematic", "label": "Characters, locations and shot images",
@@ -55,6 +73,8 @@ DEFAULTS = {
     "images": {"cinematic": NANO_CARD.model_id, "text": GPT_CARD.model_id,
                "product": SEEDREAM_CARD.model_id, "resolution": "auto"},
     "video": {"selection": "auto", "mode": "pro", "sound": True, "parallel": 3},
+    "effort": {"development": "default", "writer": "default", "editor": "default",
+               "art": "default", "inspection": "default"},
 }
 
 
@@ -68,7 +88,10 @@ def video_modes(selection: str) -> tuple[str, ...]:
 def schema() -> dict:
     """Everything the desk needs to draw the settings, so new models appear without UI changes."""
     return {
-        "chat": {"roles": list(CHAT_ROLES), "models": list(CHAT_MODELS)},
+        "chat": {"roles": list(CHAT_ROLES), "models": [
+            {"id": model["id"], "name": model["name"], "note": model["note"], "sources": list(model["sources"])}
+            for model in CHAT_MODELS
+        ], "efforts": [dict(effort) for effort in EFFORTS]},
         "images": {
             "groups": [{
                 "id": group["id"], "label": group["label"], "help": group["help"],
@@ -83,10 +106,13 @@ def schema() -> dict:
         "video": {
             "models": [{"id": "auto", "name": "Auto · choose for each shot",
                         "note": "Picks a compatible model per shot from timing, speech, subjects and camera.",
+                        "duration_min": clip_bounds("auto")[0], "duration_max": clip_bounds("auto")[1],
                         "modes": list(video_modes("auto")), "sources": []}] + [{
                 "id": key, "name": VIDEO_CARDS[model].name,
                 "note": f"{VIDEO_CARDS[model].duration_min}–{VIDEO_CARDS[model].duration_max} s per clip · "
                         f"{', '.join(VIDEO_CARDS[model].ratios)} · prompts up to {VIDEO_CARDS[model].prompt_max} characters",
+                "duration_min": VIDEO_CARDS[model].duration_min,
+                "duration_max": VIDEO_CARDS[model].duration_max,
                 "modes": list(VIDEO_CARDS[model].modes), "sources": list(VIDEO_CARDS[model].sources),
             } for key, model in _VIDEO_BY_SELECTION.items()],
             "modes": {"std": "Standard · 720p", "pro": "Pro · 1080p", "4K": "4K"},
@@ -115,6 +141,15 @@ def validate(raw: object) -> dict:
         if value not in known_chat:
             raise ValueError(f"{role['label']}: choose one of the listed chat models.")
         result["chat"][role["id"]] = value
+    effort = raw.get("effort", {})
+    if not isinstance(effort, dict):
+        raise ValueError("Reasoning effort settings must be an object.")
+    known_effort = {item["id"] for item in EFFORTS}
+    for role in CHAT_ROLES:
+        value = effort.get(role["id"], "default")
+        if value not in known_effort:
+            raise ValueError(f"{role['label']}: reasoning effort must be default, low, medium or high.")
+        result["effort"][role["id"]] = value
     images = raw.get("images", {})
     if not isinstance(images, dict):
         raise ValueError("Image settings must be an object.")
@@ -165,12 +200,23 @@ def save(raw: object) -> dict:
 
 
 def chat_agent(role: str, agent):
-    """The crew agent running on the chosen chat model. Unchanged when it is already the default."""
+    """The crew agent on the chosen chat model and reasoning effort. Unchanged when both are defaults."""
     from screenwriter_studio.models import kie_chat_model
-    chosen = load()["chat"][role]
-    if chosen == DEFAULTS["chat"][role]:
-        return agent
-    return agent.clone(model=kie_chat_model(chosen))
+    values = load()
+    chosen, effort = values["chat"][role], values["effort"][role]
+    changes = {}
+    if chosen != DEFAULTS["chat"][role]:
+        changes["model"] = kie_chat_model(chosen)
+    if effort != "default":
+        from agents import ModelSettings
+        from openai.types.shared import Reasoning
+        changes["model_settings"] = agent.model_settings.resolve(ModelSettings(reasoning=Reasoning(effort=effort)))
+    return agent.clone(**changes) if changes else agent
+
+
+def reasoning_field(effort: str | None) -> dict:
+    """The Responses `reasoning` argument for a direct client call; empty for the model default."""
+    return {"reasoning": {"effort": effort}} if effort and effort != "default" else {}
 
 
 def apply_images(jobs: list[dict], resolution: str, values: dict | None = None) -> tuple[list[dict], str]:

@@ -28,9 +28,6 @@
       <h1>Screenwriter Studio</h1>
     </div>
     <div class="stats">
-      <span class="stat" id="stat-steps">0 of 6 steps done</span>
-      <span class="stat" id="stat-stills">0 images</span>
-      <span class="stat" id="stat-loop">Script editor ready</span>
       <button class="ghost" id="new-session" type="button">New production</button>
       <button class="ghost" id="toggle-library" type="button">Hide library</button>
     </div>
@@ -56,136 +53,157 @@
   <form id="brief-form">
     <div class="panel-head">
       <h2>Describe your film.</h2>
-      <p class="lead">Write the idea. Development locks the story, the screenwriter writes the script, and the script editor can send it back for fixes up to twice. No image credits are spent until you approve the script.</p>
+      <p class="lead">Start with the idea. Film and Approval shape the story. Images and Video choose how the pictures and clips are made. Image credits start only after you approve the script.</p>
+      <p id="settings-status" class="field-note" role="alert" hidden></p>
     </div>
     <div class="brief-layout">
-      <div class="brief-main">
-        <section class="brief-section" aria-labelledby="idea-heading">
-          <div class="section-head">
-            <span class="step-num" aria-hidden="true">1</span>
-            <h3 id="idea-heading"><label for="idea">The idea</label></h3>
-            <button class="help" id="help-idea" type="button" aria-expanded="false" aria-label="What is this?">?</button>
+      <section class="brief-section span-all" aria-labelledby="idea-heading">
+        <div class="section-head">
+          <h3 id="idea-heading"><label for="idea">The idea</label></h3>
+          <button class="help" id="help-idea" type="button" aria-expanded="false" aria-label="What is this?">?</button>
+        </div>
+        <p class="help-copy" id="help-idea-copy" hidden>This is the idea the crew turns into a developed story, a screenplay with a shot list, and the image prompts. Each shot becomes one image and then one video clip. Suggest a story writes one if the box is empty. Strengthen this rewrites a note you already typed. Set the length and format in Film.</p>
+        <textarea id="idea" name="idea" placeholder="A 30-second vertical film about someone who keeps a seat on the last bus."></textarea>
+        <p class="field-note">Say who wants what, where it happens, what stands in the way, and the tone.</p>
+        <div class="idea-tools">
+          <button class="ghost" id="suggest" type="button">Suggest a story</button>
+          <button class="ghost" id="sample" type="button">Use sample</button>
+          <span class="idea-count" id="idea-count">Empty</span>
+          <button class="ghost" id="copy-brief" type="button">Copy brief</button>
+          <button class="ghost" id="clear-brief" type="button">Clear</button>
+        </div>
+      </section>
+      <section class="brief-section" aria-labelledby="film-heading">
+        <div class="section-head">
+          <h3 id="film-heading">Film</h3>
+          <button class="help" id="help-film" type="button" aria-expanded="false" aria-label="What is this?">?</button>
+          <span class="optional">Optional</span>
+        </div>
+        <p class="help-copy" id="help-film-copy" hidden>Leave them empty and the idea decides. Length is 6–720 seconds. Shots last 3–15 seconds on Kling and 4–30 seconds on Seedance, and together they fill the length exactly. A clip longer than 15 seconds uses Seedance.</p>
+        <p class="section-lead">Length, format, and shot count. These lock the story, the images, and the clips.</p>
+        <div class="limits three">
+          <div class="limit-field">
+            <label for="runtime">Length (seconds)</label>
+            <input id="runtime" class="limit" type="number" min="6" max="720" step="1" placeholder="From the idea" inputmode="numeric">
           </div>
-          <p class="help-copy" id="help-idea-copy" hidden>This is the idea the crew turns into a developed story, a screenplay with a shot list, and the image prompts. Each shot becomes one image and then one video clip. Suggest a story writes one if the box is empty. Strengthen this rewrites a note you already typed. Name a runtime and a format (vertical, 16:9) if you have one in mind.</p>
-          <textarea id="idea" name="idea" placeholder="A 30-second vertical film about someone who keeps a seat on the last bus."></textarea>
-          <p class="field-note">Say who wants what, where it happens, what stands in the way, and the tone. Set length and format on the right.</p>
-          <div class="idea-tools">
-            <button class="ghost" id="suggest" type="button">Suggest a story</button>
-            <button class="ghost" id="sample" type="button">Use sample</button>
-            <span class="idea-count" id="idea-count">Empty</span>
-            <button class="ghost" id="copy-brief" type="button">Copy brief</button>
-            <button class="ghost" id="clear-brief" type="button">Clear</button>
+          <div class="limit-field">
+            <label for="aspect">Format</label>
+            <select id="aspect" class="limit">
+              <option value="">From the idea</option>
+              <option value="9:16">Vertical · 9:16</option>
+              <option value="16:9">Wide · 16:9</option>
+              <option value="1:1">Square · 1:1</option>
+            </select>
           </div>
-        </section>
-        <section class="brief-section" id="reference-picker" aria-labelledby="reference-heading">
-          <div class="section-head">
-            <span class="step-num" aria-hidden="true">2</span>
-            <h3 id="reference-heading">Reference images <span class="optional">Optional</span></h3>
-            <p class="ref-count" id="reference-count">None selected</p>
+          <div class="limit-field">
+            <label for="max-shots">Maximum shots</label>
+            <input id="max-shots" class="limit" type="number" min="1" max="240" step="1" placeholder="Automatic" inputmode="numeric">
           </div>
-          <div class="mode-key">
-            <p><strong>Style</strong> Matches the grade, light, and texture on every shot. The story, cast, and places stay free.</p>
-            <p><strong>Lock</strong> Keeps this face, costume, or place, only in the shots that show it.</p>
-          </div>
-          <div id="reference-selected" class="ref-tray" aria-label="Selected references"></div>
-          <details id="reference-browser" open>
-            <summary>Browse images</summary>
-            <p class="ref-label" id="reference-current-label">This production</p>
-            <div id="reference-current" class="ref-grid" role="group" aria-labelledby="reference-current-label"></div>
-            <p class="ref-label" id="reference-other-label">Other productions</p>
-            <div id="reference-other" class="ref-grid" role="group" aria-labelledby="reference-other-label"></div>
-            <div id="reference-uploads" class="ref-grid" aria-label="Uploaded references"></div>
-            <label class="upload" for="reference-upload">Upload a PNG, JPEG, or WebP
-              <input id="reference-upload" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" multiple>
-            </label>
-          </details>
-        </section>
-        <section class="brief-section" id="settings-section" aria-labelledby="settings-heading">
-          <div class="section-head">
-            <span class="step-num" aria-hidden="true">3</span>
-            <h3 id="settings-heading">Models and quality</h3>
-            <button class="ghost" id="settings-reset" type="button">Reset to defaults</button>
-          </div>
-          <p class="field-note">Saved automatically and used by every stage. Only models with a checked KIE request format are listed. Changes apply to the next step that runs; clips already generated keep the settings they were made with.</p>
-          <div id="settings-host"><p class="field-note">Loading settings…</p></div>
-        </section>
-      </div>
-      <div class="brief-side">
-        <section class="brief-section" aria-labelledby="format-heading">
-          <div class="section-head">
-            <span class="step-num" aria-hidden="true">4</span>
-            <h3 id="format-heading">Length and format <span class="optional">Optional</span></h3>
-          </div>
-          <div class="limits">
-            <div class="limit-field">
-              <label for="runtime">Length (seconds)</label>
-              <input id="runtime" class="limit" type="number" min="6" max="720" step="1" placeholder="From the idea" inputmode="numeric">
+        </div>
+        <p class="field-note" id="format-estimate" role="status" aria-live="polite">Leave these empty and the idea decides. Shots last 3–30 seconds and together fill the length exactly. A clip longer than 15 seconds uses Seedance 2.5.</p>
+      </section>
+      <section class="brief-section" aria-labelledby="gate-heading">
+        <div class="section-head">
+          <h3 id="gate-heading">Approval</h3>
+          <button class="help" id="help-gate" type="button" aria-expanded="false" aria-label="What is this?">?</button>
+        </div>
+        <p class="help-copy" id="help-gate-copy" hidden>The script editor always reads the draft and can send it back twice. This choice decides what happens after that. Open the Story tab and select a step to read its output while you decide.</p>
+        <fieldset class="choices">
+          <legend>After the script editor</legend>
+          <label class="choice"><input type="radio" name="gate" value="approve" checked><span><strong>Wait for my approval</strong><small>Pause with the pages. Nothing moves on to image prompts or image generation until you approve.</small></span></label>
+          <label class="choice"><input type="radio" name="gate" value="auto"><span><strong>Continue automatically</strong><small>Go straight to images when the editor passes the script.</small></span></label>
+          <label class="choice"><input type="radio" name="gate" value="pages" id="pages"><span><strong>Script only</strong><small>Stop after the script. You can still approve it later.</small></span></label>
+        </fieldset>
+      </section>
+      <section class="brief-section span-all" aria-labelledby="images-heading">
+        <div class="block-split">
+          <div class="block-col">
+            <div class="section-head">
+              <h3 id="images-heading">Images</h3>
+              <button class="help" id="help-images" type="button" aria-expanded="false" aria-label="What is this?">?</button>
             </div>
-            <div class="limit-field">
-              <label for="aspect">Format</label>
-              <select id="aspect" class="limit">
-                <option value="">From the idea</option>
-                <option value="9:16">Vertical · 9:16</option>
-                <option value="16:9">Wide · 16:9</option>
-                <option value="1:1">Square · 1:1</option>
-              </select>
-            </div>
-          </div>
-          <p class="field-note" id="format-estimate" role="status" aria-live="polite">Leave these empty and the idea decides. Shots last 3–15 seconds and together fill the length exactly.</p>
-        </section>
-        <section class="brief-section" aria-labelledby="gate-heading">
-          <div class="section-head">
-            <span class="step-num" aria-hidden="true">5</span>
-            <h3 id="gate-heading">Approval</h3>
-            <button class="help" id="help-gate" type="button" aria-expanded="false" aria-label="What is this?">?</button>
-          </div>
-          <p class="help-copy" id="help-gate-copy" hidden>The script editor always reads the draft and can send it back twice. This choice decides what happens after that. Open the Story tab and select a step to read its output while you decide.</p>
-          <fieldset class="choices">
-            <legend>After the script editor</legend>
-            <label class="choice"><input type="radio" name="gate" value="approve" checked><span><strong>Wait for my approval</strong><small>Pause with the pages. Nothing moves on to image prompts or image generation until you approve.</small></span></label>
-            <label class="choice"><input type="radio" name="gate" value="auto"><span><strong>Continue automatically</strong><small>Go straight to images when the editor passes the script.</small></span></label>
-            <label class="choice"><input type="radio" name="gate" value="pages" id="pages"><span><strong>Script only</strong><small>Stop after the script. You can still approve it later.</small></span></label>
-          </fieldset>
-        </section>
-        <section class="brief-section" aria-labelledby="scope-heading">
-          <div class="section-head">
-            <span class="step-num" aria-hidden="true">6</span>
-            <h3 id="scope-heading">Images and cost</h3>
-          </div>
-          <div class="limits">
-            <div class="limit-field">
-              <label for="max-shots">Maximum shots</label>
-              <input id="max-shots" class="limit" type="number" min="1" max="240" step="1" placeholder="Automatic" inputmode="numeric">
-            </div>
-            <div class="limit-field">
+            <p class="help-copy" id="help-images-copy" hidden>Leave the count blank and the shot list sets it, including characters and locations. Each shot image is the first frame of its clip. Image credits start only after you approve the script.</p>
+            <p class="section-lead">How many images this production makes, which pictures they follow, and which models make them.</p>
+            <div class="limit-field single">
               <label for="image-count">Images to generate</label>
               <input id="image-count" class="limit" type="number" min="1" max="240" step="1" placeholder="Automatic" inputmode="numeric">
             </div>
-          </div>
-          <p class="field-note">Each shot needs one image, which becomes the first frame of its video clip. Characters and locations are extra images. Images to generate caps new images for this run. Leave both blank for the usual budget.</p>
-          <div id="inspection-home">
-            <div id="inspection-field">
-              <label for="inspection-mode">Image inspection</label>
-              <select id="inspection-mode">
-                <option value="manual">Manual — approve proposed repairs</option>
-                <option value="auto">Auto — up to two repairs per image</option>
-              </select>
-              <p class="help-copy">Every image is checked for accuracy. Manual shows findings before you approve a repair. Inspection and repairs use additional credits.</p>
+            <p class="field-note">Caps new images for this run, including characters and locations. Leave blank and the shot list sets the count. Each shot image is the first frame of its clip.</p>
+            <div id="inspection-home">
+              <div id="inspection-field">
+                <label for="inspection-mode">Image inspection</label>
+                <select id="inspection-mode">
+                  <option value="manual">Manual — approve proposed repairs</option>
+                  <option value="auto">Auto — up to two repairs per image</option>
+                </select>
+                <p class="help-copy">Every image is checked for accuracy. Manual shows findings before you approve a repair. Inspection and repairs use additional credits.</p>
+              </div>
             </div>
-          </div>
-          <div id="dry-home">
-            <div class="option" id="dry-option">
-              <label class="check"><input id="dry" type="checkbox"> Write image prompts only, don’t generate (chat charges apply)</label>
-              <button class="help" id="help-dry" type="button" aria-expanded="false" aria-label="What is this?">?</button>
-              <p class="help-copy" id="help-dry-copy" hidden>The crew still makes paid chat calls to develop, write, review, and write the prompts for the images. No image credits are spent. This is not a free offline run.</p>
+            <div id="dry-home">
+              <div class="option" id="dry-option">
+                <label class="check"><input id="dry" type="checkbox"> Write image prompts only, don’t generate (chat charges apply)</label>
+                <button class="help" id="help-dry" type="button" aria-expanded="false" aria-label="What is this?">?</button>
+                <p class="help-copy" id="help-dry-copy" hidden>The crew still makes paid chat calls to develop, write, review, and write the prompts for the images. No image credits are spent. This is not a free offline run.</p>
+              </div>
             </div>
+            <h4 class="block-label">Image models <span class="optional">Saved</span> <button class="help" id="help-models" type="button" aria-expanded="false" aria-label="What is this?">?</button></h4>
+            <p class="help-copy" id="help-models-copy" hidden>Shot, character, and location images need a model that accepts reference images. A model that cannot do the chosen size falls back to Nano Banana.</p>
+            <p class="field-note">Used by every production. A change applies the next time images are made. Only models with a checked request format are listed.</p>
+            <div id="settings-images"><p class="field-note">Loading image models…</p></div>
           </div>
-        </section>
-      </div>
+          <div class="ref-column" id="reference-picker">
+            <div class="section-head">
+              <h4 id="reference-heading">Reference images <span class="optional">Optional</span></h4>
+              <button class="help" id="help-references" type="button" aria-expanded="false" aria-label="What is this?">?</button>
+              <p class="ref-count" id="reference-count">None selected</p>
+            </div>
+            <p class="help-copy" id="help-references-copy" hidden>Optional pictures the stills can follow. Style matches the grade, light, and texture on every shot. The story, cast, and places stay free. Lock keeps a face, costume, or place, only in the shots that show it. Choose images from this production, from other productions, or upload a PNG, JPEG, or WebP.</p>
+            <div class="mode-key">
+              <p><strong>Style</strong> Matches the grade, light, and texture on every shot. The story, cast, and places stay free.</p>
+              <p><strong>Lock</strong> Keeps this face, costume, or place, only in the shots that show it.</p>
+            </div>
+            <div id="reference-selected" class="ref-tray" aria-label="Selected references"></div>
+            <details id="reference-browser" open>
+              <summary>Browse images</summary>
+              <p class="ref-label" id="reference-current-label">This production</p>
+              <div id="reference-current" class="ref-grid" role="group" aria-labelledby="reference-current-label"></div>
+              <p class="ref-label" id="reference-other-label">Other productions</p>
+              <div id="reference-other" class="ref-grid" role="group" aria-labelledby="reference-other-label"></div>
+              <div id="reference-uploads" class="ref-grid" aria-label="Uploaded references"></div>
+              <label class="upload" for="reference-upload">Upload a PNG, JPEG, or WebP
+                <input id="reference-upload" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" multiple>
+              </label>
+            </details>
+          </div>
+        </div>
+      </section>
+      <section class="brief-section" aria-labelledby="video-heading-brief">
+        <div class="section-head">
+          <h3 id="video-heading-brief">Video</h3>
+          <button class="help" id="help-video" type="button" aria-expanded="false" aria-label="What is this?">?</button>
+          <span class="optional">Saved</span>
+        </div>
+        <p class="help-copy" id="help-video-copy" hidden>Saved for every production. Kling is 3–15 seconds and includes 4K. Seedance is 4–30 seconds, up to 1080p. Auto picks a compatible model for each shot.</p>
+        <p class="section-lead">How each approved image becomes a clip. A change applies the next time clips are generated. Clips already made keep the settings they were made with.</p>
+        <div id="settings-video"><p class="field-note">Loading video settings…</p></div>
+      </section>
+      <section class="brief-section" aria-labelledby="writing-heading">
+        <div class="section-head">
+          <h3 id="writing-heading">Writing</h3>
+          <button class="help" id="help-writing" type="button" aria-expanded="false" aria-label="What is this?">?</button>
+          <span class="optional">Saved</span>
+        </div>
+        <p class="help-copy" id="help-writing-copy" hidden>Saved for every production. Development locks the story, the screenwriter writes the pages and the shot list, and the script editor can send a draft back twice.</p>
+        <p class="section-lead">Models for the story, the screenplay, and the script editor. A change applies the next time those steps run.</p>
+        <div id="settings-writing"><p class="field-note">Loading writing models…</p></div>
+      </section>
     </div>
     <div class="brief-actions">
       <p id="brief-summary" aria-live="polite"></p>
-      <button class="go" id="run" type="submit">Start production</button>
+      <div class="actions">
+        <button class="ghost" id="settings-reset" type="button" title="Restore image, video, and writing models to the defaults. The idea, film, and references stay as they are.">Reset models</button>
+        <button class="go" id="run" type="submit">Start production</button>
+      </div>
     </div>
   </form>
   <div id="stage">

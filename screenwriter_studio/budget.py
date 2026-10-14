@@ -6,14 +6,21 @@ policy, not a required shot length or a monetary spending limit.
 
 from __future__ import annotations
 
+from screenwriter_studio.videos.catalog import clip_bounds
+
 CLIP_SECONDS = 8
 
 
-def shot_budget(runtime_seconds: int, max_shots: int | None = None) -> int:
-    """Upper bound on shots, and on the keyframe stills those shots become."""
+def shot_budget(runtime_seconds: int, max_shots: int | None = None, selection: str = "auto") -> int:
+    """Upper bound on shots, and on the keyframe stills those shots become.
+
+    The floor is one shot per longest clip the selected video model can make.
+    Seedance 2.5 can hold 30 seconds, so a 30-second film can be one clip.
+    """
     runtime = max(0, int(runtime_seconds))
-    minimum = max(1, (runtime + 14) // 15)
-    maximum = min(240, max(1, runtime // 3))
+    shortest, longest = clip_bounds(selection)
+    minimum = max(1, (runtime + longest - 1) // longest) if runtime else 1
+    maximum = min(240, max(1, runtime // shortest)) if runtime else 1
     if max_shots is not None:
         if not minimum <= max_shots <= maximum:
             raise ValueError(f"Shot limit must be between {minimum} and {maximum} for {runtime}s.")

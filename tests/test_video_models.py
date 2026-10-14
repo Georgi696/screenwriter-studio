@@ -39,6 +39,10 @@ class VideoModelsTest(unittest.TestCase):
         self.assertEqual(self.choose(), KLING)
         with self.assertRaisesRegex(ValueError, "4–30"):
             self.choose(selection="seedance")
+        self.shot.duration_seconds = 30
+        self.assertEqual(self.choose(), SEEDANCE)
+        with self.assertRaisesRegex(ValueError, "3–15"):
+            self.choose(selection="kling")
         self.shot.duration_seconds = 8
         with self.assertRaisesRegex(ValueError, "4K"):
             self.choose(selection="seedance", mode="4K")

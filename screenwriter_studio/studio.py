@@ -29,14 +29,14 @@ from pydantic import ValidationError
 
 from screenwriter_studio.crew.art import art_agent
 from screenwriter_studio.budget import shot_budget
+from screenwriter_studio.videos.catalog import clip_bounds
 from screenwriter_studio.events import StudioEvent
-from screenwriter_studio.images.catalog import art_director_card
 from screenwriter_studio.crew.development import development_agent
 from screenwriter_studio.crew.editor import editor_agent
 from screenwriter_studio.playbooks import CAMERA_COVERAGE, PLAYBOOKS
 from screenwriter_studio.paths import WORKSPACE_ROOT
 from screenwriter_studio.models import load_kie_api_key
-from screenwriter_studio.settings import chat_agent
+from screenwriter_studio.settings import chat_agent, load as load_settings
 from screenwriter_studio.schemas import Development, Screenplay, ScriptVerdict, StillPackage
 from screenwriter_studio.images.service import validate_still_package, render_stills
 from screenwriter_studio.crew.writer import writer_agent
@@ -390,7 +390,7 @@ class ScreenwriterStudio:
             raise ValueError("Image count must be an integer between 1 and 240.")
         planned = _plan_references(reference_choices(references))
         if runtime_seconds is not None:
-            shot_budget(runtime_seconds, max_shots)
+            shot_budget(runtime_seconds, max_shots, load_settings()["video"]["selection"])
         locks = []
         if max_shots is not None:
             locks.append(f"The user allows at most {max_shots} shots.")
@@ -434,7 +434,7 @@ class ScreenwriterStudio:
                 "aspect_ratio": aspect_ratio or development.aspect_ratio,
                 "max_shots": max_shots,
             })
-            shot_budget(development.runtime_seconds, development.max_shots)
+            shot_budget(development.runtime_seconds, development.max_shots, load_settings()["video"]["selection"])
             folder = _project_dir(development.slug or development.title)
             folder.mkdir(parents=True, exist_ok=True)
             stored = _copy_references(folder, planned)
@@ -455,11 +455,12 @@ class ScreenwriterStudio:
             verdict = ScriptVerdict(passed=False, issues=["not yet read"])
             drafts = folder / "drafts"
             drafts.mkdir()
+            previous_issues: list[str] | None = None
             for attempt in range(MAX_REWRITES + 1):
                 (drafts / f"{attempt + 1:02d}_screenplay.json").write_text(screenplay.model_dump_json(indent=2) + "\n", encoding="utf-8")
                 _raise_if_stopped(cancel)
                 yield StudioEvent("reviewing", f"**Script editor** is reading draft {attempt + 1}.\n\n")
-                verdict = await self._edit(development, screenplay)
+                verdict = await self._edit(development, screenplay, previous_issues)
                 (drafts / f"{attempt + 1:02d}_verdict.json").write_text(verdict.model_dump_json(indent=2) + "\n", encoding="utf-8")
                 if verdict.passed:
                     yield StudioEvent("approved", "The editor passed the draft.\n\n")
@@ -470,6 +471,7 @@ class ScreenwriterStudio:
                     yield StudioEvent("failed", "Rewrite limit reached. The last draft is the one on disk.\n\n")
                     break
                 _raise_if_stopped(cancel)
+                previous_issues = list(verdict.issues)
                 yield StudioEvent("rewriting", "**Screenwriter** is rewriting from the editor's notes.\n\n")
                 screenplay = await self._write(development, previous=screenplay, issues=verdict.issues, references=stored)
 
@@ -619,10 +621,10 @@ class ScreenwriterStudio:
         )
         return result.final_output_as(Screenplay)
 
-    async def _edit(self, development: Development, screenplay: Screenplay) -> ScriptVerdict:
+    async def _edit(self, development: Development, screenplay: Screenplay, previous_issues: list[str] | None = None) -> ScriptVerdict:
         result = await Runner.run(
             chat_agent("editor", editor_agent),
-            editor_user_message(development, screenplay),
+            editor_user_message(development, screenplay, previous_issues),
             max_turns=3,
         )
         verdict = result.final_output_as(ScriptVerdict)
@@ -648,6 +650,16 @@ class ScreenwriterStudio:
         return result.final_output_as(StillPackage)
 
 
+def _clip_sentence(selection: str | None = None) -> str:
+    """The clip length the screenwriter has to hit for the saved video model."""
+    selection = selection or load_settings()["video"]["selection"]
+    shortest, longest = clip_bounds(selection)
+    sentence = f"Each clip is {shortest}–{longest} seconds."
+    if selection == "auto":
+        sentence += f" Clips longer than {clip_bounds('kling')[1]} seconds use Seedance 2.5."
+    return sentence
+
+
 def writer_user_message(
     development: Development,
     previous: Screenplay | None,
@@ -663,7 +675,9 @@ def writer_user_message(
     See https://github.com/kunwardhruv/Supervisor-Multi-Agent-Content-Team
     """
     playbook = PLAYBOOKS.get(development.job_type, PLAYBOOKS["narrative"])
-    budget = shot_budget(development.runtime_seconds, development.max_shots)
+    selection = load_settings()["video"]["selection"]
+    budget = shot_budget(development.runtime_seconds, development.max_shots, selection)
+    clip = _clip_sentence(selection)
     if previous is not None and issues:
         lock = {
             "title": development.title,
@@ -673,6 +687,7 @@ def writer_user_message(
             "language": development.language,
             "logline": development.logline,
             "shot_budget": budget,
+            "clip_seconds": clip,
             "beats": [beat.model_dump() for beat in development.beats],
             "character_names": [character.name for character in development.characters],
         }
@@ -694,6 +709,7 @@ def writer_user_message(
                     f"Shot budget: {budget} shots maximum for {development.runtime_seconds} seconds "
                     f"(a configurable still-generation limit). Each shot becomes one generated image. "
                     f"Do not write more than {budget} shots. "
+                    f"{clip} "
                     "Vary the cameras on those shots. Do not add shots to get a new angle."
                 ),
                 "Playbook:\n" + playbook,
@@ -712,7 +728,7 @@ def writer_user_message(
     return message
 
 
-def editor_user_message(development: Development, screenplay: Screenplay) -> str:
+def editor_user_message(development: Development, screenplay: Screenplay, previous_issues: list[str] | None = None) -> str:
     """Checklist payload. Compact JSON: this whole draft is resent on every pass."""
     budget = shot_budget(development.runtime_seconds, development.max_shots)
     payload = {
@@ -723,6 +739,8 @@ def editor_user_message(development: Development, screenplay: Screenplay) -> str
         "fountain": screenplay.fountain,
         "shots": [shot.model_dump() for shot in screenplay.shots],
     }
+    if previous_issues:
+        payload["previous_issues"] = previous_issues
     return "Check this draft against the checklist.\n\n" + json.dumps(payload, separators=(",", ":"))
 
 
@@ -750,11 +768,11 @@ def art_user_message(
         payload["max_images"] = image_count
     body = (
         "Write the still jobs for this locked piece.\n\n"
-        "Write each keyframe's camera as a concrete angle, height, and distance. "
+        "Write each keyframe's camera as a concrete camera angle, height, and subject distance. "
         "Vary those cameras across the supplied shots. Do not add keyframes.\n\n"
         + CAMERA_COVERAGE
-        + "\n"
-        + art_director_card()
+        # The checked image-model card is already in the art director's instructions;
+        # repeating it here only doubled the tokens on every call.
     )
     notes = []
     if image_count is not None and development.max_shots is None:
@@ -795,11 +813,18 @@ def art_user_message(
     return body + "\nLocked piece:\n" + json.dumps(payload, indent=2)
 
 
-def _script_issues(development: Development, screenplay: Screenplay) -> list[str]:
+def _script_issues(development: Development, screenplay: Screenplay, selection: str | None = None) -> list[str]:
     issues = []
-    budget = shot_budget(development.runtime_seconds, development.max_shots)
+    selection = selection or load_settings()["video"]["selection"]
+    budget = shot_budget(development.runtime_seconds, development.max_shots, selection)
     if len(screenplay.shots) > budget:
         issues.append(f"Shot list has {len(screenplay.shots)} shots; limit is {budget}. Consolidate coherently; preserve the story and runtime.")
+    shortest, longest = clip_bounds(selection)
+    for shot in screenplay.shots:
+        if not shortest <= shot.duration_seconds <= longest:
+            issues.append(
+                f"Shot {shot.number} is {shot.duration_seconds}s; clips for this video model are {shortest}–{longest} seconds."
+            )
     duration = sum(shot.duration_seconds for shot in screenplay.shots)
     if duration != development.runtime_seconds:
         issues.append(f"Shot durations total {duration}s; required runtime is {development.runtime_seconds}s. Rebalance durations.")

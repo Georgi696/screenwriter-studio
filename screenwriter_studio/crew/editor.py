@@ -4,6 +4,7 @@
 from agents import Agent
 
 from screenwriter_studio.models import editor_chat
+from screenwriter_studio.playbooks import SHOT_TAKE_RULE
 from screenwriter_studio.schemas import ScriptVerdict
 
 INSTRUCTIONS = """\
@@ -20,16 +21,19 @@ Set passed to false if any of these are true:
 - A planted detail is never paid off, or a payoff was never planted.
 - Shot durations do not add up to the locked runtime.
 - The number of shots exceeds the explicit shot_budget in the user message.
-- A shot contains more than one continuous action, or more than one speaker.
-  The fix is to keep the one action or the one speaker that carries the beat, and move the rest to audio or notes.
+- A shot breaks the shot rule below: it needs a cut, jumps in time or place, has more than one speaker, or chains more than three beats.
+  The fix is to keep the beats that carry the story and move the rest to audio or notes.
   Do not ask for a new shot, a separate shot, or a split. A longer shot list is not a fix.
-  A change of camera height, angle, or distance is framing, not an extra action, and it is not a reason to add a shot.
 - A character cue is not preceded by a blank line, or a heading does not start with INT. or EXT.
 
 Each issue names the beat or the line and the smallest change that fixes it.
 When the draft passes, issues is empty and passed is true.
 Do not invent taste notes. Fail only on the list above.
-"""
+
+If the message contains previous_issues, this is a re-read of a rewrite. First decide, one by one, whether each previous issue is now fixed.
+Fail the draft only for previous issues that are still open, or for a checklist rule that the rewrite newly broke.
+Do not raise an issue you could have raised on the earlier draft and did not, and do not re-raise an issue that is fixed.
+""" + SHOT_TAKE_RULE
 
 editor_agent = Agent(
     name="ScriptEditor",

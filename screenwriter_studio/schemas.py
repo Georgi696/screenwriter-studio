@@ -62,7 +62,7 @@ class Development(BaseModel):
 
 class Shot(BaseModel):
     number: int = Field(ge=1)
-    duration_seconds: int = Field(ge=3, le=15)
+    duration_seconds: int = Field(ge=3, le=30, description="Clip length. Kling is 3–15 seconds; Seedance 2.5 is 4–30")
     framing: str = Field(
         description="Concrete camera height (high, eye, or low), angle, and subject distance (wide, medium, or close). Consecutive shots must not share the same height, angle, and distance"
     )

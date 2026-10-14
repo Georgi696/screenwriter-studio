@@ -4,7 +4,7 @@
 from agents import Agent
 
 from screenwriter_studio.models import writer_chat
-from screenwriter_studio.playbooks import CAMERA_COVERAGE
+from screenwriter_studio.playbooks import CAMERA_COVERAGE, SHOT_TAKE_RULE
 from screenwriter_studio.schemas import KieOutput, Screenplay
 
 INSTRUCTIONS = """\
@@ -29,14 +29,14 @@ Fountain:
 
 Shot list, one row per clip:
 - The user message gives the maximum shot count. This is a configurable generation budget, not a pacing rule.
-- Choose shot lengths of 3-15 seconds to serve the story. Durations must add up exactly to the locked runtime.
-- One continuous action per shot, no internal cuts. Consolidate coherently if the list exceeds the limit; preserve the want, turn, and payoff.
+- Choose shot lengths inside the clip range in the user message. Seedance 2.5 can hold a clip for up to 30 seconds. Durations must add up exactly to the locked runtime.
+- Consolidate coherently if the list exceeds the limit; preserve the want, turn, and payoff. A tight shot budget means fuller shots, not more shots. Follow the shot rule below.
 - Fragile business (hands exchanging objects, typing, pouring) happens off-screen; show the result.
 - One speaker per shot. American English unless development locked another language.
 - Notes carry continuity: which character, which wardrobe, what the next shot must match.
 - The framing column is the camera. Follow the coverage rule below. Do not add a shot to get a new angle.
 
-""" + CAMERA_COVERAGE + """
+""" + SHOT_TAKE_RULE + CAMERA_COVERAGE + """
 If you are given a rejected draft and a list of issues, rewrite the whole piece so those issues are gone.
 If the user message lists locked reference images, keep those faces, costumes, and places. The piece is a different plot, not a rewrite of the previous story.
 Do not mention the notes inside the Fountain text.

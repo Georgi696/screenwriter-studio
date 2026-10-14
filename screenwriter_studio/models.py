@@ -24,9 +24,11 @@ from screenwriter_studio.images.catalog import EDIT_MODEL, GPT_IMAGE_MODEL, NANO
 KIE_API_ROOT = "https://api.kie.ai"
 KIE_RESPONSES_BASE = f"{KIE_API_ROOT}/codex/v1"
 
-# Chat. docs.kie.ai/market/chat. Both accept text.format json_schema.
+# Chat. docs.kie.ai/market/chat. These accept text.format json_schema and image input
+# on POST /codex/v1/responses. The desk lists them in settings.CHAT_MODELS.
 # gpt-6-astra is the premium Responses model (reasoning through max, 272K).
 # gpt-6-1-sol is the current agent model on the same endpoint, for the checklist.
+# gpt-6-sol is the earlier Sol. gpt-6-luna is the faster, cheaper GPT-6.
 DEVELOPMENT_MODEL = "gpt-6-astra"
 WRITER_MODEL = "gpt-6-astra"
 ART_MODEL = "gpt-6-astra"

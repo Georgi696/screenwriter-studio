@@ -22,10 +22,11 @@ from tests.fixtures import _piece
 class ArtDirectorCardTest(unittest.TestCase):
     def test_context_includes_official_constraints(self):
         development, screenplay = _piece()
-        message = art_user_message(development, screenplay)
+        # The card lives once, in the instructions; the user message carries the piece.
         card = art_director_card()
         self.assertIn(card, art_agent.instructions)
-        self.assertIn(card, message)
+        self.assertNotIn(card, art_user_message(development, screenplay))
+        message = art_agent.instructions
         self.assertIn(CHECKED, message)
         for model in (NANO_CARD, GPT_CARD, SEEDREAM_CARD, EDIT_CARD):
             self.assertIn(model.model_id, message)

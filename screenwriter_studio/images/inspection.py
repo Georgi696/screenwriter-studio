@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from screenwriter_studio.models import ART_MODEL, kie_responses_client
+from screenwriter_studio.settings import reasoning_field
 
 
 class Inspection(BaseModel):
@@ -113,7 +114,7 @@ def response_text(response) -> str:
     return "".join(pieces)
 
 
-def inspect_image(record, job, context, references, *, api_key, model=ART_MODEL) -> dict:
+def inspect_image(record, job, context, references, *, api_key, model=ART_MODEL, effort=None) -> dict:
     content = [{"type": "input_text", "text": json.dumps({
         "candidate_job": job, "production": context, "schema": Inspection.model_json_schema(),
     })}, {"type": "input_text", "text": "Candidate image to inspect:"},
@@ -126,6 +127,6 @@ def inspect_image(record, job, context, references, *, api_key, model=ART_MODEL)
         response = client.responses.create(
             model=model, instructions=INSTRUCTIONS,
             input=[{"role": "user", "content": content}],
-            max_output_tokens=6000, store=False,
+            max_output_tokens=6000, store=False, **reasoning_field(effort),
         )
     return Inspection.model_validate(normalize_review(json.loads(response_text(response)))).model_dump()

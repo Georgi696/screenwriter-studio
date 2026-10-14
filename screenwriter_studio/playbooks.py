@@ -35,6 +35,14 @@ PLAYBOOKS: dict[str, str] = {
     ),
 }
 
+SHOT_TAKE_RULE = """\
+What one shot may hold (the writer and the script editor use this same rule):
+- A shot is one unbroken take from one camera setup, as long as the clip range in the user message allows.
+- Inside it, a chain of up to three closely linked beats is fine (she crawls, checks the tracker, ducks), as long as it happens in one place, in continuous time, with no cut.
+- A shot needs trimming or splitting only when it requires a cut, jumps in time or place, has a second speaker, or chains more than three beats.
+- Trim by keeping the beats that carry the story and moving the rest to audio or notes. A change of camera height, angle, or distance is framing, not an extra beat.
+"""
+
 CAMERA_COVERAGE = """\
 Camera coverage, on the shots that already exist:
 - Consecutive shots must not share the same camera height, angle, and subject distance.
@@ -42,7 +50,7 @@ Camera coverage, on the shots that already exist:
 - Action should feel like the camera moved: a low angle into a charge, a high angle on a collapse, a tight insert, an over-shoulder. Not a row of front-facing masters.
 - Name a concrete angle, height, and distance. Cinematic or dynamic alone is not a camera.
 - Vary the cameras on the shots that already exist. Do not add shots. Do not exceed the shot budget.
-- Camera variety is framing, not extra action inside the shot. A shot stays one continuous action.
+- Camera variety is framing, not extra action inside the shot. A shot stays one unbroken take.
 """
 
 AI_VIDEO_RULES = """\

@@ -19,10 +19,18 @@ class ShotBudgetTest(unittest.TestCase):
     def test_custom_limit_and_feasibility(self):
         self.assertEqual(shot_budget(30, 6), 6)
         self.assertEqual(shot_budget(16), 2)
-        with self.assertRaises(ValueError):
-            shot_budget(30, 1)
+        self.assertEqual(shot_budget(30, 1), 1)
         with self.assertRaises(ValueError):
             shot_budget(30, 11)
+
+    def test_seedance_can_hold_thirty_seconds_and_kling_cannot(self):
+        self.assertEqual(shot_budget(30, 1, "seedance"), 1)
+        self.assertEqual(shot_budget(30, 7, "seedance"), 7)
+        with self.assertRaises(ValueError):
+            shot_budget(30, 8, "seedance")
+        with self.assertRaises(ValueError):
+            shot_budget(30, 1, "kling")
+        self.assertEqual(shot_budget(30, 2, "kling"), 2)
 
 
 class StillLimitTest(unittest.TestCase):

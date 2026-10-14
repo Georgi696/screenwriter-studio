@@ -26,6 +26,7 @@ class WriterPromptTest(unittest.TestCase):
                     f"Shot budget: {budget} shots maximum for {development.runtime_seconds} seconds "
                     f"(a configurable still-generation limit). Each shot becomes one generated image. "
                     f"Do not write more than {budget} shots. "
+                    "Each clip is 3–30 seconds. Clips longer than 15 seconds use Seedance 2.5. "
                     "Vary the cameras on those shots. Do not add shots to get a new angle."
                 ),
                 "Playbook:\n" + PLAYBOOKS["narrative"],
@@ -110,6 +111,52 @@ class MissingKeyTest(unittest.TestCase):
             studio.load_kie_api_key = original
         self.assertEqual(len(lines), 1)
         self.assertIn("KIE_API_KEY is not set", lines[0].text)
+
+
+class EditorConvergenceTest(unittest.TestCase):
+    def test_writer_and_editor_share_one_shot_rule_and_editor_sees_previous_issues(self):
+        from screenwriter_studio.crew.editor import editor_agent
+        from screenwriter_studio.playbooks import SHOT_TAKE_RULE
+        development, screenplay = _piece()
+        self.assertIn(SHOT_TAKE_RULE, writer_agent.instructions)
+        self.assertIn(SHOT_TAKE_RULE, editor_agent.instructions)
+        self.assertNotIn("previous_issues", editor_user_message(development, screenplay))
+        message = editor_user_message(development, screenplay, ["Shot 2 jumps location."])
+        self.assertIn('"previous_issues":["Shot 2 jumps location."]', message)
+        self.assertIn("previous_issues", editor_agent.instructions)
+
+    def test_rewrite_loop_hands_each_verdict_to_the_next_read(self):
+        import asyncio
+        from unittest.mock import patch
+        from screenwriter_studio.schemas import ScriptVerdict
+        from screenwriter_studio.studio import ScreenwriterStudio
+        development, screenplay = _piece()
+        seen = []
+
+        async def fake_edit(self, dev, play, previous=None):
+            seen.append(previous)
+            return ScriptVerdict(passed=len(seen) == 3, issues=[] if len(seen) == 3 else [f"issue {len(seen)}"])
+
+        async def fake_write(self, *args, **kwargs):
+            return screenplay
+
+        async def fake_develop(self, *args, **kwargs):
+            return development
+
+        async def collect():
+            return [e async for e in ScreenwriterStudio().run("idea", pages_only=True)]
+
+        import tempfile, pathlib
+        with tempfile.TemporaryDirectory() as root, \
+                patch("screenwriter_studio.studio.WORKSPACE_ROOT", pathlib.Path(root)), \
+                patch("screenwriter_studio.studio._project_dir", lambda slug: pathlib.Path(root) / "film"), \
+                patch("screenwriter_studio.studio.load_kie_api_key", return_value="key"), \
+                patch.object(ScreenwriterStudio, "_develop", fake_develop), \
+                patch.object(ScreenwriterStudio, "_write", fake_write), \
+                patch.object(ScreenwriterStudio, "_edit", fake_edit):
+            events = asyncio.run(collect())
+        self.assertEqual(seen, [None, ["issue 1"], ["issue 2"]])
+        self.assertIn("approved", [e.kind for e in events])
 
 
 if __name__ == "__main__":

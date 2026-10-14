@@ -24,6 +24,17 @@ class ScriptGateTest(unittest.TestCase):
         self.assertTrue(any("16s" in issue for issue in issues))
         self.assertTrue(any("unique" in issue for issue in issues))
 
+    def test_seedance_holds_one_thirty_second_clip(self):
+        development, screenplay = _piece()
+        screenplay.shots[0].duration_seconds = 30
+        self.assertEqual(_script_issues(development, screenplay, "seedance"), [])
+        screenplay.shots = [
+            screenplay.shots[0].model_copy(update={"duration_seconds": 3}),
+            screenplay.shots[0].model_copy(update={"number": 2, "duration_seconds": 27}),
+        ]
+        self.assertTrue(any("Shot 1 is 3s" in issue and "4–30" in issue for issue in _script_issues(development, screenplay, "seedance")))
+        self.assertTrue(any("Shot 2 is 27s" in issue and "3–15" in issue for issue in _script_issues(development, screenplay, "kling")))
+
     def test_model_approval_cannot_override_runtime_validation(self):
         development, screenplay = _piece()
         result = Mock()
@@ -137,7 +148,7 @@ class ScriptGateTest(unittest.TestCase):
 
     def test_invalid_input_stops_before_chat_calls(self):
         async def run():
-            return [event async for event in ScreenwriterStudio().run("hall", runtime_seconds=30, max_shots=1)]
+            return [event async for event in ScreenwriterStudio().run("hall", runtime_seconds=30, max_shots=11)]
         with patch("screenwriter_studio.studio.Runner.run", new=AsyncMock()) as call:
             with self.assertRaises(ValueError):
                 asyncio.run(run())

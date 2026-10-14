@@ -166,11 +166,12 @@ def public_view() -> dict:
                 item["src"] = ""
             images.append(item)
         payload["images"] = images
+        chat = studio_settings.load()["chat"]
         payload["crew"] = [
-            {"id": "development", "name": "Development", "model": DEVELOPMENT_MODEL},
-            {"id": "writer", "name": "Screenwriter", "model": WRITER_MODEL},
-            {"id": "editor", "name": "Script editor", "model": EDITOR_MODEL},
-            {"id": "art", "name": "Image prompts", "model": ART_MODEL},
+            {"id": "development", "name": "Development", "model": chat["development"]},
+            {"id": "writer", "name": "Screenwriter", "model": chat["writer"]},
+            {"id": "editor", "name": "Script editor", "model": chat["editor"]},
+            {"id": "art", "name": "Image prompts", "model": chat["art"]},
         ]
         payload["image_agents"] = [
             {"model": model, "kinds": kinds} for model, kinds in _image_agents()
@@ -1162,7 +1163,7 @@ class DeskHandler(BaseHTTPRequestHandler):
             return
         if runtime is not None and max_shots is not None:
             try:
-                shot_budget(runtime, max_shots)
+                shot_budget(runtime, max_shots, studio_settings.load()["video"]["selection"])
             except ValueError as exc:
                 self._json(400, {"error": str(exc)})
                 return

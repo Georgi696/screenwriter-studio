@@ -53,18 +53,28 @@ python -m screenwriter_studio --ui
 Open the printed `http://127.0.0.1:…` address on the same computer. The desk is
 local-only and does not create a public tunnel.
 
-## Models and quality
+## Idea tab
 
-The **Idea** tab has a **Models and quality** section. Choices are saved automatically in
-`.state/studio_settings.json` and used by every stage:
+The Idea tab is grouped by what each choice controls. Model choices are saved automatically
+in `.state/studio_settings.json` and used by every stage. **Reset models** restores them
+without clearing the idea, the film, or the references.
 
-- **Crew:** the chat model for development, screenwriter, script editor, image prompts and
-  the image inspector.
-- **Images:** the model for readable-text images and for product images, and a forced
-  resolution (or Auto, where the image prompts decide). Shot, character and location images
-  need reference-image support, so Nano Banana 2.1 is the only choice there.
-- **Video clips:** Auto, Kling 3.0 or Seedance 2.5; quality (the list follows the chosen
-  model, and 4K is Kling only); sound; and how many clips are generated at once (1–4).
+- **Film:** length, format, and maximum shots for this production.
+- **Approval:** wait, continue, or stop after the script.
+- **Images:** how many images to generate, inspection, prompt-only planning, reference
+  images, the image models, resolution, and the models that write and inspect image prompts.
+  Shot, character and location images need reference-image support, so Nano Banana 2.1 is
+  the only choice there.
+- **Video:** Auto, Kling 3.0 or Seedance 2.5; quality (the list follows the chosen model,
+  and 4K is Kling only); sound; and how many clips are generated at once (1–4).
+- **Writing:** the chat model for development, the screenwriter, and the script editor.
+  GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna. All four accept images and strict JSON.
+
+Every chat role (the writing roles, image prompts and the image inspector) also has a
+**reasoning effort**: model default, low, medium or high. Model default sends no reasoning
+field. Low is already used on this endpoint; medium and high follow the OpenAI Responses
+enum, but KIE does not publish its accepted values, so a rejected value shows up as a run
+error. Higher effort is slower and costs more.
 
 Only models with a checked KIE request format are listed (`images/catalog.py`,
 `videos/catalog.py`, `models.py`). To offer another KIE model, add its verified card to the
@@ -94,7 +104,7 @@ python -m screenwriter_studio \
 The default shot limit is one per eight seconds, adjusted when necessary to make
 the runtime feasible. It is a generation-count limit, not a fixed editing rhythm
 or a monetary budget. Character and location references are additional images.
-Shots can last 3–15 seconds and must add up exactly to the locked runtime.
+Shots last 3–15 seconds on Kling, 4–30 seconds on Seedance 2.5, and 3–30 seconds on Auto. They must add up exactly to the locked runtime. A 30-second Seedance clip can be the whole film.
 
 **Chat and image generation are paid calls.** Both `--pages-only` and the studio's
 `--dry-run` still use paid chat models. To check an existing still plan without
@@ -158,8 +168,8 @@ re-encoded or merged. Up to three clips are generated at the same time.
 The adapters use the official [KIE Kling 3.0](https://docs.kie.ai/market/kling/kling-3-0)
 and [KIE Seedance 2.5](https://docs.kie.ai/market/bytedance/seedance-2-5) contracts,
 checked on 2026-10-14. Kling accepts 3–15 seconds and includes 4K; Seedance accepts
-4–30 seconds and up to 1080p on this endpoint. The screenplay still uses 3–15 second
-shots. Each approved keyframe remains the first frame; Seedance's reference-image
+4–30 seconds and up to 1080p on this endpoint. The shot list uses that clip length,
+so Seedance can hold one clip for up to 30 seconds. Each approved keyframe remains the first frame; Seedance's reference-image
 mode is not mixed into first-frame requests. Local keyframes use the existing KIE
 file store.
 

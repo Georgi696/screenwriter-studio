@@ -118,7 +118,8 @@ def render_stills(
     chosen = studio_settings.load()
     jobs, resolution = studio_settings.apply_images(portrait_characters([job.model_dump() for job in package.jobs]), package.resolution, chosen)
     spec = {
-        "inspection": {"mode": inspection_mode, "model": chosen["chat"]["inspection"]},
+        "inspection": {"mode": inspection_mode, "model": chosen["chat"]["inspection"],
+                       "effort": chosen["effort"]["inspection"]},
         "inspection_context": inspection_context or {},
         "aspect_ratio": package.aspect_ratio,
         "resolution": resolution,
