@@ -5,11 +5,14 @@ from __future__ import annotations
 import base64
 import json
 import re
+import time
 from pathlib import Path
 from typing import Literal
 
+import openai
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from screenwriter_studio.images.upload import SOURCE_LIMIT, fit_image, header_kind
 from screenwriter_studio.models import ART_MODEL, kie_responses_client
 from screenwriter_studio.settings import reasoning_field
 
@@ -65,6 +68,12 @@ framing, lighting, required readable text, and obvious visual defects (extra/fus
 duplicated objects, impossible geometry). Do not demand invisible details or every moment of
 a moving shot in one still. Accept minor cosmetic imperfections. Explain specific visible
 evidence and where it occurs. Missing evidence or ambiguity means review, never invented certainty.
+Reference role labels limit what to compare: style is look only; composition is framing only;
+location is place only; object is product details only. For character references, compare face
+and wardrobe only when the corresponding control is enabled. Do not demand unrelated attributes
+from reference images or repair the candidate to copy them. When the job prompt, shot action, or character
+lock changes something a reference shows (clothing removed or added, dirt, injuries), judge that detail
+against the production, not the reference.
 Use repair only for clear, actionable defects; accept for usable accuracy; review for uncertainty.
 When you accept, leave uncertainty empty and changes empty. If anything is unclear or you would like a change, the verdict is not accept.
 For a shot image (keyframe), judge it as the first frame of an animated clip: the shot's action is about to happen, so do not fail it for showing the moment before the action completes. Character and location sheets are neutral references; judge identity, wardrobe, and place, not action.
@@ -76,16 +85,12 @@ Return only JSON matching the supplied schema; no markdown."""
 
 def image_input(path: Path) -> dict:
     data = path.read_bytes()
-    if not data or len(data) > 14_000_000:
-        raise ValueError("Inspection image is empty or exceeds 14 MB.")
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        mime = "image/png"
-    elif data.startswith(b"\xff\xd8\xff"):
-        mime = "image/jpeg"
-    elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
-        mime = "image/webp"
-    else:
+    if not data or len(data) > SOURCE_LIMIT:
+        raise ValueError("Inspection image is empty or too large.")
+    if header_kind(data[:12]) is None:
         raise ValueError("Inspection requires a PNG, JPEG or WebP image.")
+    data, kind = fit_image(data, _INLINE_LIMIT)
+    mime = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}[kind]
     return {"type": "input_image", "detail": "high",
             "image_url": f"data:{mime};base64," + base64.b64encode(data).decode()}
 
@@ -122,6 +127,24 @@ def response_text(response) -> str:
     return "".join(pieces)
 
 
+_INLINE_LIMIT = 14_000_000  # each image is sent inline to the inspector as base64
+RETRY_DELAYS = (2.0, 6.0)
+
+
+def _create(client, **request):
+    """Retry only answers that say the request was not processed: 429 and 5xx.
+
+    A timeout may still have been billed, so it is not retried; the image goes to human review.
+    """
+    for delay in (*RETRY_DELAYS, None):
+        try:
+            return client.responses.create(**request)
+        except (openai.RateLimitError, openai.InternalServerError):
+            if delay is None:
+                raise
+            time.sleep(delay)
+
+
 def inspect_image(record, job, context, references, *, api_key, model=ART_MODEL, effort=None) -> dict:
     content = [{"type": "input_text", "text": json.dumps({
         "candidate_job": job, "production": context, "schema": Inspection.model_json_schema(),
@@ -132,8 +155,8 @@ def inspect_image(record, job, context, references, *, api_key, model=ART_MODEL,
         content.append(image_input(source) if isinstance(source, Path) else
                        {"type": "input_image", "detail": "high", "image_url": source})
     with kie_responses_client(api_key=api_key) as client:
-        response = client.responses.create(
-            model=model, instructions=INSTRUCTIONS,
+        response = _create(
+            client, model=model, instructions=INSTRUCTIONS,
             input=[{"role": "user", "content": content}],
             max_output_tokens=6000, store=False, **reasoning_field(effort),
         )

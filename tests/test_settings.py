@@ -26,6 +26,9 @@ class SettingsTest(unittest.TestCase):
             {"id": "mug", "kind": "packshot"}, {"id": "s01", "kind": "keyframe"}, {"id": "t", "kind": "title"}], "1K", values)
         self.assertEqual(jobs[0]["model"], "nano-banana-2-1")
         self.assertNotIn("model", jobs[1])
+        pro = settings.validate({"images": {"cinematic": "nano-banana-pro"}})
+        routed, _ = settings.apply_images([{"id": "s01", "kind": "keyframe"}], "1K", pro)
+        self.assertEqual(routed[0]["model"], "nano-banana-pro")
         self.assertNotIn("model", jobs[2])
         self.assertEqual(resolution, "2K")
         self.assertEqual(settings.apply_images([{"id": "m", "kind": "packshot"}], "1K", settings.DEFAULTS)[1], "1K")
@@ -41,7 +44,7 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual([m["id"] for m in schema["video"]["models"]], ["auto", "kling", "seedance"])
         durations = {model["id"]: (model["duration_min"], model["duration_max"]) for model in schema["video"]["models"]}
         self.assertEqual(durations, {"auto": (3, 30), "kling": (3, 15), "seedance": (4, 30)})
-        self.assertEqual([m["id"] for m in schema["images"]["groups"][0]["options"]], ["nano-banana-2-1"])
+        self.assertEqual([m["id"] for m in schema["images"]["groups"][0]["options"]], ["nano-banana-2-1", "nano-banana-pro"])
         self.assertEqual([role["group"] for role in schema["chat"]["roles"]], ["story", "story", "story", "images", "images"])
         self.assertEqual([model["id"] for model in schema["chat"]["models"]], ["gpt-6-astra", "gpt-6-1-sol", "gpt-6-sol", "gpt-6-luna"])
 

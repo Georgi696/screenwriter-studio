@@ -103,8 +103,16 @@ class DeskPageTest(unittest.TestCase):
         self.assertIn('class="stop"', page)
         self.assertIn(">Stop</button>", page)
         self.assertNotIn('id="stop" class="ghost"', page)
-        self.assertEqual(page.count('aria-label="What is this?"'), 9)
-        self.assertEqual(page.count(">?</button>"), 9)
+        self.assertEqual(page.count('aria-label="What is this?"'), 10)
+        self.assertEqual(page.count(">?</button>"), 10)
+        # Saved model choices sit in one closed panel, apart from this film's choices.
+        panel = page[page.index('id="models-panel"'):page.index("</details>", page.index('id="models-panel"'))]
+        self.assertNotIn('id="models-panel" open', page)
+        for part in ('id="settings-images"', 'id="settings-video"', 'id="settings-writing"', 'id="settings-reset"', 'id="show-effort"'):
+            self.assertIn(part, panel)
+        self.assertIn('<details id="reference-browser">', page)
+        actions = page[page.index('class="brief-actions"'):]
+        self.assertLess(actions.index('id="idea-cost"'), actions.index('id="run"'))
         self.assertNotIn(">What is this?</button>", page)
         self.assertIn("Suggest a story", page)
         self.assertIn("Strengthen this", self._get("/static/desk.js").decode())
@@ -453,6 +461,94 @@ def _reader_renderer_js() -> str:
     start = html.index("function escapeText(")
     end = html.index("function highlightJson(")
     return html[start:end]
+
+
+def _reference_picker_js() -> str:
+    script = (STATIC / "desk.js").read_text(encoding="utf-8")
+    return script[script.index("const REFERENCE_ROLES = ["):script.index("function renderReferenceTray(")]
+
+
+class ReferencePickerTest(unittest.TestCase):
+    """Known images start in their role and name; nameless subjects are flagged; choices survive a reload."""
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed to run the desk script")
+    def test_roles_names_warnings_and_restore(self):
+        driver = (
+            "const store = {};\n"
+            "const localStorage = { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = v; } };\n"
+            "const selectedRefs = new Map();\n"
+            "let uploadedRefs = [{ id: '.references/up.png', name: 'up.png', src: '/x' }];\n"
+            "const SUBJECT_ROLES = new Set(['character', 'location', 'object']);\n"
+            "const REFERENCE_STORE = 'studio.references';\n"
+            "const deskFolder = 'productions/water';\n"
+            "const productionSlug = (folder) => folder.split('/').pop();\n"
+            "let libraryProjects = [{ slug: 'water', references: [\n"
+            "  { path: 'water/references/character-01.png', mode: 'character', name: 'Lena', scope: 'auto', shots: [], wardrobe: false },\n"
+            "  { path: 'water/references/location-01.png', mode: 'location', name: 'the lake', scope: 'shots', shots: [1, 3] }] }];\n"
+            "const markReferenceSelection = () => {};\n"
+        ) + _reference_picker_js() + (
+            "const out = {};\n"
+            "out.known = newReference({ role: 'character', subject: 'Lena', wardrobe: false });\n"
+            "out.legacy = newReference({ role: 'lock', subject: 'x' }).mode;\n"
+            "out.plain = newReference();\n"
+            "selectedRefs.set('a.png', newReference({ role: 'location', subject: '' }));\n"
+            "selectedRefs.set('b.png', newReference());\n"
+            "out.summary = referenceSummary();\n"
+            "selectedRefs.clear();\n"
+            "restoreReferences();\n"
+            "out.restored = [...selectedRefs];\n"
+            "saveReferences(); selectedRefs.clear(); uploadedRefs = [];\n"
+            "loadReferences();\n"
+            "out.reloaded = [[...selectedRefs.keys()], uploadedRefs.map((u) => u.id)];\n"
+            "process.stdout.write(JSON.stringify(out));\n"
+        )
+        result = json.loads(subprocess.run(["node", "-"], input=driver, text=True, capture_output=True, check=True).stdout)
+        self.assertEqual((result["known"]["mode"], result["known"]["name"], result["known"]["face"], result["known"]["wardrobe"]),
+                         ("character", "Lena", True, False))
+        self.assertEqual(result["legacy"], "style")
+        self.assertEqual((result["plain"]["mode"], result["plain"]["name"]), ("style", ""))
+        self.assertEqual(result["summary"], "1 style · 1 location · 1 to name")
+        restored = dict(result["restored"])
+        self.assertEqual((restored["water/references/character-01.png"]["mode"],
+                          restored["water/references/character-01.png"]["wardrobe"]), ("character", False))
+        self.assertEqual((restored["water/references/location-01.png"]["scope"],
+                          restored["water/references/location-01.png"]["shotsText"]), ("shots", "1, 3"))
+        self.assertEqual(result["reloaded"], [list(restored), [".references/up.png"]])
+
+
+class LibraryHintsTest(unittest.TestCase):
+    def test_library_knows_roles_names_and_earlier_versions(self):
+        from screenwriter_studio.web import server
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            film = root / "water"
+            for name in ("images/lena.png", "images/lena.repair-1.png", "images/s01.png", "images/s01.take-2.png",
+                         "references/location-01.png"):
+                (film / name).parent.mkdir(parents=True, exist_ok=True)
+                (film / name).write_bytes(b"\x89PNG\r\n\x1a\n")
+            images = film / "images"
+            (film / "00_development.json").write_text(json.dumps({"characters": [{"name": "Lena", "description": "x"}]}))
+            (film / "run_settings.json").write_text(json.dumps({"references": [
+                {"id": "location-01", "mode": "location", "name": "the lake", "path": str(film / "references/location-01.png")},
+                {"id": "ref-01", "mode": "lock", "name": "old", "path": str(film / "references/location-01.png")}]}))
+            (images / "jobs.json").write_text(json.dumps({"jobs": [{"id": "lena", "kind": "character"},
+                                                                    {"id": "s01", "kind": "keyframe"}]}))
+            (images / "manifest.json").write_text(json.dumps({"images": [
+                {"id": "lena", "path": str(images / "lena.repair-1.png"),
+                 "history": [{"path": str(images / "lena.png"), "url": "https://host/a.png"}]},
+                {"id": "s01", "path": str(images / "s01.take-2.png"),
+                 "history": [{"path": str(images / "s01.png"), "url": "https://host/b.png"}]}]}))
+            with mock.patch.object(server, "PRODUCTIONS", root):
+                projects, _ = server.library_catalog()
+        hints = {item["name"]: {k: v for k, v in item.items() if k not in ("path", "name")} for item in projects[0]["images"]}
+        self.assertEqual(hints["images/lena.repair-1.png"], {"label": "Lena · character", "role": "character", "subject": "Lena"})
+        self.assertTrue(hints["images/lena.png"]["earlier"])
+        self.assertEqual(hints["images/s01.take-2.png"], {"label": "Shot 1"})
+        self.assertEqual(hints["images/s01.png"], {"label": "Shot 1 · earlier version", "earlier": True})
+        self.assertEqual(hints["references/location-01.png"]["label"], "the lake · location reference")
+        self.assertEqual(projects[0]["references"], [{"path": "water/references/location-01.png", "mode": "location",
+                                                      "name": "the lake", "instruction": "", "scope": "auto", "shots": []}])
 
 
 class MarkdownPreviewTest(unittest.TestCase):

@@ -38,7 +38,9 @@ def repair_job(job, record, out):
               + "\n".join("- " + item for item in review["changes"])
               + "\nPreserve:\n" + "\n".join("- " + item for item in review["preserve"])
               + "\nPreserve all other correct details, identity, composition and style. "
-              "Additional images are continuity references.\nOriginal requirements:\n" + job["prompt"])
+              "Additional images follow their original reference roles. In the original requirements below, "
+              "reference image numbers count only those additional images, excluding the first candidate image.\n"
+              "Original requirements:\n" + job["prompt"])
     dest = _destination(out, job)
     result = {"id": job["id"], "kind": "edit", "prompt": prompt,
               "filename": f"{dest.stem}.repair-{record.get('repairs', 0) + 1}{dest.suffix}",
@@ -236,9 +238,10 @@ def _run_review_loop(spec, out, ordered, records, api_key, checkpoint, keep, on_
     An image waiting for review only holds back the images that use it. Every worker
     finishes before an error is raised, so no paid task is abandoned mid-poll.
     """
-    from screenwriter_studio.images.generator import _ref_list, locked_files, style_reference_ids
+    from screenwriter_studio.images.generator import _ref_list, locked_files
+    from screenwriter_studio.references import reference_direction
     locked = locked_files(spec)
-    styles = style_reference_ids(spec)
+    reference_settings = {item["id"]: item for item in spec.get("locked_references", [])}
     pending = [job for wave in ordered for job in wave]
     running: dict = {}
 
@@ -320,10 +323,8 @@ def _run_review_loop(spec, out, ordered, records, api_key, checkpoint, keep, on_
             for ref in _ref_list(planned):
                 if ref.startswith(("https://", "http://")):
                     references.append((ref, ref))
-                elif ref in styles:
-                    references.append((f"{ref} (style only: compare grade, light and texture, not people, places or composition)", locked[ref]))
                 elif ref in locked:
-                    references.append((ref, locked[ref]))
+                    references.append((f"{ref} ({reference_direction(reference_settings[ref])})", locked[ref]))
                 else:
                     references.append((ref, Path(records[ref]["path"])))
             try:

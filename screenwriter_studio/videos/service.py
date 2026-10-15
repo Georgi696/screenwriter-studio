@@ -13,7 +13,7 @@ from screenwriter_studio.images.generator import (
 )
 from screenwriter_studio import settings as studio_settings
 from screenwriter_studio.models import load_kie_api_key
-from screenwriter_studio.videos.probe import check_cancel, validate_clip, validate_keyframes
+from screenwriter_studio.videos.probe import check_cancel, sound_check, validate_clip, validate_keyframes
 from screenwriter_studio.videos.catalog import CARDS
 from screenwriter_studio.videos.plan import build_plan, digest, file_digest, payload, read_json, write_json
 
@@ -149,8 +149,9 @@ def render_video(folder: Path, *, mode: str | None = None, sound: bool | None = 
                 kept = next_take(out, clip["id"])
                 if path.is_file():
                     path.replace(kept)
-                history = clip.get("history", []) + [{"file": kept.name, "task_id": clip.get("task_id"), "sha256": clip.get("sha256")}]
-                for field in ("task_id", "url", "sha256", "request"):
+                history = clip.get("history", []) + [{"file": kept.name, "task_id": clip.get("task_id"), "sha256": clip.get("sha256"),
+                                                      **({"audio": clip["audio"]} if clip.get("audio") else {})}]
+                for field in ("task_id", "url", "sha256", "request", "audio"):
                     clip.pop(field, None)
                 clip.update(history=history, state="pending", error="")
         def work(shot, clip):
@@ -196,13 +197,19 @@ def render_video(folder: Path, *, mode: str | None = None, sound: bool | None = 
                 check_cancel(cancel)
                 download_video(clip["url"], path, cancel)
                 try:
-                    validate_clip(path, shot["duration_seconds"], cancel)
+                    info = validate_clip(path, shot["duration_seconds"], cancel)
                 except ValueError as exc:
                     # The clip is paid for and on disk: keep it viewable and let a resume try again.
                     rejected = out / f"{shot['id']}_rejected.mp4"
                     path.replace(rejected)
                     raise JobFailed(f"{exc} Kept as {rejected.name}; resuming submits a new take (paid).") from exc
-                checkpoint(clip, state="done", sha256=file_digest(path), error="")
+                audio = None
+                if plan["sound"]:
+                    try:
+                        audio = sound_check(path, info, cancel)
+                    except RuntimeError:
+                        check_cancel(cancel)  # a failed measurement never fails a paid clip
+                checkpoint(clip, state="done", sha256=file_digest(path), error="", **({"audio": audio} if audio else {}))
             except Exception as exc:
                 checkpoint(clip, **({"state": "failed"} if isinstance(exc, JobFailed) else {}), error=str(exc))
                 raise
@@ -351,10 +358,13 @@ def use_take(folder: Path, shot_id: str, name: str) -> dict:
         if current.is_file():
             kept = next_take(out, shot_id)
             current.replace(kept)
-            history.append({"file": kept.name, "task_id": clip.get("task_id"), "sha256": clip.get("sha256")})
+            history.append({"file": kept.name, "task_id": clip.get("task_id"), "sha256": clip.get("sha256"),
+                            **({"audio": clip["audio"]} if clip.get("audio") else {})})
         chosen.replace(current)
-        for field in ("url", "request"):
+        for field in ("url", "request", "audio"):
             clip.pop(field, None)
+        if entry.get("audio"):
+            clip["audio"] = entry["audio"]
         clip.update(history=history, state="done", error="", task_id=entry.get("task_id"),
                     sha256=entry.get("sha256") or file_digest(current))
         if manifest.get("status") not in {"running"}:

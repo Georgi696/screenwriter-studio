@@ -38,6 +38,8 @@ Shot list, one row per clip:
 - `camera_move` is the one camera movement during the take (push in, pull out, pan, tilt, track, orbit, handheld, crane), or static.
 - `dialogue` holds every line spoken in the shot with its speaker, the same words as the pages. `audio` is sound effects, ambience, and music only.
 - Notes carry continuity: which character, which wardrobe, what the next shot must match.
+- Each shot's action ends in the position, posture, and state the next shot begins in (she reaches the water's edge, then kneels there). Every clip is animated from its own first frame, so a gap between one shot's end and the next shot's start shows as a jump.
+- `audio` names specific sounds close to the camera (boots on gravel, water lapping at the shore). A mood word alone ("quiet", "gentle", "peaceful") becomes silence.
 - The framing column is the camera. Follow the coverage rule below. Do not add a shot to get a new angle.
 
 """ + SHOT_TAKE_RULE + CAMERA_COVERAGE + """

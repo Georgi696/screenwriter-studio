@@ -14,7 +14,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from screenwriter_studio.images.catalog import (
-    CARD_BY_ID, EDIT_CARD, GPT_CARD, NANO_CARD, RESOLUTION_VALUES, SEEDREAM_CARD,
+    CARD_BY_ID, EDIT_CARD, GPT_CARD, NANO_CARD, NANO_PRO_CARD, RESOLUTION_VALUES, SEEDREAM_CARD,
 )
 from screenwriter_studio import pricing
 from screenwriter_studio.paths import STATE_DIR
@@ -56,13 +56,13 @@ EFFORTS = (
 IMAGE_GROUPS = (
     {"id": "cinematic", "label": "Characters, locations and shot images",
      "help": "Every shot image needs reference images, so only a model that accepts them can be used.",
-     "options": (NANO_CARD,)},
+     "options": (NANO_CARD, NANO_PRO_CARD)},
     {"id": "text", "label": "Images with readable text",
      "help": "Posters, titles, logos and interface cards.",
-     "options": (GPT_CARD, NANO_CARD)},
+     "options": (GPT_CARD, NANO_PRO_CARD, NANO_CARD)},
     {"id": "product", "label": "Product and packshot images",
      "help": "Photoreal objects with no cast reference.",
-     "options": (SEEDREAM_CARD, GPT_CARD, NANO_CARD)},
+     "options": (SEEDREAM_CARD, GPT_CARD, NANO_PRO_CARD, NANO_CARD)},
 )
 IMAGE_RESOLUTIONS = ("auto", *RESOLUTION_VALUES)
 VIDEO_SELECTIONS = ("auto", "kling", "seedance")
@@ -142,7 +142,8 @@ def _video_price(model_id: str) -> str:
 
 
 def _image_name(model_id: str) -> str:
-    return {NANO_CARD.model_id: "Nano Banana 2.1", GPT_CARD.model_id: "GPT Image · Sunburst",
+    return {NANO_CARD.model_id: "Nano Banana 2.1", NANO_PRO_CARD.model_id: "Nano Banana Pro",
+            GPT_CARD.model_id: "GPT Image · Sunburst",
             SEEDREAM_CARD.model_id: "Seedream 5 Pro", EDIT_CARD.model_id: "GPT Image · Sunburst edit"}.get(model_id, model_id)
 
 

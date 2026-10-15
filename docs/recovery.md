@@ -5,7 +5,7 @@ activated. Replace `last-train` with your production folder.
 
 ## Resume video clips
 
-Use **Resume video clips** in the desk, or run:
+Use **Animate all remaining clips** (or tick shots under **Choose clips to animate**) in the desk, or run:
 
 ```bash
 python -m screenwriter_studio.videos ../productions/last-train

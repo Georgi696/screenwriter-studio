@@ -18,6 +18,18 @@ def media_url(folder: Path, name: str) -> str:
     return "/video-media?path=" + quote(f"{folder.name}/videos/{name}", safe="")
 
 
+def audio_note(audio: dict | None) -> str:
+    """One sentence for a clip whose requested sound plays as silence."""
+    if not audio or not audio.get("quiet"):
+        return ""
+    if not audio.get("track"):
+        return "Made with sound, but the clip has no audio track."
+    mean, peak = audio.get("mean_db"), audio.get("max_db")
+    levels = f" (average {mean:.0f} dB, peak {peak:.0f} dB)" if mean is not None and peak is not None else ""
+    return (f"Very quiet sound{levels}. Raise it in your editor, or redo the shot with specific, "
+            "audible sounds in its prompt.")
+
+
 def video_status(folder: Path | None, *, options: dict | None = None) -> dict:
     result = {"ready": False, "can_plan": False, "status": "waiting", "clips": [],
               "message": "Finish and approve an image for every shot to generate its video clip."}
@@ -39,6 +51,7 @@ def video_status(folder: Path | None, *, options: dict | None = None) -> dict:
                       selection=options.get("selection", "kling" if saved_plan.get("version") == 1 else defaults["selection"]))
         for clip in saved.get("clips", []):
             item = {key: clip.get(key, "") for key in ("id", "state", "error", "model")}
+            item["audio_note"] = audio_note(clip.get("audio"))
             name = f"{clip['id']}.mp4"
             if re.fullmatch(r"s\d+\.mp4", name) and clip.get("state") == "done" and (folder / "videos" / name).is_file():
                 item["src"] = media_url(folder, name)

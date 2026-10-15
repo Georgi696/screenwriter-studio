@@ -407,6 +407,80 @@ class VideoDeliveryTest(unittest.TestCase):
             self.assertEqual(status["estimate"]["remaining"], 27 * 8)
 
 
+class ClipSoundTest(unittest.TestCase):
+    """Clips made with sound are measured; a quiet one is kept and flagged, never failed."""
+
+    QUIET = {"track": True, "quiet": True, "mean_db": -56.0, "max_db": -32.1}
+
+    def setUp(self):
+        VideoRecoveryTest.setUp(self)
+        patcher = mock.patch.object(service, "sound_check", return_value=self.QUIET)
+        self.check = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_quiet_clip_is_kept_recorded_and_explained(self):
+        self.assertEqual(service.render_video(self.folder, sound=True)["status"], "complete")
+        clip = read_json(self.folder / "videos/manifest.json")["clips"][0]
+        self.assertEqual((clip["state"], clip["audio"]), ("done", self.QUIET))
+        note = video_status(self.folder)["clips"][0]["audio_note"]
+        self.assertIn("Very quiet sound (average -56 dB, peak -32 dB)", note)
+
+    def test_silent_productions_are_not_measured(self):
+        service.render_video(self.folder, sound=False)
+        self.check.assert_not_called()
+        self.assertNotIn("audio", read_json(self.folder / "videos/manifest.json")["clips"][0])
+
+    def test_failed_measurement_never_fails_a_paid_clip(self):
+        self.check.side_effect = RuntimeError("Video processing failed: ffmpeg")
+        self.assertEqual(service.render_video(self.folder, sound=True)["status"], "complete")
+        self.assertNotIn("audio", read_json(self.folder / "videos/manifest.json")["clips"][0])
+
+    def test_each_take_keeps_its_own_levels(self):
+        service.render_video(self.folder, sound=True)
+        loud = {"track": True, "quiet": False, "mean_db": -24.0, "max_db": -6.0}
+        self.check.return_value = loud
+        service.render_video(self.folder, regenerate=["s01"])
+        clip = read_json(self.folder / "videos/manifest.json")["clips"][0]
+        self.assertEqual((clip["audio"], clip["history"][0]["audio"]), (loud, self.QUIET))
+        self.assertEqual(video_status(self.folder)["clips"][0]["audio_note"], "")
+        service.use_take(self.folder, "s01", "s01_v1.mp4")
+        clip = read_json(self.folder / "videos/manifest.json")["clips"][0]
+        self.assertEqual((clip["audio"], clip["history"][-1]["audio"]), (self.QUIET, loud))
+
+
+class SoundCheckTest(unittest.TestCase):
+    AUDIO = {"streams": [{"codec_type": "video"}, {"codec_type": "audio"}]}
+
+    def measure(self, log, info=None):
+        from screenwriter_studio.videos import probe
+        with mock.patch("shutil.which", return_value="/usr/bin/ffmpeg"), \
+                mock.patch.object(probe, "run_command", return_value=log) as run:
+            result = probe.sound_check(Path("s01.mp4"), self.AUDIO if info is None else info)
+        return result, run
+
+    def test_levels_are_read_from_volumedetect(self):
+        result, run = self.measure("[Parsed_volumedetect_0] mean_volume: -56.0 dB\n"
+                                   "[Parsed_volumedetect_0] max_volume: -32.1 dB\n")
+        self.assertEqual(result, {"track": True, "quiet": True, "mean_db": -56.0, "max_db": -32.1})
+        self.assertEqual(run.call_args.kwargs["stream"], "stderr")
+        loud, _ = self.measure("mean_volume: -22.4 dB\nmax_volume: -1.0 dB\n")
+        self.assertFalse(loud["quiet"])
+
+    def test_digital_silence_and_missing_track_are_quiet(self):
+        silent, _ = self.measure("mean_volume: -inf dB\nmax_volume: -inf dB\n")
+        self.assertEqual(silent, {"track": True, "quiet": True, "mean_db": None, "max_db": None})
+        json.dumps(silent, allow_nan=False)
+        missing, run = self.measure("", {"streams": [{"codec_type": "video"}]})
+        self.assertEqual(missing, {"track": False, "quiet": True})
+        run.assert_not_called()
+
+    def test_nothing_is_measured_without_ffmpeg_or_ffprobe(self):
+        from screenwriter_studio.videos import probe
+        with mock.patch("shutil.which", return_value=None):
+            self.assertIsNone(probe.sound_check(Path("s01.mp4"), self.AUDIO))
+        self.assertIsNone(probe.sound_check(Path("s01.mp4"), None))
+
+
 class VideoProviderTest(unittest.TestCase):
     def test_poll_contract_success_pending_and_terminal_failure(self):
         cancel = mock.Mock()

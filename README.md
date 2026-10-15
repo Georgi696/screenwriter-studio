@@ -57,24 +57,59 @@ local-only and does not create a public tunnel.
 
 ## Idea tab
 
-The Idea tab is grouped by what each choice controls. Model choices are saved automatically
-in `.state/studio_settings.json` and used by every stage. **Reset models** restores them
-without clearing the idea, the film, or the references.
+The Idea tab holds this film's choices first. The saved model choices sit in one closed
+**Models and quality** panel at the bottom, whose heading summarises them; they are saved in
+`.state/studio_settings.json` and used by every production. **Reset models** inside the panel
+restores them without clearing the idea, the film, or the references. The rough cost sits
+beside **Start production**.
 
+- **Idea:** write the story, or press **Suggest a story**. With reference images selected
+  it becomes **Suggest a story from N references**: the Development model gets, as text,
+  each reference's role, name, direction and the prompt its image was generated from (read
+  from that production's saved image plan, including edited takes, and followed back to the
+  source for copied references) and writes a brief around them. The pictures themselves are
+  not sent; requests carrying image data failed at KIE's gateway with 502 errors. An
+  uploaded picture has no saved prompt, so only its role, name and file name are used. Character references become the cast, Location
+  references the setting, an Object / Product reference the thing the story turns on,
+  Style the tone and genre, and Composition one moment's framing. Names and extra
+  directions you gave a reference are used. With text already in the box, the button
+  strengthens your note instead and keeps your idea. It is one small paid chat call (up to
+  eight references) and generates no images.
 - **Film:** length, format, and maximum shots for this production.
 - **Approval:** wait, continue, or stop after the script.
-- **Images:** how many images to generate, inspection, prompt-only planning, reference
-  images, the image models, resolution, and the models that write and inspect image prompts.
-  Shot, character and location images need reference-image support, so Nano Banana 2.1 is
-  the only choice there.
-- **Video:** Auto, Kling 3.0 or Seedance 2.5; quality (the list follows the chosen model,
-  and 4K is Kling only); sound; and how many clips are generated at once (1–4).
-- **Writing:** the chat model for development, the screenwriter, and the script editor.
-  GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna. All four accept images and strict JSON.
+- **Images:** how many images to generate, inspection, prompt-only planning, and reference
+  images.
+- **Models and quality** (saved, closed by default):
+  - *Images:* the image models, resolution, images made at once, and the models that write
+    and inspect image prompts. Shot, character and location images need reference-image
+    support. Nano Banana 2.1 and Nano Banana Pro are the choices there.
+  - *Video:* Auto, Kling 3.0 or Seedance 2.5; quality (the list follows the chosen model,
+    and 4K is Kling only); sound; and how many clips are generated at once (1–4).
+  - *Writing:* the chat model for development, the screenwriter, and the script editor.
+    GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna. All four accept images and strict JSON.
+
+An image the studio already knows (a character or location sheet, or a saved reference)
+starts in that role with its name; anything else starts as **Style** (colour, light, texture
+and mood). Change the role to **Character**, **Location**, **Object / Product**, or
+**Composition** on each selected image. Character, location and object references show their
+name on the card and are flagged until named. Open **Reference settings** to add an
+instruction or choose specific shot numbers such as `1, 3-5`. Earlier versions of an image are
+hidden behind **Show earlier versions**, the selection survives a reload, and **Use the
+references from …** restores the open production's saved choices. Character references have separate **Face** and **Wardrobe** switches.
+Use the script's exact character or location name for automatic matching; other subjects and
+composition references are assigned to relevant shots by the art director. Automatic style
+references apply to all shot and location images. Specific-shot references apply only to those
+shot images, never to shared character or location sheets. Missing shot numbers and reference
+limits stop image generation with an explanation instead of silently dropping a selection.
+These settings are saved with the production and used in image prompts, inspection and repairs.
+Existing productions using **Lock** keep their previous meaning. Role-specific image bindings
+follow Google's [multi-image prompting guidance](https://ai.google.dev/gemini-api/docs/image-generation#advanced_composition_combining_multiple_images);
+the five roles and automatic matching are studio controls, not extra provider API fields.
 
 Every chat role (the writing roles, image prompts and the image inspector) also has a
-**reasoning effort**: model default, low, medium or high. Model default sends no reasoning
-field. Low is already used on this endpoint; medium and high follow the OpenAI Responses
+**reasoning effort**: model default, low, medium or high, shown with **Show reasoning effort**
+in Models and quality (and listed in its heading when any is changed). Model default sends no
+reasoning field. Low is already used on this endpoint; medium and high follow the OpenAI Responses
 enum, but KIE does not publish its accepted values, so a rejected value shows up as a run
 error. Higher effort is slower and costs more.
 
@@ -133,6 +168,7 @@ says on the day, so treat every figure as a guide. One credit is $0.005.
 | Kling 3.0 | per second: 720p 20 with sound, 14 silent · 1080p 27 / 18 · 4K 67 |
 | Seedance 2.5 | per second: 720p 63 · 1080p 158 (no separate sound price) |
 | Nano Banana 2.1 | per image: 1K 8 · 2K 12 · 4K 18 (KIE lists Nano Banana 2; that price is used) |
+| Nano Banana Pro | per image: 1K 18 · 2K 18 · 4K 24 |
 | GPT Image Sunburst (and its edit) | per image: 1K 6 · 2K 10 · 4K 16 |
 | Seedream 5 Pro | per image: 1K 7 · 2K 14 |
 
@@ -186,7 +222,13 @@ art model; repairs incur image-generation charges too. Provider vision support
 must be available for the configured model. If unavailable, the workflow pauses
 for human review. A normal image preview (`--dry-run`) never inspects images.
 The request format follows the [OpenAI image-input documentation](https://developers.openai.com/api/docs/guides/images-vision);
-KIE compatibility is tested with mocked responses, not live paid calls.
+KIE compatibility is tested with mocked responses, not live paid calls. When KIE answers an
+inspection with 429 or a 5xx error, it is retried twice before the image waits for review; a
+timeout is not retried, because the first request may already have been billed.
+
+2K and 4K stills can exceed KIE's 8 MB upload. The copy sent to KIE (as a reference, repair
+source or clip first frame) then drops an opaque alpha channel, which keeps every pixel, or
+becomes a high-quality JPEG if that is still too large. The file on disk never changes.
 
 Images are generated and inspected side by side, 1–4 at a time (**Images generated
 at once** in **Models and quality**; default 3). A shot image starts as soon as the
@@ -220,16 +262,21 @@ python -m screenwriter_studio.images.generator "$images/jobs.json" --out "$image
 ## Generate the video clips
 
 Open the **Video clips** tab after the images are complete and approved. Every screenplay
-shot needs its own keyframe (`s01`, `s02`, etc.). Productions with a smaller image
+shot needs its own keyframe (`s01`, `s02`, etc.). With sound on and FFmpeg installed, each finished
+clip's loudness is measured; a clip that averages below −45 dB is kept but its card says it
+plays as near silence. Productions with a smaller image
 budget than their shot count cannot generate a complete video until all keyframes exist.
 
 Leave **Video model** on **Auto** to choose a suitable model for each shot,
 or require **Kling 3.0** or **Seedance 2.5** for the production. Choose **Standard
 (720p)**, **Pro (1080p, default)**, or **4K**, and whether to generate dialogue and
 sound from the shot notes. **Preview clip plan · free** writes an offline
-plan without uploads or model calls. **Generate video clips** makes additional paid
-KIE calls, one per shot; higher quality and audio affect cost. It is a separate,
-explicit step and never starts automatically after still generation.
+plan without uploads or model calls. Under **Choose clips to animate**, tick the shots
+you want and press **Animate selected**; each shows its estimated credits, and the
+other shots wait until you pick them. **Animate all clips** (later **Animate all
+remaining clips**) does every shot that is not finished yet. Each clip is a paid KIE
+call; higher quality and audio affect cost. Animating is a separate, explicit step
+and never starts automatically after still generation.
 
 `ffprobe` (part of FFmpeg) is optional. When it is on PATH the studio checks keyframe
 proportions and clip durations; without it those checks are skipped. Clips are never

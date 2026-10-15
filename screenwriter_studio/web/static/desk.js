@@ -28,12 +28,17 @@ const REFERENCE_EXT = new Set(["png", "jpg", "jpeg", "webp"]);
 const MAX_REFERENCE_BYTES = 8000000;
 
 let libraryProjects = [];
+let libraryLoaded = false;
 let deskFolder = "";
 let referenceKey = "";
-// Path -> "style" (look only) or "lock" (same subject in the shots that show it).
+// Path -> reference role, scope and optional direction.
 const selectedRefs = new Map();
 const refInfo = new Map();
 let uploadedRefs = [];
+let showEarlierRefs = false;
+// Roles whose name must match the script's character, location or object.
+const SUBJECT_ROLES = new Set(["character", "location", "object"]);
+const REFERENCE_STORE = "studio.references";
 
 function plain(text) {
   return String(text || "")
@@ -46,6 +51,7 @@ const MODEL_NAMES = {
   "kling-3.0/video": "Kling 3.0",
   "bytedance/seedance-2-5": "Seedance 2.5",
   "nano-banana-2-1": "Nano Banana",
+  "nano-banana-pro": "Nano Banana Pro",
   "gpt-image-2-5-sunburst-text-to-image": "Sunburst",
   "gpt-image-2-5-sunburst-image-to-image": "Sunburst edit",
   "seedream/5-pro-text-to-image": "Seedream"
@@ -974,6 +980,46 @@ function syncImageExtras(state) {
   }
 }
 
+// Clips you ticked to animate next. Only shots with an approved image and no finished clip can be picked.
+const clipPick = new Set();
+const CLIP_BUSY = new Set(["submitting", "polling", "downloading", "uncertain"]);
+
+function clipPickable(state, shot) {
+  const video = state.video || {};
+  const clip = clipOf(state, shot.id);
+  return Boolean(video.ready) && !video.complete && (imageOf(state, shot.id) || {}).state === "done" &&
+    !(clip && (clip.state === "done" || CLIP_BUSY.has(clip.state)));
+}
+
+function clipPrice(state, id) {
+  const planned = (((state.video || {}).shots) || []).find((shot) => shot.id === id) || {};
+  return typeof planned.credits === "number" ? planned.credits : null;
+}
+
+function syncClipPick(state) {
+  const shots = state.shots || [];
+  const running = Boolean(state.running);
+  for (const id of [...clipPick]) {
+    const shot = shots.find((item) => item.id === id);
+    if (!shot || !clipPickable(state, shot)) clipPick.delete(id);
+  }
+  const pickable = shots.filter((shot) => clipPickable(state, shot));
+  document.getElementById("clip-pick").hidden = !pickable.length;
+  const chosen = [...clipPick];
+  const total = chosen.reduce((sum, id) => sum + (clipPrice(state, id) || 0), 0);
+  const button = document.getElementById("animate-selected");
+  setText(button, chosen.length
+    ? "Animate selected (" + chosen.length + ")" + (total ? " · about " + Math.round(total).toLocaleString() + " credits" : "")
+    : "Tick the clips to animate");
+  button.disabled = running || !chosen.length;
+  document.getElementById("select-remaining").disabled = running || pickable.every((shot) => clipPick.has(shot.id));
+  document.getElementById("clear-selection").disabled = running || !chosen.length;
+  document.querySelectorAll("#video-ready-list input[type=checkbox]").forEach((box) => {
+    box.checked = clipPick.has(box.value);
+    box.disabled = running || !pickable.some((shot) => shot.id === box.value);
+  });
+}
+
 function syncVideoExtras(state) {
   const shots = state.shots || [];
   const video = state.video || {};
@@ -982,24 +1028,47 @@ function syncVideoExtras(state) {
   details.hidden = !shots.length;
   if (shots.length) {
     const readyCount = shots.filter((shot) => (imageOf(state, shot.id) || {}).state === "done").length;
-    setText(document.getElementById("video-ready-title"), "Shots and images · " + readyCount + " of " + shots.length + " ready");
-    const key = JSON.stringify(shots.map((shot) => [shot.id, (imageOf(state, shot.id) || {}).state, (imageOf(state, shot.id) || {}).src]));
+    const remaining = shots.filter((shot) => clipPickable(state, shot)).length;
+    setText(document.getElementById("video-ready-title"), video.ready && remaining
+      ? "Choose clips to animate · " + remaining + " not animated yet"
+      : "Shots and images · " + readyCount + " of " + shots.length + " ready");
+    const key = JSON.stringify([shots.map((shot) => [shot.id, (imageOf(state, shot.id) || {}).state, (imageOf(state, shot.id) || {}).src,
+      (clipOf(state, shot.id) || {}).state, clipPrice(state, shot.id)]), Boolean(video.ready), Boolean(video.complete)]);
     const list = document.getElementById("video-ready-list");
     if (list.dataset.key !== key) {
       list.dataset.key = key;
       list.replaceChildren();
+      const clipText = { done: "Clip ready", pending: "Not animated yet", failed: "Clip failed: animate it again", submitting: "Clip sending", polling: "Clip rendering", downloading: "Clip downloading", uncertain: "Clip needs checking" };
       for (const shot of shots) {
         const image = imageOf(state, shot.id);
+        const clip = clipOf(state, shot.id);
         const ok = Boolean(image && image.state === "done");
         const row = make("li", "ready-row" + (ok ? " is-ok" : ""));
+        const pick = document.createElement("input");
+        pick.type = "checkbox";
+        pick.value = shot.id;
+        pick.id = "pick-" + shot.id;
+        pick.setAttribute("aria-label", "Animate shot " + shot.number);
+        pick.addEventListener("change", () => {
+          if (pick.checked) clipPick.add(shot.id); else clipPick.delete(shot.id);
+          syncClipPick(last || state);
+        });
+        row.appendChild(pick);
         if (image && image.src) { const thumb = make("img", "ready-thumb"); thumb.src = image.src; thumb.alt = ""; thumb.loading = "lazy"; row.appendChild(thumb); }
         else row.appendChild(make("span", "ready-thumb is-empty"));
-        row.append(make("strong", "", "Shot " + shot.number + " · " + shot.duration_seconds + "s"),
-          make("span", "ready-text", ok ? "Image approved" : image ? "Image " + (image.state || "pending") + ": finish it in the Images tab" : "No image yet: generate it in the Images tab"));
+        const label = make("label", "", "Shot " + shot.number + " · " + shot.duration_seconds + "s");
+        label.htmlFor = pick.id;
+        const price = clipPrice(state, shot.id);
+        const status = !ok
+          ? (image ? "Image " + (image.state || "pending") + ": finish it in the Images tab" : "No image yet: generate it in the Images tab")
+          : (clip ? clipText[clip.state] || "Clip " + clip.state : "Image approved") +
+            (price !== null && !(clip && clip.state === "done") ? " · about " + Math.round(price).toLocaleString() + " credits" : "");
+        row.append(label, make("span", "ready-text", status));
         list.appendChild(row);
       }
-      if (!details.dataset.touched) details.open = readyCount < shots.length;
+      if (!details.dataset.touched) details.open = readyCount < shots.length || (Boolean(video.ready) && remaining > 0);
     }
+    syncClipPick(state);
   }
   const planned = video.shots || [];
   const seconds = (planned.length ? planned : shots).reduce((sum, shot) => sum + shot.duration_seconds, 0);
@@ -1247,7 +1316,9 @@ function detailChips(host, items) {
 
 function modeChip(id, mode) {
   const chip = make("span", "detail-chip" + (mode ? " is-" + mode : ""), id);
-  if (mode) chip.title = mode === "style" ? "Style reference: look only" : "Locked reference: same subject";
+  if (mode) chip.title = ({ style: "Style: colour, light and texture", character: "Character: selected face and wardrobe attributes",
+    location: "Location: setting and architecture", object: "Object / Product: shape, materials and details",
+    composition: "Composition: framing and subject placement", lock: "Locked reference: same subject" })[mode] || mode;
   return chip;
 }
 
@@ -1261,7 +1332,7 @@ const STAGE_OUTPUT = {
     if (refs.length) {
       host.appendChild(make("h4", "", "Reference images"));
       const row = make("div", "detail-chips");
-      for (const ref of refs) row.appendChild(modeChip((ref.name || ref.id) + " · " + (ref.mode === "style" ? "style" : "lock"), ref.mode));
+      for (const ref of refs) row.appendChild(modeChip((ref.name || ref.id) + " · " + (ref.mode || "lock"), ref.mode));
       host.appendChild(row);
     }
     return true;
@@ -1437,7 +1508,7 @@ function syncVideo(state) {
   document.getElementById("plan-video").disabled = running || !video.can_plan;
   const generate = document.getElementById("generate-video");
   generate.disabled = running || !video.ready || Boolean(video.complete);
-  setText(generate, video.complete ? "All clips ready" : video.saved ? "Resume video clips" : "Generate video clips");
+  setText(generate, video.complete ? "All clips ready" : video.saved ? "Animate all remaining clips" : "Animate all clips");
   const host = document.getElementById("video-clips");
   const clips = video.clips || [];
   const ids = new Set(clips.map((clip) => clip.id));
@@ -1461,7 +1532,7 @@ function syncVideo(state) {
     }
     const clipStates = { done: "ready", pending: "not started", submitting: "sending", polling: "rendering", downloading: "downloading", failed: "failed", uncertain: "needs checking" };
     setText(card.querySelector("h3"), shotLabel(state, clip.id) + " · " + modelTitle(clip.model || "Video") + " · " + (clipStates[clip.state] || clip.state));
-    setText(card.querySelector("p"), clip.error || "");
+    setText(card.querySelector("p"), clip.error || clip.audio_note || "");
     card.dataset.state = clip.state;
     const source = imageOf(state, clip.id);
     const planned = (video.shots || []).find((shot) => shot.id === clip.id) || {};
@@ -1573,7 +1644,13 @@ function paidVideoQuestion(only) {
   const video = (last && last.video) || {};
   const quality = { std: "720p", pro: "1080p", "4K": "4K" }[video.mode] || "1080p";
   const sound = video.sound === false ? "silent" : "with sound";
-  const one = (only.redo || only.shots || [])[0];
+  const picked = only.redo || only.shots || [];
+  if (picked.length > 1) {
+    const sum = picked.reduce((total, id) => total + (clipPrice(last || {}, id) || 0), 0);
+    return "Animate " + picked.length + " clips (" + picked.map((id) => shotLabel(last || {}, id)).join(", ") + ") at " + quality + ", " + sound +
+      "? Each is a paid KIE job." + (sum ? " Estimated cost: " + credits(sum) + "." : "") + " The other shots are left for later.";
+  }
+  const one = picked[0];
   const planned = (video.shots || []).find((shot) => shot.id === one) || {};
   const each = typeof planned.credits === "number" ? ", about " + credits(planned.credits) : "";
   if (only.redo) return "Regenerate " + shotLabel(last || {}, one) + "? This is a paid KIE job (" + quality + ", " + sound + each + "). The current take is kept as an earlier take.";
@@ -1617,6 +1694,16 @@ document.getElementById("image-empty-action").addEventListener("click", (event) 
 document.getElementById("video-ready").addEventListener("toggle", (event) => { event.currentTarget.dataset.touched = "1"; });
 document.getElementById("plan-video").addEventListener("click", () => startVideo(true));
 document.getElementById("generate-video").addEventListener("click", () => startVideo(false));
+document.getElementById("animate-selected").addEventListener("click", () => {
+  const order = (last && last.shots ? last.shots : []).map((shot) => shot.id);
+  const chosen = order.filter((id) => clipPick.has(id));
+  if (chosen.length) startVideo(false, { shots: chosen });
+});
+document.getElementById("select-remaining").addEventListener("click", () => {
+  for (const shot of (last && last.shots) || []) if (clipPickable(last, shot)) clipPick.add(shot.id);
+  syncClipPick(last);
+});
+document.getElementById("clear-selection").addEventListener("click", () => { clipPick.clear(); syncClipPick(last); });
 
 function paint(state, prev) {
   const stage = document.getElementById("stage");
@@ -1743,7 +1830,12 @@ function suggestLabel() {
   const button = document.getElementById("suggest");
   if (!button || button.dataset.busy === "1") return;
   const empty = !document.getElementById("idea").value.trim();
-  button.textContent = empty ? "Suggest a story" : "Strengthen this";
+  const count = selectedRefs.size;
+  const from = count ? " from " + count + (count === 1 ? " reference" : " references") : "";
+  button.textContent = empty ? "Suggest a story" + from : "Strengthen this" + (count ? " with the references" : "");
+  button.title = count
+    ? "The story is built from the prompts the selected images were generated from and their roles: characters, locations, objects, style and composition. The pictures themselves are not sent."
+    : "Select reference images below and the story will be built around them.";
 }
 
 function holdNote(message) {
@@ -1767,7 +1859,15 @@ async function suggestBrief() {
   if (button.dataset.busy === "1") return;
   button.dataset.busy = "1";
   button.disabled = true;
-  button.textContent = "Writing…";
+  button.textContent = selectedRefs.size ? "Reading the references…" : "Writing…";
+  // Only the role, name and direction matter here; shot ranges are checked when the run starts.
+  const references = [...selectedRefs].map(([path, ref]) => {
+    const item = { path, mode: ref.mode };
+    if (ref.name) item.name = ref.name;
+    if (ref.instruction) item.instruction = ref.instruction;
+    if (ref.mode === "character") { item.face = ref.face !== false; item.wardrobe = ref.wardrobe !== false; if (!item.face && !item.wardrobe) item.face = item.wardrobe = true; }
+    return item;
+  });
   try {
     const res = await fetch("/api/brief/suggest", {
       method: "POST",
@@ -1776,7 +1876,8 @@ async function suggestBrief() {
         idea: idea.value,
         runtime_seconds: document.getElementById("runtime").value ? Number(document.getElementById("runtime").value) : null,
         aspect_ratio: document.getElementById("aspect").value || null,
-        max_shots: document.getElementById("max-shots").value ? Number(document.getElementById("max-shots").value) : null
+        max_shots: document.getElementById("max-shots").value ? Number(document.getElementById("max-shots").value) : null,
+        references
       })
     });
     const data = await res.json().catch(() => ({}));
@@ -1789,7 +1890,7 @@ async function suggestBrief() {
     releaseNote();
     idea.value = data.brief;
     idea.focus();
-    toast("Brief ready to edit");
+    toast(references.length ? "Brief built around your references. Edit it freely." : "Brief ready to edit");
   } catch (error) {
     toast("Could not write a brief.", 4000);
   } finally {
@@ -1812,59 +1913,202 @@ function referenceExtension(name) {
 }
 
 function referenceCatalogKey() {
-  const parts = [deskFolder];
+  const parts = [deskFolder, showEarlierRefs];
   for (const project of libraryProjects) {
-    parts.push(project.slug + "=" + (project.images || []).map((item) => item.path).join(","));
+    parts.push(project.slug + "=" + (project.images || []).map((item) => [item.path, item.label, item.earlier].join(":")).join(","));
   }
   parts.push(uploadedRefs.map((item) => item.id).join(","));
   return parts.join("\n");
 }
 
+const REFERENCE_ROLES = [
+  ["style", "Style"], ["character", "Character"], ["location", "Location"],
+  ["object", "Object / Product"], ["composition", "Composition"]
+];
+let referenceTraySignature = "";
+// A library image the studio already knows (a character sheet, a saved reference) starts in that role.
+function newReference(hint) {
+  const known = Boolean(hint) && REFERENCE_ROLES.some(([mode]) => mode === hint.role);
+  return { mode: known ? hint.role : "style", name: known ? hint.subject || "" : "", scope: "auto", shotsText: "",
+    instruction: "", face: !(hint && hint.face === false), wardrobe: !(hint && hint.wardrobe === false) };
+}
+function unnamedReference(ref) {
+  return SUBJECT_ROLES.has(ref.mode) && !ref.name.trim();
+}
+function saveReferences() {
+  try {
+    localStorage.setItem(REFERENCE_STORE, JSON.stringify({ selected: [...selectedRefs], uploads: uploadedRefs }));
+  } catch (_) { /* The selection still works for this page. */ }
+}
+function loadReferences() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(REFERENCE_STORE) || "{}");
+    for (const [path, ref] of saved.selected || []) {
+      if (typeof path === "string" && ref && REFERENCE_ROLES.some(([mode]) => mode === ref.mode)) {
+        selectedRefs.set(path, { ...newReference(), ...ref });
+      }
+    }
+    uploadedRefs = (saved.uploads || []).filter((item) => item && typeof item.id === "string");
+  } catch (_) { /* Start with an empty selection. */ }
+}
+function savedReferencesHere() {
+  const slug = productionSlug(deskFolder);
+  const project = libraryProjects.find((item) => item.slug === slug);
+  return slug && project ? project.references || [] : [];
+}
+function restoreButton() {
+  const button = document.getElementById("reference-restore");
+  const saved = savedReferencesHere();
+  button.hidden = !saved.some((ref) => (selectedRefs.get(ref.path) || {}).mode !== ref.mode);
+  button.textContent = "Use the " + (saved.length === 1 ? "reference" : saved.length + " references") +
+    " from " + productionSlug(deskFolder);
+}
+function restoreReferences() {
+  for (const ref of savedReferencesHere()) {
+    selectedRefs.set(ref.path, { ...newReference(), mode: ref.mode, name: ref.name || "", instruction: ref.instruction || "",
+      scope: ref.scope === "shots" ? "shots" : "auto", shotsText: (ref.shots || []).join(", "),
+      face: ref.face !== false, wardrobe: ref.wardrobe !== false });
+  }
+  markReferenceSelection();
+}
+function referenceSignature() {
+  return JSON.stringify([...selectedRefs]);
+}
 function referenceSummary() {
   if (!selectedRefs.size) return "None selected";
-  const styles = [...selectedRefs.values()].filter((mode) => mode === "style").length;
-  const locks = selectedRefs.size - styles;
-  const parts = [];
-  if (styles) parts.push(styles + " style");
-  if (locks) parts.push(locks + " locked");
-  return parts.join(" · ");
+  const roles = REFERENCE_ROLES.map(([mode, label]) => {
+    const count = [...selectedRefs.values()].filter((ref) => ref.mode === mode).length;
+    return count ? count + " " + label.toLowerCase() : "";
+  }).filter(Boolean).join(" · ");
+  const unnamed = [...selectedRefs.values()].filter(unnamedReference).length;
+  return unnamed ? roles + " · " + unnamed + " to name" : roles;
+}
+function referencePayload() {
+  return [...selectedRefs].map(([path, ref]) => {
+    const shots = new Set();
+    if (ref.scope === "shots") {
+      for (const part of ref.shotsText.split(",")) {
+        const match = part.trim().match(/^(\d{1,3})(?:\s*-\s*(\d{1,3}))?$/);
+        if (!match) throw new Error("Enter reference shots as numbers or ranges, for example 1, 3-5.");
+        const first = Number(match[1]), last = Number(match[2] || match[1]);
+        if (first < 1 || last > 240 || last < first) throw new Error("Reference shots must be between 1 and 240, in ascending ranges.");
+        for (let n = first; n <= last; n++) shots.add(n);
+      }
+    }
+    if (ref.mode === "character" && !ref.face && !ref.wardrobe) throw new Error("Choose Face, Wardrobe, or both for each character reference.");
+    return { path, mode: ref.mode, name: ref.name, scope: ref.scope, shots: [...shots].sort((a, b) => a - b),
+      instruction: ref.instruction, ...(ref.mode === "character" ? { face: ref.face, wardrobe: ref.wardrobe } : {}) };
+  });
 }
 
 function renderReferenceTray() {
   const tray = document.getElementById("reference-selected");
+  const signature = referenceSignature();
+  if (signature === referenceTraySignature) return;
+  const expanded = new Set([...tray.querySelectorAll("details[open]")].map((node) => node.dataset.path));
+  referenceTraySignature = signature;
   tray.replaceChildren();
-  for (const [path, mode] of selectedRefs) {
+  for (const [path, ref] of selectedRefs) {
     const info = refInfo.get(path) || { name: path, src: "/library-media?path=" + encodeURIComponent(path) };
     const card = make("div", "ref-chosen");
+    card.dataset.path = path;
     const img = document.createElement("img");
     img.alt = "";
     img.src = info.src;
     const body = make("div", "ref-chosen-body");
-    const name = make("span", "ref-chosen-name", info.name);
+    const name = make("span", "ref-chosen-name", info.label || info.name);
     name.title = info.name;
-    const toggle = make("div", "segmented");
-    toggle.setAttribute("role", "group");
-    toggle.setAttribute("aria-label", "How to use " + info.name);
-    for (const [value, label] of [["style", "Style"], ["lock", "Lock"]]) {
-      const option = make("button", value === mode ? "is-on" : "", label);
-      option.type = "button";
-      option.setAttribute("aria-pressed", value === mode ? "true" : "false");
-      option.title = value === "style" ? "Look only, on every shot" : "Same subject, only where it appears";
-      option.addEventListener("click", () => {
-        selectedRefs.set(path, value);
-        markReferenceSelection();
-      });
-      toggle.appendChild(option);
+    const choices = (key, label, options) => {
+      const group = make("div", "segmented ref-options");
+      group.setAttribute("role", "group");
+      group.setAttribute("aria-label", label);
+      for (const [value, text] of options) {
+        const button = make("button", ref[key] === value ? "is-on" : "", text);
+        button.type = "button";
+        button.dataset.setting = key;
+        button.dataset.value = value;
+        button.setAttribute("aria-pressed", String(ref[key] === value));
+        button.addEventListener("click", () => {
+          ref[key] = value;
+          markReferenceSelection();
+          const updated = [...tray.children].find((item) => item.dataset.path === path);
+          const selected = [...updated.querySelectorAll("button[data-setting]")]
+            .find((item) => item.dataset.setting === key && item.dataset.value === value);
+          selected?.focus();
+        });
+        group.appendChild(button);
+      }
+      return group;
+    };
+    const role = choices("mode", "Role for " + info.name, REFERENCE_ROLES);
+    const settings = document.createElement("details");
+    settings.className = "ref-settings";
+    settings.dataset.path = path;
+    settings.open = expanded.has(path);
+    settings.appendChild(make("summary", "", "Reference settings"));
+    const fields = make("div", "ref-settings-fields");
+    settings.appendChild(fields);
+    // Updating the signature while typing keeps library polling from replacing focused controls.
+    const changed = () => { referenceTraySignature = referenceSignature(); };
+    const field = (title, control) => {
+      const label = make(control.tagName === "DIV" ? "div" : "label", "ref-setting", title);
+      label.appendChild(control);
+      fields.appendChild(label);
+    };
+    const named = document.createElement("input");
+    named.type = "text"; named.maxLength = 120; named.value = ref.name;
+    named.placeholder = { character: "e.g. Maya", location: "e.g. station hall", object: "e.g. red watch" }[ref.mode]
+      || "e.g. Maya, station hall, red watch";
+    const subject = SUBJECT_ROLES.has(ref.mode);
+    const warning = make("p", "ref-warning", "Name it exactly as the script does, so it is matched to the right shots.");
+    warning.hidden = !unnamedReference(ref);
+    named.addEventListener("input", () => {
+      ref.name = named.value;
+      changed();
+      warning.hidden = !unnamedReference(ref);
+      markReferenceSelection();
+    });
+    if (!subject) field("Name / subject", named);
+    const scope = choices("scope", "Applies to", [
+      ["auto", ref.mode === "style" ? "All shots" : "Relevant shots"], ["shots", "Specific shots"]
+    ]);
+    field("Applies to", scope);
+    if (ref.scope === "shots") {
+      const shots = document.createElement("input");
+      shots.type = "text"; shots.value = ref.shotsText; shots.placeholder = "1, 3-5"; shots.maxLength = 1000;
+      shots.addEventListener("input", () => { ref.shotsText = shots.value; changed(); });
+      field("Shot numbers", shots);
+      fields.appendChild(make("p", "field-note", "Use the final script’s shot numbers, for example 1, 3–5."));
     }
-    body.append(name, toggle);
+    if (ref.mode === "character") {
+      const checks = make("div", "ref-character-options");
+      for (const [key, label] of [["face", "Face"], ["wardrobe", "Wardrobe"]]) {
+        const wrapper = make("label", "");
+        const input = document.createElement("input");
+        input.type = "checkbox"; input.checked = ref[key];
+        input.addEventListener("change", () => { ref[key] = input.checked; changed(); });
+        wrapper.append(input, document.createTextNode(label));
+        checks.appendChild(wrapper);
+      }
+      fields.appendChild(checks);
+    }
+    const instruction = document.createElement("textarea");
+    instruction.rows = 2; instruction.maxLength = 1000; instruction.value = ref.instruction;
+    instruction.className = "ref-instruction";
+    instruction.placeholder = "e.g. Keep the coat, use the scripted hairstyle";
+    instruction.addEventListener("input", () => { ref.instruction = instruction.value; changed(); });
+    field("Additional instruction (optional)", instruction);
+    body.append(name, role);
+    if (subject) {
+      const inline = make("label", "ref-name-inline", "Name in the script");
+      inline.appendChild(named);
+      body.append(inline, warning);
+    }
     const remove = make("button", "ref-remove", "×");
     remove.type = "button";
     remove.setAttribute("aria-label", "Remove " + info.name);
-    remove.addEventListener("click", () => {
-      selectedRefs.delete(path);
-      markReferenceSelection();
-    });
-    card.append(img, body, remove);
+    remove.addEventListener("click", () => { selectedRefs.delete(path); markReferenceSelection(); });
+    card.append(img, body, remove, settings);
     tray.appendChild(card);
   }
   tray.hidden = !selectedRefs.size;
@@ -1872,14 +2116,20 @@ function renderReferenceTray() {
 
 function markReferenceSelection() {
   document.querySelectorAll("#reference-picker .ref-thumb").forEach((button) => {
-    const mode = selectedRefs.get(button.dataset.ref);
-    button.classList.toggle("is-selected", !!mode);
-    button.dataset.badge = mode === "lock" ? "Lock" : mode ? "Style" : "";
-    button.setAttribute("aria-pressed", mode ? "true" : "false");
+    const ref = selectedRefs.get(button.dataset.ref);
+    button.classList.toggle("is-selected", !!ref);
+    button.dataset.badge = ref ? REFERENCE_ROLES.find(([mode]) => mode === ref.mode)[1] : "";
+    button.setAttribute("aria-pressed", ref ? "true" : "false");
   });
-  document.getElementById("reference-count").textContent = referenceSummary();
+  const count = document.getElementById("reference-count");
+  count.textContent = referenceSummary();
+  count.classList.toggle("is-warning", [...selectedRefs.values()].some(unnamedReference));
+  suggestLabel();
+  document.getElementById("reference-clear").hidden = !selectedRefs.size;
   renderReferenceTray();
   briefSummary();
+  restoreButton();
+  saveReferences();
 }
 
 function referenceThumb(item) {
@@ -1887,17 +2137,18 @@ function referenceThumb(item) {
   button.type = "button";
   button.className = "ref-thumb";
   button.dataset.ref = item.path;
-  button.title = item.name || item.path;
+  button.title = item.label ? item.label + " (" + item.name + ")" : item.name || item.path;
+  button.classList.toggle("is-earlier", Boolean(item.earlier));
   const img = document.createElement("img");
   img.alt = "";
   img.src = item.src || ("/library-media?path=" + encodeURIComponent(item.path));
-  refInfo.set(item.path, { name: item.name || item.path, src: img.src });
+  refInfo.set(item.path, { name: item.name || item.path, label: item.label || "", src: img.src });
   const caption = document.createElement("span");
-  caption.textContent = item.name || item.path;
+  caption.textContent = item.label || item.name || item.path;
   button.append(img, caption);
   button.addEventListener("click", () => {
     if (selectedRefs.has(item.path)) selectedRefs.delete(item.path);
-    else selectedRefs.set(item.path, "style");
+    else selectedRefs.set(item.path, newReference(item));
     markReferenceSelection();
   });
   return button;
@@ -1929,11 +2180,26 @@ function renderReferences() {
   label.textContent = slug ? "This production · " + slug : "This production";
   const mine = [];
   const others = [];
+  const known = new Set(uploadedRefs.map((item) => item.id));
+  let earlier = 0;
   for (const project of libraryProjects) {
     const images = (project.images || []).filter((item) => REFERENCE_EXT.has(referenceExtension(item.path || item.name)));
-    if (slug && project.slug === slug) mine.push(...images);
-    else others.push(...images.map((item) => ({ ...item, name: project.slug + "/" + item.name })));
+    images.forEach((item) => known.add(item.path));
+    earlier += images.filter((item) => item.earlier).length;
+    // Earlier takes and repairs stay out of the way unless asked for or already chosen.
+    const shown = images.filter((item) => !item.earlier || showEarlierRefs || selectedRefs.has(item.path));
+    if (slug && project.slug === slug) mine.push(...shown);
+    else others.push(...shown.map((item) => ({ ...item, name: project.slug + "/" + item.name,
+      label: item.label ? project.slug + " · " + item.label : "" })));
   }
+  if (libraryLoaded) {
+    // A file deleted since the selection was saved cannot be sent.
+    for (const path of [...selectedRefs.keys()]) if (!known.has(path)) selectedRefs.delete(path);
+  }
+  setText(document.querySelector("#reference-browser > summary"), "Browse images (" + (mine.length + others.length) + ")");
+  const toggle = document.getElementById("reference-earlier");
+  toggle.hidden = !earlier;
+  toggle.textContent = showEarlierRefs ? "Hide earlier versions" : "Show " + earlier + " earlier " + (earlier === 1 ? "version" : "versions");
   fillReferenceGrid(current, mine, slug ? "No images in this production yet." : "No production is on the desk yet.");
   fillReferenceGrid(document.getElementById("reference-other"), others, "No other images in the library.");
   fillReferenceGrid(
@@ -1943,6 +2209,8 @@ function renderReferences() {
   );
   const uploads = document.getElementById("reference-uploads");
   if (!uploadedRefs.length) uploads.replaceChildren();
+  // New labels reach the chosen cards too, unless someone is typing in one.
+  if (!document.getElementById("reference-selected").contains(document.activeElement)) referenceTraySignature = "";
   markReferenceSelection();
 }
 
@@ -1981,7 +2249,7 @@ async function uploadReference(file) {
     return;
   }
   uploadedRefs.push({ id: data.id, name: file.name.split(/[/\\]/).pop(), src: data.src });
-  selectedRefs.set(data.id, "style");
+  selectedRefs.set(data.id, newReference());
   referenceKey = "";
   renderReferences();
 }
@@ -2065,9 +2333,10 @@ function ideaCost(runtime, shots) {
   const resolution = studioSettings.images.resolution === "auto" ? "1K" : studioSettings.images.resolution;
   const perImage = imagePrice(studioSettings.images.cinematic, resolution);
   const perSecond = rates.map(([name, rate]) => pricing.video_names[name] + " " + rate).join(", ");
-  out.title = "KIE prices from " + pricing.source + ", checked " + pricing.checked + ". " + Object.values(pricing.assumptions || {}).join(" ");
+  out.title = "KIE prices from " + pricing.source + ", checked " + pricing.checked + ". " + pricing.extras + " " +
+    Object.values(pricing.assumptions || {}).join(" ");
   if (!runtime) {
-    setText(out, "Cost guide: video " + perSecond + " credits per second at these settings; each image about " + (perImage || "?") + " credits at " + resolution + ". " + pricing.extras);
+    setText(out, "Cost guide · video " + perSecond + " credits per second · images about " + (perImage || "?") + " credits each at " + resolution);
     return;
   }
   const low = Math.min(...rates.map(([, rate]) => rate)) * runtime;
@@ -2076,7 +2345,7 @@ function ideaCost(runtime, shots) {
   const videoText = low === high ? credits(low)
     : Math.round(low).toLocaleString() + "–" + Math.round(high).toLocaleString() + " credits (" + dollars(low) + "–" + dollars(high) + "; per second: " + perSecond + ")";
   setText(out, "Rough cost · video " + videoText + " · shot images about " + credits(shots * (perImage || 0)) +
-    ", plus character and location images. " + pricing.extras);
+    ", plus character and location images");
 }
 
 async function startRun() {
@@ -2087,6 +2356,9 @@ async function startRun() {
     document.getElementById("idea").focus();
     return;
   }
+  let references;
+  try { references = referencePayload(); }
+  catch (error) { toast(error.message, 6000); return; }
   releaseNote();
   run.disabled = true;
   follow = true;
@@ -2106,7 +2378,7 @@ async function startRun() {
         runtime_seconds: document.getElementById("runtime").value ? Number(document.getElementById("runtime").value) : null,
         aspect_ratio: document.getElementById("aspect").value || null,
         image_count: document.getElementById("image-count").value === "" ? null : Number(document.getElementById("image-count").value),
-        references: [...selectedRefs].map(([path, mode]) => ({ path, mode }))
+        references
       })
     });
     if (!res.ok) {
@@ -2132,6 +2404,7 @@ async function pollLibrary() {
     if (data.signature === librarySig) return;
     librarySig = data.signature;
     libraryProjects = data.projects || [];
+    libraryLoaded = true;
     renderReferences();
     const nav = document.getElementById("library");
     nav.replaceChildren();
@@ -2588,7 +2861,7 @@ document.getElementById("track").addEventListener("click", (event) => {
   if (station) pickStation(station.dataset.station);
 });
 document.getElementById("detail-follow").addEventListener("click", () => pickStation(""));
-for (const name of ["idea", "film", "gate", "images", "models", "references", "video", "writing", "dry"]) {
+for (const name of ["idea", "film", "gate", "images", "inspection", "models", "references", "video", "writing", "dry"]) {
   document.getElementById("help-" + name).addEventListener("click", () => {
     const copy = document.getElementById("help-" + name + "-copy");
     const button = document.getElementById("help-" + name);
@@ -2667,6 +2940,16 @@ document.getElementById("folder-picker").addEventListener("change", (event) => {
   if (files && files.length) takeFolder(files);
   event.target.value = "";
 });
+document.getElementById("reference-restore").addEventListener("click", restoreReferences);
+document.getElementById("reference-earlier").addEventListener("click", () => {
+  showEarlierRefs = !showEarlierRefs;
+  renderReferences();
+});
+document.getElementById("reference-clear").addEventListener("click", () => {
+  if (!selectedRefs.size) return;
+  selectedRefs.clear();
+  markReferenceSelection();
+});
 document.getElementById("reference-upload").addEventListener("change", async (event) => {
   const files = [...(event.target.files || [])];
   event.target.value = "";
@@ -2737,6 +3020,7 @@ window.addEventListener("resize", () => {
   moveToken(last.station || "brief", false);
 });
 
+loadReferences();
 suggestLabel();
 renderReferences();
 briefSummary();
@@ -2896,6 +3180,7 @@ function fillRoles(host, roles, values, save) {
         values.effort[role.id] = value;
         save();
       });
+      effort.classList.add("effort-select");
       effort.title = "Reasoning effort. Higher thinks longer and costs more.";
       effort.setAttribute("aria-label", role.label + " reasoning effort");
       controls.append(effort);
@@ -2904,6 +3189,32 @@ function fillRoles(host, roles, values, save) {
     const chosen = settingsSchema.chat.models.find((model) => model.id === values.chat[role.id]);
     if (chosen) host.appendChild(modelNote(chosen.note, chosen.sources));
   }
+}
+
+// The closed Models and quality panel shows the choices that shape cost and look.
+function modelsSummary(values) {
+  const name = (options, id) => ((options || []).find((option) => option.id === id) || {}).name || id;
+  const cinematic = settingsSchema.images.groups.find((group) => group.id === "cinematic") || settingsSchema.images.groups[0];
+  const video = values.video.selection === "auto" ? "Auto video" : name(settingsSchema.video.models, values.video.selection);
+  const quality = String(settingsSchema.video.modes[values.video.mode] || values.video.mode).split(" · ").pop();
+  const writers = [...new Set(rolesIn("story").map((role) => name(settingsSchema.chat.models, values.chat[role.id])))];
+  const parts = [
+    name(cinematic.options, values.images[cinematic.id]) + " " + (values.images.resolution === "auto" ? "(auto size)" : values.images.resolution),
+    video + " " + quality + ", " + (values.video.sound ? "with sound" : "no sound"),
+    writers.join(" / ")
+  ];
+  const custom = Object.values(values.effort || {}).filter((effort) => effort !== "default").length;
+  if (custom) parts.push(custom + " custom reasoning " + (custom === 1 ? "setting" : "settings"));
+  return parts.join(" · ");
+}
+
+let effortShown = null;
+function syncEffort(values) {
+  const toggle = document.getElementById("show-effort");
+  // Shown from the start when a role already has a changed effort; the summary line names custom efforts either way.
+  if (effortShown === null) effortShown = Object.values(values.effort || {}).some((effort) => effort !== "default");
+  toggle.checked = effortShown;
+  document.getElementById("models-panel").classList.toggle("show-effort", effortShown);
 }
 
 function renderSettings() {
@@ -2953,6 +3264,8 @@ function renderSettings() {
 
   fillRoles(writing, rolesIn("story"), values, save);
   writing.appendChild(make("p", "field-note", "Astra is the strongest. Luna is the faster GPT-6. Sol is the lighter choice for the script editor."));
+  setText(document.getElementById("models-summary"), modelsSummary(values));
+  syncEffort(values);
   briefEstimate();
 }
 
@@ -3007,9 +3320,14 @@ async function loadSettings(reset) {
       status.hidden = false;
       setText(status, error.message);
     }
+    setText(document.getElementById("models-summary"), "Model settings could not be loaded.");
   }
 }
 document.getElementById("settings-reset").addEventListener("click", () => loadSettings(true));
+document.getElementById("show-effort").addEventListener("change", (event) => {
+  effortShown = event.target.checked;
+  document.getElementById("models-panel").classList.toggle("show-effort", effortShown);
+});
 loadSettings();
 
 

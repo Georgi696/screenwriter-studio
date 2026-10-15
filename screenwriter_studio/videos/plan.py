@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from screenwriter_studio.images.upload import SOURCE_LIMIT
 from screenwriter_studio.schemas import Development, Screenplay
 from screenwriter_studio.videos.catalog import (
     CARDS, CHECKED, KLING, SEEDANCE, SELECTIONS, capability_error, choose_model,
@@ -115,8 +116,8 @@ def build_plan(folder: Path, *, mode: str = "pro", sound: bool = True,
         source = local_file(folder, str(record.get("path") or ""))
         if source.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
             raise ValueError(f"{shot_id}: unsupported keyframe format.")
-        if not 0 < source.stat().st_size <= 8_000_000:
-            raise ValueError(f"{shot_id}: keyframes must be nonempty and at most 8 MB.")
+        if not 0 < source.stat().st_size <= SOURCE_LIMIT:
+            raise ValueError(f"{shot_id}: keyframes must be nonempty and at most {SOURCE_LIMIT // 1_000_000} MB.")
         prompt = (
             "SUBJECT: Preserve the subjects and identities in the supplied first frame.\n"
             "ENVIRONMENT: Continue the setting shown in the first frame.\n"

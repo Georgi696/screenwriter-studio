@@ -26,10 +26,7 @@
     <div>
       <p class="eyebrow">Desk</p>
       <h1>Screenwriter Studio</h1>
-    </div>
-    <div class="stats">
-      <button class="ghost" id="new-session" type="button">New production</button>
-      <button class="ghost" id="toggle-library" type="button">Hide library</button>
+      <p id="folder" hidden aria-live="polite"></p>
     </div>
   </header>
   <div class="tabs">
@@ -43,7 +40,11 @@
       <button class="tab" type="button" role="tab" data-tab="reader" aria-selected="false" title="Read a script or view an image from the library (shortcut 6)">Viewer</button>
       <span id="tab-glider"></span>
     </div>
-    <button class="ghost is-on" id="follow" type="button" title="Switch tabs automatically as the production moves forward">Auto-follow</button>
+    <div class="tab-actions">
+      <button class="ghost" id="new-session" type="button">New production</button>
+      <button class="ghost" id="toggle-library" type="button">Hide library</button>
+      <button class="ghost is-on" id="follow" type="button" title="Switch tabs automatically as the production moves forward">Auto-follow</button>
+    </div>
   </div>
   <div id="next-step" role="status" aria-live="polite">
     <span class="next-label">Next</span>
@@ -53,7 +54,7 @@
   <form id="brief-form">
     <div class="panel-head">
       <h2>Describe your film.</h2>
-      <p class="lead">Start with the idea. Film and Approval shape the story. Images and Video choose how the pictures and clips are made. Image credits start only after you approve the script.</p>
+      <p class="lead">Start with the idea. Film and Approval shape the story, and Images sets how many pictures are made and what they follow. Image credits start only after you approve the script.</p>
       <p id="settings-status" class="field-note" role="alert" hidden></p>
     </div>
     <div class="brief-layout">
@@ -100,7 +101,6 @@
           </div>
         </div>
         <p class="field-note" id="format-estimate" role="status" aria-live="polite">Leave these empty and the idea decides. Shots last 3–30 seconds and together fill the length exactly. A clip longer than 15 seconds uses Seedance 2.5.</p>
-        <p class="field-note cost-line" id="idea-cost" hidden></p>
       </section>
       <section class="brief-section" aria-labelledby="gate-heading">
         <div class="section-head">
@@ -122,21 +122,23 @@
               <h3 id="images-heading">Images</h3>
               <button class="help" id="help-images" type="button" aria-expanded="false" aria-label="What is this?">?</button>
             </div>
-            <p class="help-copy" id="help-images-copy" hidden>Leave the count blank and the shot list sets it, including characters and locations. Each shot image is the first frame of its clip. Image credits start only after you approve the script.</p>
-            <p class="section-lead">How many images this production makes, which pictures they follow, and which models make them.</p>
+            <p class="help-copy" id="help-images-copy" hidden>Images to generate caps new images for this run, including characters and locations; leave it blank and the shot list sets the count. Each shot image is the first frame of its clip. Image credits start only after you approve the script.</p>
+            <p class="section-lead">How many images this production makes and which pictures they follow.</p>
             <div class="limit-field single">
               <label for="image-count">Images to generate</label>
               <input id="image-count" class="limit" type="number" min="1" max="240" step="1" placeholder="Automatic" inputmode="numeric">
             </div>
-            <p class="field-note">Caps new images for this run, including characters and locations. Leave blank and the shot list sets the count. Each shot image is the first frame of its clip.</p>
             <div id="inspection-home">
               <div id="inspection-field">
-                <label for="inspection-mode">Image inspection</label>
+                <div class="label-row">
+                  <label for="inspection-mode">Image inspection</label>
+                  <button class="help" id="help-inspection" type="button" aria-expanded="false" aria-label="What is this?">?</button>
+                </div>
                 <select id="inspection-mode">
                   <option value="manual">Manual — approve proposed repairs</option>
                   <option value="auto">Auto — up to two repairs per image</option>
                 </select>
-                <p class="help-copy">Every image is checked for accuracy. Manual shows findings before you approve a repair. Inspection and repairs use additional credits.</p>
+                <p class="help-copy" id="help-inspection-copy" hidden>Every image is checked for accuracy. Manual shows findings before you approve a repair. Inspection and repairs use additional credits.</p>
               </div>
             </div>
             <div id="dry-home">
@@ -146,29 +148,33 @@
                 <p class="help-copy" id="help-dry-copy" hidden>The crew still makes paid chat calls to develop, write, review, and write the prompts for the images. No image credits are spent. This is not a free offline run.</p>
               </div>
             </div>
-            <h4 class="block-label">Image models <span class="optional">Saved</span> <button class="help" id="help-models" type="button" aria-expanded="false" aria-label="What is this?">?</button></h4>
-            <p class="help-copy" id="help-models-copy" hidden>Shot, character, and location images need a model that accepts reference images. A model that cannot do the chosen size falls back to Nano Banana.</p>
-            <p class="field-note">Used by every production. A change applies the next time images are made. Only models with a checked request format are listed.</p>
-            <div id="settings-images"><p class="field-note">Loading image models…</p></div>
           </div>
           <div class="ref-column" id="reference-picker">
             <div class="section-head">
               <h4 id="reference-heading">Reference images <span class="optional">Optional</span></h4>
               <button class="help" id="help-references" type="button" aria-expanded="false" aria-label="What is this?">?</button>
               <p class="ref-count" id="reference-count">None selected</p>
+              <button class="ref-clear" id="reference-clear" type="button" hidden>Clear all</button>
             </div>
-            <p class="help-copy" id="help-references-copy" hidden>Optional pictures the stills can follow. Style matches the grade, light, and texture on every shot. The story, cast, and places stay free. Lock keeps a face, costume, or place, only in the shots that show it. Choose images from this production, from other productions, or upload a PNG, JPEG, or WebP.</p>
-            <div class="mode-key">
-              <p><strong>Style</strong> Matches the grade, light, and texture on every shot. The story, cast, and places stay free.</p>
-              <p><strong>Lock</strong> Keeps this face, costume, or place, only in the shots that show it.</p>
+            <div class="help-copy" id="help-references-copy" hidden>
+              <p>Choose images from this production, other productions, or upload a PNG, JPEG, or WebP. An image the studio already knows, such as a character sheet or a saved reference, starts in its role and name; anything else starts as Style. Name character, location and object references exactly as the script does so they match automatically. Reference settings limit a reference to specific shots or add direction.</p>
+              <div class="mode-key" aria-label="Reference roles">
+                <p><strong>Style</strong> Colour, light, texture and mood.</p>
+                <p><strong>Character</strong> Face, appearance and wardrobe, each switchable.</p>
+                <p><strong>Location</strong> Setting, architecture and spatial details.</p>
+                <p><strong>Object / Product</strong> Shape, materials and identifying details.</p>
+                <p><strong>Composition</strong> Framing, camera angle and subject placement.</p>
+              </div>
             </div>
+            <button class="ghost ref-restore" id="reference-restore" type="button" hidden></button>
             <div id="reference-selected" class="ref-tray" aria-label="Selected references"></div>
-            <details id="reference-browser" open>
+            <details id="reference-browser">
               <summary>Browse images</summary>
               <p class="ref-label" id="reference-current-label">This production</p>
               <div id="reference-current" class="ref-grid" role="group" aria-labelledby="reference-current-label"></div>
               <p class="ref-label" id="reference-other-label">Other productions</p>
               <div id="reference-other" class="ref-grid" role="group" aria-labelledby="reference-other-label"></div>
+              <button class="ref-clear ref-earlier" id="reference-earlier" type="button" hidden></button>
               <div id="reference-uploads" class="ref-grid" aria-label="Uploaded references"></div>
               <label class="upload" for="reference-upload">Upload a PNG, JPEG, or WebP
                 <input id="reference-upload" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" multiple>
@@ -177,31 +183,41 @@
           </div>
         </div>
       </section>
-      <section class="brief-section" aria-labelledby="video-heading-brief">
-        <div class="section-head">
-          <h3 id="video-heading-brief">Video</h3>
-          <button class="help" id="help-video" type="button" aria-expanded="false" aria-label="What is this?">?</button>
-          <span class="optional">Saved</span>
+      <details class="brief-section span-all models-panel" id="models-panel">
+        <summary>
+          <span class="models-title"><h3 id="models-heading">Models and quality</h3><span class="optional">Saved</span></span>
+          <span class="models-summary" id="models-summary">Loading model settings…</span>
+        </summary>
+        <div class="models-body">
+          <p class="section-lead">Used by every production. A change applies the next time that step runs; clips already made keep the settings they were made with.</p>
+          <div class="models-grid">
+            <div class="models-col">
+              <h4 class="block-label" id="models-images-heading">Images <button class="help" id="help-models" type="button" aria-expanded="false" aria-label="What is this?">?</button></h4>
+              <p class="help-copy" id="help-models-copy" hidden>Shot, character, and location images need a model that accepts reference images. A model that cannot do the chosen size falls back to Nano Banana. Only models with a checked request format are listed.</p>
+              <div id="settings-images"><p class="field-note">Loading image models…</p></div>
+            </div>
+            <div class="models-col">
+              <h4 class="block-label" id="video-heading-brief">Video <button class="help" id="help-video" type="button" aria-expanded="false" aria-label="What is this?">?</button></h4>
+              <p class="help-copy" id="help-video-copy" hidden>Kling is 3–15 seconds and includes 4K. Seedance is 4–30 seconds, up to 1080p. Auto picks a compatible model for each shot.</p>
+              <div id="settings-video"><p class="field-note">Loading video settings…</p></div>
+              <h4 class="block-label" id="writing-heading">Writing <button class="help" id="help-writing" type="button" aria-expanded="false" aria-label="What is this?">?</button></h4>
+              <p class="help-copy" id="help-writing-copy" hidden>Development locks the story, the screenwriter writes the pages and the shot list, and the script editor can send a draft back twice.</p>
+              <div id="settings-writing"><p class="field-note">Loading writing models…</p></div>
+            </div>
+          </div>
+          <div class="models-foot">
+            <label class="check"><input id="show-effort" type="checkbox"> Show reasoning effort (advanced)</label>
+            <button class="ghost" id="settings-reset" type="button" title="Restore image, video, and writing models to the defaults. The idea, film, and references stay as they are.">Reset models</button>
+          </div>
         </div>
-        <p class="help-copy" id="help-video-copy" hidden>Saved for every production. Kling is 3–15 seconds and includes 4K. Seedance is 4–30 seconds, up to 1080p. Auto picks a compatible model for each shot.</p>
-        <p class="section-lead">How each approved image becomes a clip. A change applies the next time clips are generated. Clips already made keep the settings they were made with.</p>
-        <div id="settings-video"><p class="field-note">Loading video settings…</p></div>
-      </section>
-      <section class="brief-section" aria-labelledby="writing-heading">
-        <div class="section-head">
-          <h3 id="writing-heading">Writing</h3>
-          <button class="help" id="help-writing" type="button" aria-expanded="false" aria-label="What is this?">?</button>
-          <span class="optional">Saved</span>
-        </div>
-        <p class="help-copy" id="help-writing-copy" hidden>Saved for every production. Development locks the story, the screenwriter writes the pages and the shot list, and the script editor can send a draft back twice.</p>
-        <p class="section-lead">Models for the story, the screenplay, and the script editor. A change applies the next time those steps run.</p>
-        <div id="settings-writing"><p class="field-note">Loading writing models…</p></div>
-      </section>
+      </details>
     </div>
     <div class="brief-actions">
-      <p id="brief-summary" aria-live="polite"></p>
+      <div class="brief-status">
+        <p id="brief-summary" aria-live="polite"></p>
+        <p class="cost-line" id="idea-cost" hidden></p>
+      </div>
       <div class="actions">
-        <button class="ghost" id="settings-reset" type="button" title="Restore image, video, and writing models to the defaults. The idea, film, and references stay as they are.">Reset models</button>
         <button class="go" id="run" type="submit">Start production</button>
       </div>
     </div>
@@ -212,7 +228,6 @@
       <div>
         <p class="kicker">Status</p>
         <p id="note">Waiting for a brief.</p>
-        <p id="folder" hidden></p>
         <p id="plaque" hidden></p>
         <div id="proceed-row" hidden>
           <button type="button" id="proceed" class="go">Proceed with this draft</button>
@@ -225,8 +240,10 @@
       <div class="hud-side">
         <button type="button" id="review-stills" class="go" hidden>Review images</button>
         <button type="button" id="resume-images" class="ghost" hidden>Resume saved image work</button>
-        <button type="button" id="stop" class="stop" hidden>Stop</button>
-        <span id="live" hidden><i></i>Live</span>
+        <div class="run-state">
+          <span id="live" hidden><i></i>Live</span>
+          <button type="button" id="stop" class="stop" hidden>Stop</button>
+        </div>
       </div>
     </div>
     <div id="pips" aria-hidden="true">
@@ -313,6 +330,11 @@
       <details id="video-ready" hidden>
         <summary id="video-ready-title">Shots and images</summary>
         <ol id="video-ready-list"></ol>
+        <div class="toolbar clip-pick" id="clip-pick" hidden>
+          <button type="button" class="go" id="animate-selected" disabled>Animate selected</button>
+          <button type="button" class="ghost" id="select-remaining">Select all not animated</button>
+          <button type="button" class="ghost" id="clear-selection">Clear</button>
+        </div>
       </details>
       <p id="video-summary"></p>
       <p id="video-cost" class="cost-line" hidden></p>
@@ -320,7 +342,7 @@
       <p class="field-note">Auto selects a compatible model for each shot’s action, camera, timing, language, and quality. Review the choices and prompts below. Video generation uses additional KIE credits; model, quality, and sound affect cost. Resume keeps saved model choices and tasks. Each clip can be redone on its own. Retrying failed provider jobs may incur a new charge.</p>
       <div class="toolbar">
         <button type="button" class="ghost" id="plan-video" disabled>Preview clip plan · free</button>
-        <button type="button" class="go" id="generate-video" disabled>Generate video clips</button>
+        <button type="button" class="go" id="generate-video" disabled>Animate all clips</button>
         <a class="video-download" id="download-all" href="/video-zip" hidden download>Download all clips (.zip)</a>
       </div>
       <div id="video-clips" class="video-clips"></div>

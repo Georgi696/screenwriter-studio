@@ -159,5 +159,25 @@ class EditorConvergenceTest(unittest.TestCase):
         self.assertIn("approved", [e.kind for e in events])
 
 
+
+class ContinuityRulesTest(unittest.TestCase):
+    """Rules from the reference test film: gloves kept against the script, shots that did not cut together, silent sound."""
+
+    def test_script_changes_beat_the_reference_picture(self):
+        from screenwriter_studio.crew.art import INSTRUCTIONS as ART
+        from screenwriter_studio.images.inspection import INSTRUCTIONS as INSPECTOR
+        from screenwriter_studio.references import reference_direction
+        self.assertIn("the script wins", ART)
+        self.assertIn("judge that detail\nagainst the production, not the reference", INSPECTOR)
+        self.assertIn("follow the prompt", reference_direction({"mode": "character"}))
+
+    def test_shots_hand_over_position_and_screen_direction(self):
+        from screenwriter_studio.crew.art import INSTRUCTIONS as ART
+        from screenwriter_studio.crew.writer import writer_agent
+        self.assertIn("Keep screen direction across consecutive shots", ART)
+        self.assertIn("ends in the position, posture, and state the next shot begins in", writer_agent.instructions)
+        self.assertIn("A mood word alone", writer_agent.instructions)
+
+
 if __name__ == "__main__":
     unittest.main()

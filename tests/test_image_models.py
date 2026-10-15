@@ -10,6 +10,7 @@ from screenwriter_studio.images.catalog import (
     EDIT_CARD,
     GPT_CARD,
     NANO_CARD,
+    NANO_PRO_CARD,
     SEEDREAM_CARD,
     art_director_card,
 )
@@ -28,12 +29,13 @@ class ArtDirectorCardTest(unittest.TestCase):
         self.assertNotIn(card, art_user_message(development, screenplay))
         message = art_agent.instructions
         self.assertIn(CHECKED, message)
-        for model in (NANO_CARD, GPT_CARD, SEEDREAM_CARD, EDIT_CARD):
+        for model in (NANO_CARD, NANO_PRO_CARD, GPT_CARD, SEEDREAM_CARD, EDIT_CARD):
             self.assertIn(model.model_id, message)
             for source in model.sources:
                 self.assertIn(source, message)
         self.assertIn("image_input", message)
         self.assertIn("at most 10 image URLs", message)
+        self.assertIn("at most 8 image URLs", message)
         self.assertIn("up to 4 characters", message)
         self.assertIn("input_urls", message)
         self.assertIn("at most 16 image URLs", message)
@@ -93,6 +95,12 @@ class RequestFieldTest(unittest.TestCase):
         urls = [f"https://example.com/{index}.png" for index in range(20)]
         wide = build_payload(EDIT_CARD.model_id, "Change the cup.", "1:1", "1K", urls)
         self.assertEqual(len(wide["input"]["input_urls"]), EDIT_CARD.max_images)
+
+        pro = build_payload(NANO_PRO_CARD.model_id, "A still.", "16:9", "2K", many)
+        self.assertEqual(pro["model"], "nano-banana-pro")
+        self.assertEqual(set(pro["input"]), {"prompt", "aspect_ratio", "resolution", "output_format", "image_input"})
+        self.assertEqual(len(pro["input"]["image_input"]), NANO_PRO_CARD.max_images)
+        self.assertEqual(pro["input"]["output_format"], "png")
 
     def test_ratio_and_resolution_follow_the_card(self):
         self.assertEqual(choose({"kind": "poster"}, "16:9", "2K")[0], GPT_CARD.model_id)

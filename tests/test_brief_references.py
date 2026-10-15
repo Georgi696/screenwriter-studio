@@ -80,6 +80,20 @@ class BriefRunTest(unittest.TestCase):
             self.assertEqual(caught.exception.code, 400)
             start.assert_not_called()
 
+    def test_run_preserves_reference_role_settings(self):
+        reference = {"path": "hall/images/s01.png", "mode": "character", "name": "Maya",
+                     "scope": "shots", "shots": [1, 3], "face": True, "wardrobe": False,
+                     "instruction": "Keep the freckles."}
+        with mock.patch("screenwriter_studio.web.server.start_crew") as start:
+            self._post_json({"idea": "test", "references": [reference]})
+            self.assertEqual(start.call_args.kwargs["references"], [reference])
+        for extra in ({"shots": [True]}, {"face": "false"}, {"scope": "shots", "shots": []}):
+            with mock.patch("screenwriter_studio.web.server.start_crew") as start:
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    self._post_json({"idea": "test", "references": [{**reference, **extra}]})
+                self.assertEqual(caught.exception.code, 400)
+                start.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -53,6 +53,7 @@ from screenwriter_studio.images.catalog import (
     prompt_length_error,
     ratio_allowed,
 )
+from screenwriter_studio.images.upload import SOURCE_LIMIT, UPLOAD_LIMIT, fit_image
 from screenwriter_studio.models import IMAGE_MODEL_BY_KIND, load_kie_api_key as load_api_key
 
 CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
@@ -282,7 +283,7 @@ def download(url: str, dest: Path) -> None:
     temporary.replace(dest)
 
 
-_MAX_REFERENCE_BYTES = 8_000_000
+_MAX_REFERENCE_BYTES = SOURCE_LIMIT
 _REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
@@ -355,13 +356,13 @@ def style_reference_ids(spec: dict) -> set[str]:
 
 
 def reference_data_url(path: Path) -> str:
-    """Encode a workspace image as a data URL for the upload API."""
+    """Encode a workspace image as a data URL for the upload API, shrunk to the upload cap."""
     data = path.read_bytes()
     if not data or len(data) > _MAX_REFERENCE_BYTES:
         raise ValueError("Reference image is too large.")
-    kind = _header_kind(data[:12])
-    if kind is None:
+    if _header_kind(data[:12]) is None:
         raise ValueError(f"Reference {path.name} must be a PNG, JPEG, or WebP image.")
+    data, kind = fit_image(data, UPLOAD_LIMIT)
     # Label the upload by its real bytes: a JPEG saved as .png must not be sent as image/png.
     mime = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}[kind]
     return f"data:{mime};base64," + base64.b64encode(data).decode()

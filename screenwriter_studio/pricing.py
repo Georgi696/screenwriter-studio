@@ -7,7 +7,7 @@ prompts and inspections) are billed per token and are not estimated here.
 
 from __future__ import annotations
 
-from screenwriter_studio.images.catalog import EDIT_CARD, GPT_CARD, NANO_CARD, SEEDREAM_CARD
+from screenwriter_studio.images.catalog import EDIT_CARD, GPT_CARD, NANO_CARD, NANO_PRO_CARD, SEEDREAM_CARD
 from screenwriter_studio.videos.catalog import CARDS as VIDEO_CARDS, KLING, SEEDANCE, choose_model
 
 CHECKED = "2026-10-14"
@@ -24,11 +24,14 @@ VIDEO_RATES = {
 # Credits per image by output size. Seedream 5 Pro sends basic quality for 1K and high for 2K.
 IMAGE_RATES = {
     NANO_CARD.model_id: {"1K": 8, "2K": 12, "4K": 18},
+    NANO_PRO_CARD.model_id: {"1K": 18, "2K": 18, "4K": 24},
     GPT_CARD.model_id: {"1K": 6, "2K": 10, "4K": 16},
     EDIT_CARD.model_id: {"1K": 6, "2K": 10, "4K": 16},
     SEEDREAM_CARD.model_id: {"1K": 7, "2K": 14},
 }
-ASSUMPTIONS = {NANO_CARD.model_id: "KIE's price list names Nano Banana 2, not 2.1; that price is used."}
+ASSUMPTIONS = {
+    NANO_CARD.model_id: "KIE's price list names Nano Banana 2, not 2.1; that price is used.",
+}
 EXTRAS = "Chat calls, image inspections and repairs are extra."
 
 

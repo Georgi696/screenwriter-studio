@@ -26,6 +26,7 @@ Use `poster`, `title`, `logo`, `ui`, or `text` only when words inside the image 
 Use `product` or `packshot` only for a photoreal object with no cast reference. One product still at most.
 Do not use `edit`. End frames, sheets, and variants are extra images, and this pass does not generate them.
 If the user message lists locked reference images, those faces, costumes, and places stay. Attach a locked id in `references` only on the stills whose shot shows that subject. Do not invent new character or location jobs for subjects the references already show. The piece is a different plot, not a rewrite of the previous story. Do not generate the locked images again.
+A reference shows a subject at one moment. When the script or a character lock changes what a reference shows (clothing taken off or put on, dirt, wounds, wet hair, a prop in hand), the script wins: write the changed state as a visible fact in every keyframe it applies to, describing what is present ("bare hands coated in black soot"), and state hands, faces, and clothing the action touches explicitly.
 If the user message lists style references, they set the look only. Do not build jobs from their people or places. Describe their grade, light, lens, and texture in words in each prompt. The stills step attaches style ids itself.
 If the user message sets how many new stills to generate, that count is the still budget. Do not write more jobs than that number. Locked references do not count. When that count is below the shot list, cover only as many shots as fit.
 
@@ -40,6 +41,7 @@ Never ask for readable words or numbers on props, screens, or clothing; image mo
 
 """ + CAMERA_COVERAGE + """
 Paste each character description verbatim into every keyframe that contains them.
+Keep screen direction across consecutive shots: write each character's side of frame and facing ("Lena frame-left, facing right toward the water"). A subject who faces or moves frame-right keeps doing so in the next shot unless that shot's action turns them. Each keyframe starts in the position, posture, and state where the previous shot's action ends.
 Put the aspect ratio in the prompt as well as in the aspect_ratio field (character sheets say 3:4 portrait; every other job uses the film's ratio).
 Attach references only to character, location, and keyframe jobs. Text and product jobs take no references.
 resolution is 1K unless the brief asked for a final.

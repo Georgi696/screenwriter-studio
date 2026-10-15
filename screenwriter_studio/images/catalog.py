@@ -19,6 +19,10 @@ NANO_RATIO_VALUES = (
     "1:1", "2:3", "3:2", "1:4", "4:1", "3:4", "4:3", "4:5", "5:4",
     "1:8", "8:1", "9:16", "16:9", "21:9", "auto",
 )
+# KIE's Nano Banana Pro enum. It does not list 1:4, 4:1, 1:8, or 8:1.
+NANO_PRO_RATIO_VALUES = (
+    "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9", "auto",
+)
 # KIE enum. The image-to-image x-apidog labels also name 5:4, 4:5, 2:1, 1:2,
 # 3:1, 1:3, and 9:21; those values are not in the enum, so they are not used.
 SUNBURST_RATIO_VALUES = (
@@ -93,6 +97,38 @@ NANO_CARD = ImageModel(
         "Google documents character consistency for up to 4 characters and object fidelity for up to 10 objects. "
         "The Gemini API allows a mix of up to 14 reference images; KIE image_input allows 10, so do not attach more than 10. "
         "Accepted files are jpeg, png, or webp, each up to 30MB."
+    ),
+)
+
+NANO_PRO_CARD = ImageModel(
+    model_id="nano-banana-pro",
+    kinds=("character", "location", "keyframe", "scene", "poster", "title", "logo", "ui", "text", "product", "packshot"),
+    purpose="Cinematic stills with reference images, including readable text and products.",
+    sources=(
+        "https://docs.kie.ai/market/google/pro-image-to-image",
+        "https://kie.ai/nano-banana-pro",
+    ),
+    prompt_min=0,
+    prompt_max=20000,
+    ratios=NANO_PRO_RATIO_VALUES,
+    resolutions=RESOLUTION_VALUES,
+    resolution_default="1K",
+    documented_fields=("prompt", "image_input", "aspect_ratio", "resolution", "output_format"),
+    field_prompt="prompt",
+    field_ratio="aspect_ratio",
+    field_resolution="resolution",
+    field_images="image_input",
+    max_images=8,
+    image_required=False,
+    field_output_format="output_format",
+    output_format="png",
+    field_quality="",
+    one_k_only=(),
+    prompt_rules=(
+        "Write a specific prose description: subject, purpose, and a concrete camera angle, height, and subject distance. "
+        "image_input takes up to 8 reference image URLs (jpeg, png, or webp, each up to 30MB), not file contents. "
+        "aspect_ratio and resolution set the frame. There is no negative_prompt field: describe the scene that should appear. "
+        "This request sends output_format png."
     ),
 )
 
@@ -195,7 +231,7 @@ EDIT_CARD = ImageModel(
     ),
 )
 
-CARDS = (NANO_CARD, GPT_CARD, SEEDREAM_CARD, EDIT_CARD)
+CARDS = (NANO_CARD, NANO_PRO_CARD, GPT_CARD, SEEDREAM_CARD, EDIT_CARD)
 CARD_BY_ID = {card.model_id: card for card in CARDS}
 
 NANO_BANANA_MODEL = NANO_CARD.model_id

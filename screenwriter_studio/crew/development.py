@@ -37,6 +37,8 @@ Style bible:
 - look, palette, lighting: concrete, repeatable, no mood adjectives standing alone.
 - Each character description is a physical lock: age, skin, hair, clothes, one detail. No interior life.
 - Locations are places the camera can stand, with time of day and weather.
+- When a reference picture shows a character or place, its lock holds only what the picture does not
+  show and what this story changes. Follow the reference naming rule in the user message.
 
 slug is lowercase, hyphenated, taken from the title.
 """

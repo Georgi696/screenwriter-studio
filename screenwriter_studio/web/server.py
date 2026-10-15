@@ -51,6 +51,8 @@ from screenwriter_studio.studio import ScreenwriterStudio, _load_settings as loa
 from screenwriter_studio.pricing import production_estimate, remaining_images
 from screenwriter_studio.schemas import Development, Screenplay
 from screenwriter_studio.images.generator import run_batch
+from screenwriter_studio.images.upload import SOURCE_LIMIT
+from screenwriter_studio.references import covered_sheets
 from screenwriter_studio.images.review import (
     apply_live_keep, attach_image_task, forget_image_submission, restore_version, validate_decision, versions,
 )
@@ -72,7 +74,8 @@ DEFAULT_IDEA = "A 30-second vertical film about someone who keeps a seat on the 
 _MAX_BODY = 100_000
 _MAX_UPLOAD_BODY = 12_000_000
 _MAX_TEXT = 200_000
-_MAX_IMAGE = 8_000_000
+_MAX_IMAGE = SOURCE_LIMIT
+_MAX_UPLOADED_IMAGE = 8_000_000
 _REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 _STOP_NOTE = "Generation stopped. Saved images can be resumed."
 _VIDEO_STOP_NOTE = "Generation stopped. Use Resume video clips to continue saved work."
@@ -256,7 +259,7 @@ def cost_view(folder: Path | None, proceed: bool) -> dict:
             development = Development.model_validate(read_video_json(folder / "00_development.json"))
             screenplay = Screenplay.model_validate(read_video_json(folder / "01_screenplay.json"))
             image_count, references = load_run_settings(folder)
-            locked = sum(1 for item in references if item.get("mode", "lock") == "lock")
+            locked = covered_sheets(references, [c.name for c in development.characters], list(development.locations))
             result["estimate"] = production_estimate(development, screenplay, values=studio_settings.load(),
                                                      image_count=image_count, locked_count=locked)
         spec_path = folder / "images/jobs.json"
@@ -416,8 +419,86 @@ def library_catalog() -> tuple[list[dict], str]:
             stat = resolved.stat()
             bucket.append({"path": relative, "name": resolved.relative_to(folder.resolve()).as_posix()})
             signature.append(f"{relative}:{stat.st_mtime_ns}:{stat.st_size}")
-        projects.append({"slug": folder.name, "documents": documents, "images": images, "videos": videos})
+        hints, saved = _image_hints(folder, root)
+        for item in images:
+            item.update(hints.get(item["path"], {}))
+        projects.append({"slug": folder.name, "documents": documents, "images": images, "videos": videos,
+                         "references": saved})
     return projects, "|".join(signature)
+
+
+_ROLE_LABELS = {"style": "style", "character": "character", "location": "location",
+                "object": "object", "composition": "composition"}
+_KIND_ROLES = {"character": "character", "location": "location", "product": "object", "packshot": "object"}
+
+
+def _read_saved(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _image_hints(folder: Path, root: Path) -> tuple[dict[str, dict], list[dict]]:
+    """What the studio already knows about a production's images, so the picker need not guess.
+
+    Returns hints by library path (role, subject, a readable label, and whether the file is an
+    earlier version) and the production's saved reference choices, pointing at its own copies.
+    """
+    def library_path(raw) -> str | None:
+        try:
+            path = Path(str(raw)).resolve()
+            return path.relative_to(root).as_posix() if path.is_file() and _under(path, root) else None
+        except (OSError, ValueError):
+            return None
+
+    hints: dict[str, dict] = {}
+    saved: list[dict] = []
+    settings = _read_saved(folder / "run_settings.json")
+    refs = settings.get("references") if isinstance(settings, dict) else None
+    for ref in refs if isinstance(refs, list) else []:
+        if not isinstance(ref, dict) or ref.get("mode") not in _ROLE_LABELS:
+            continue
+        path = library_path(ref.get("path"))
+        if path is None:
+            continue
+        name = str(ref.get("name") or "")
+        hint = {"role": ref["mode"], "subject": name, "label": f"{name or ref.get('id', '')} · {_ROLE_LABELS[ref['mode']]} reference"}
+        if ref["mode"] == "character":
+            hint.update(face=ref.get("face", True) is not False, wardrobe=ref.get("wardrobe", True) is not False)
+        hints[path] = hint
+        saved.append({"path": path, "mode": ref["mode"], "name": name, "instruction": str(ref.get("instruction") or ""),
+                      "scope": "shots" if ref.get("shots") else "auto", "shots": list(ref.get("shots") or []),
+                      **({"face": hint["face"], "wardrobe": hint["wardrobe"]} if ref["mode"] == "character" else {})})
+
+    jobs = _read_saved(folder / "images/jobs.json")
+    manifest = _read_saved(folder / "images/manifest.json")
+    development = _read_saved(folder / "00_development.json")
+    if not isinstance(jobs, dict) or not isinstance(manifest, dict):
+        return hints, saved
+    characters = development.get("characters") if isinstance(development, dict) else None
+    names = {str(c.get("name", "")).casefold(): str(c.get("name")) for c in characters or [] if isinstance(c, dict)}
+    kinds = {job.get("id"): job.get("kind") for job in jobs.get("jobs") or [] if isinstance(job, dict)}
+    for record in manifest.get("images") or []:
+        if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+            continue
+        image_id, kind = record["id"], kinds.get(record["id"])
+        role = _KIND_ROLES.get(kind)
+        shot = re.fullmatch(r"s(\d{2,3})", image_id) if kind in {"keyframe", "scene"} else None
+        if role == "character":
+            subject = names.get(image_id.casefold(), image_id.replace("-", " ").replace("_", " ").title())
+        else:
+            subject = image_id.replace("-", " ").replace("_", " ")
+        label = f"Shot {int(shot.group(1))}" if shot else f"{subject} · {kind or 'image'}"
+        hint = {"label": label, **({"role": role, "subject": subject} if role else {})}
+        current = library_path(record.get("path"))
+        if current:
+            hints.setdefault(current, hint)
+        for entry in versions(record):
+            earlier = library_path(entry.get("path"))
+            if earlier:
+                hints.setdefault(earlier, {**hint, "label": label + " · earlier version", "earlier": True})
+    return hints, saved
 
 
 def _image_header_kind(header: bytes) -> str | None:
@@ -461,15 +542,16 @@ def parse_image_count(value) -> int | None:
 
 
 def parse_references(value) -> list[dict]:
-    """[{path, mode}] with mode style or lock. A bare path string is a lock."""
+    """Validate reference roles and settings against files in the library."""
     chosen: list[dict] = []
     seen: set[str] = set()
-    for relative, mode in reference_choices(value):
+    for choice in reference_choices(value):
+        relative = choice["path"]
         if reference_file(relative) is None:
             raise ValueError("Reference image is not in a production folder.")
         if relative not in seen:
             seen.add(relative)
-            chosen.append({"path": relative, "mode": mode})
+            chosen.append(choice)
     return chosen
 
 
@@ -484,7 +566,7 @@ def save_reference_upload(filename, encoded) -> dict:
         data = base64.b64decode(encoded, validate=True)
     except (ValueError, binascii.Error) as exc:
         raise ValueError("Upload must be a PNG, JPEG, or WebP image.") from exc
-    if not data or len(data) > _MAX_IMAGE or not _suffix_matches_image(suffix, data[:12]):
+    if not data or len(data) > _MAX_UPLOADED_IMAGE or not _suffix_matches_image(suffix, data[:12]):
         raise ValueError("Upload must be a PNG, JPEG, or WebP image within the size limit.")
     if not PRODUCTIONS.is_dir():
         raise ValueError("Upload path is not allowed.")
@@ -579,7 +661,7 @@ def stage_detail(station: str) -> dict:
         data["brief"] = brief
         data["image_count"] = settings.get("image_count")
         data["references"] = [
-            {"id": item.get("id"), "name": item.get("name"), "mode": item.get("mode", "lock")}
+            {key: item[key] for key in ("id", "name", "mode", "scope", "shots", "instruction", "face", "wardrobe") if key in item}
             for item in settings.get("references") or [] if isinstance(item, dict)
         ]
         if folder:
@@ -1351,7 +1433,8 @@ class DeskHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/brief/suggest":
             film = {key: data.get(key) for key in ("runtime_seconds", "aspect_ratio", "max_shots")
                     if (type(data.get(key)) is int and data.get(key) > 0) or data.get(key) in ("16:9", "9:16", "1:1")}
-            self._suggest(idea, film)
+            references = data.get("references")
+            self._suggest(idea, film, references if isinstance(references, list) and references else None)
             return
         max_shots = data.get("max_shots")
         if max_shots is not None and (type(max_shots) is not int or not 1 <= max_shots <= 240):
@@ -1437,10 +1520,11 @@ class DeskHandler(BaseHTTPRequestHandler):
             return None
         return data
 
-    def _suggest(self, idea: str, film: dict | None = None) -> None:
+    def _suggest(self, idea: str, film: dict | None = None, references: list | None = None) -> None:
         """Fill the brief box. Does not start the crew."""
+        options = {key: value for key, value in (("film", film), ("references", references)) if value}
         try:
-            brief = suggest_brief(idea, film=film) if film else suggest_brief(idea)
+            brief = suggest_brief(idea, **options)
         except BriefSuggestError as exc:
             self._json(503, {"error": str(exc)})
             return

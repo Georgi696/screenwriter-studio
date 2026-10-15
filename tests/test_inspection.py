@@ -7,6 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import httpx
+import openai
+
 from screenwriter_studio.images.generator import run_batch
 from screenwriter_studio.images.inspection import Inspection, inspect_image, response_text
 
@@ -237,6 +240,51 @@ class ReviewTest(unittest.TestCase):
             inspect_image({'path': str(self.out/'candidate.png')}, self.spec['jobs'][1],
                           self.spec['inspection_context'], [], api_key='fake', effort='medium')
         self.assertEqual(client.responses.create.call_args.kwargs['reasoning'], {'effort': 'medium'})
+
+
+class InspectionRetryTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.candidate = Path(self.tmp.name) / 'candidate.png'
+        self.candidate.write_bytes(PNG)
+        self.client = Mock()
+        manager = Mock()
+        manager.__enter__ = Mock(return_value=self.client)
+        manager.__exit__ = Mock(return_value=False)
+        for target, value in (('kie_responses_client', Mock(return_value=manager)), ('time.sleep', Mock())):
+            patcher = patch(f'screenwriter_studio.images.inspection.{target}', value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def inspect(self):
+        return inspect_image({'path': str(self.candidate)}, {'id': 's01'}, {}, [], api_key='fake')
+
+    @staticmethod
+    def failure(status):
+        response = httpx.Response(status, request=httpx.Request('POST', 'https://api.kie.ai/codex/v1/responses'))
+        error = openai.RateLimitError if status == 429 else openai.InternalServerError
+        return error('Service temporarily unavailable', response=response, body=None)
+
+    def test_unavailable_service_is_retried_before_human_review(self):
+        accepted = {'status': 'completed', 'output': [
+            {'type': 'message', 'content': [{'type': 'output_text', 'text': json.dumps(ACCEPT)}]}]}
+        self.client.responses.create.side_effect = [self.failure(503), self.failure(429), accepted]
+        self.assertEqual(self.inspect(), ACCEPT)
+        self.assertEqual(self.client.responses.create.call_count, 3)
+
+    def test_persistent_outage_still_reaches_human_review(self):
+        self.client.responses.create.side_effect = self.failure(503)
+        with self.assertRaises(openai.InternalServerError):
+            self.inspect()
+        self.assertEqual(self.client.responses.create.call_count, 3)
+
+    def test_timeout_is_not_retried_because_it_may_be_billed(self):
+        self.client.responses.create.side_effect = openai.APITimeoutError(
+            request=httpx.Request('POST', 'https://api.kie.ai/codex/v1/responses'))
+        with self.assertRaises(openai.APITimeoutError):
+            self.inspect()
+        self.assertEqual(self.client.responses.create.call_count, 1)
 
 
 class InspectionResponseTest(unittest.TestCase):

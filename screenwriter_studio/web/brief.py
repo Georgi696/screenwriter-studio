@@ -5,6 +5,10 @@ Responses endpoint as the crew (`POST /codex/v1/responses`, development model).
 KIE answers that POST with `text/event-stream` even when the request does not
 ask to stream, so the body is parsed as server-sent events. It does not start
 a production and it does not call an image model.
+
+Selected reference images are described in text only: each one's role, name, direction
+and the prompt it was generated from. No picture is sent; KIE's gateway answered requests
+carrying image data with 502 errors.
 """
 
 from __future__ import annotations
@@ -13,6 +17,8 @@ import hashlib
 import json
 import re
 import secrets
+import time
+from pathlib import Path
 
 from screenwriter_studio.budget import CLIP_SECONDS, shot_budget
 from screenwriter_studio.models import DEVELOPMENT_MODEL, kie_responses_client, load_kie_api_key
@@ -48,6 +54,18 @@ _JSON_STRING = re.compile(
     r'"(?:brief|idea|text|paragraph|story)"\s*:\s*"((?:\\.|[^"\\])*)"',
 )
 _MAX_BRIEF = 900
+MAX_REFERENCES = 8
+_MAX_REFERENCE_PROMPT = 1500  # characters of one image's generation prompt
+RETRY_WAITS = (2.0, 5.0)
+
+ROLE_USE = {
+    "character": "a character in the story: give them a first name, describe them by what is visible, keep their face and wardrobe",
+    "location": "where the story happens: describe the place as shown",
+    "object": "the key object or product the story turns on",
+    "style": "the look and mood only: let it set the tone and genre, not the people or places",
+    "composition": "a signature shot: one moment should be framed like this",
+    "lock": "people and places to keep exactly as shown",
+}
 
 
 class BriefSuggestError(Exception):
@@ -119,13 +137,116 @@ def film_line(film: dict | None) -> str:
     return "\n\nThe user has already locked: " + "; ".join(parts) + ". State these exactly in the brief and do not choose different values."
 
 
-def build_request(idea: str, *, salt: str | None = None, film: dict | None = None) -> dict:
-    """Body fields for `responses.create` on the KIE chat client."""
+def reference_line(references: list[dict]) -> str:
+    """How to use the selected references. Their descriptions follow, one per reference."""
+    return (
+        "\n\nThe user selected reference images, described below with a role each and, where saved, the prompt "
+        "each image was generated from. Build the brief around them: every Character reference is in the cast, "
+        "the story happens in the Location references, an Object reference is the thing the story turns on, "
+        "Style sets tone and genre, Composition is one moment's framing. "
+        "Treat a generation prompt as the exact description of its image: reuse its people, wardrobe, places, "
+        "props and light, not its camera directions or technical wording. "
+        "Use the names given; name an unnamed character yourself."
+        + ("" if any(item["mode"] in {"character", "lock"} for item in references)
+           else " No character is selected; invent one that fits the places and look.")
+    )
+
+
+def _read(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def image_prompt(path: Path, _depth: int = 0) -> str:
+    """The prompt a library image was generated from, read from its production's saved plan.
+
+    An edited take uses its edited prompt; a repair uses the prompt of the image it repaired.
+    A reference copied into another production is followed back to its source once.
+    Uploaded pictures have no prompt, so this returns an empty string for them.
+    """
+    path = Path(path)
+    if path.parent.name == "references" and _depth < 2:
+        settings = _read(path.parent.parent / "run_settings.json") or {}
+        for item in settings.get("references") or []:
+            if isinstance(item, dict) and Path(str(item.get("path") or "")).name == path.name and item.get("source"):
+                source = (path.parent.parent.parent / str(item["source"])).resolve()
+                if source.is_relative_to(path.parent.parent.parent.resolve()):
+                    return image_prompt(source, _depth + 1)
+        return ""
+    if path.parent.name != "images":
+        return ""
+    jobs = [job for job in ((_read(path.parent / "jobs.json") or {}).get("jobs") or []) if isinstance(job, dict)]
+    by_id = {job.get("id"): job for job in jobs}
+    records = (_read(path.parent / "manifest.json") or {}).get("images") or []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        for entry in [record, *(record.get("history") or [])]:
+            if isinstance(entry, dict) and Path(str(entry.get("path") or "")).name == path.name:
+                override = entry.get("job_override") if isinstance(entry.get("job_override"), dict) else {}
+                prompt = override.get("prompt") or (by_id.get(record.get("id")) or {}).get("prompt")
+                if prompt:
+                    return str(prompt)
+    stem = re.sub(r"\.(?:repair|take)-\d+$", "", path.stem)
+    for job in jobs:
+        if job.get("id") == stem or job.get("filename") == path.name:
+            return str(job.get("prompt") or "")
+    return ""
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
+
+
+def reference_text(references: list[dict]) -> str:
+    """One paragraph per reference: its role, name, direction and the prompt its image was made from."""
+    from screenwriter_studio.references import reference_direction
+
+    lines = []
+    for number, item in enumerate(references[:MAX_REFERENCES], start=1):
+        path = item["source_path"]
+        name = f" \u201c{item['name']}\u201d" if item.get("name") and item["name"] != path.name else ""
+        label = (f"Reference {number}{name} ({path.name}) · {item['mode']}: use it as "
+                 f"{ROLE_USE.get(item['mode'], ROLE_USE['lock'])}. " + reference_direction(item))
+        prompt = image_prompt(path)
+        label += (f"\nThe prompt this image was generated from: \u201c{_clip(prompt, _MAX_REFERENCE_PROMPT)}\u201d" if prompt
+                  else "\nNo generation prompt is saved for this image (an upload); go by its role, name and file name.")
+        lines.append(label)
+    return "\n\n".join(lines)
+
+
+def resolve_references(references) -> list[dict]:
+    """Checked library images for the brief, or a clear error. Paths stay inside productions/."""
+    from screenwriter_studio.references import reference_choices
+    from screenwriter_studio.studio import _plan_references
+
+    try:
+        return _plan_references(reference_choices(references))
+    except ValueError as exc:
+        raise BriefSuggestError(str(exc)) from exc
+
+
+def build_request(idea: str, *, salt: str | None = None, film: dict | None = None,
+                  references: list[dict] | None = None) -> dict:
+    """Body fields for `responses.create` on the KIE chat client. References must already be resolved.
+
+    The input is always plain text; references are described, never attached as pictures.
+    """
     from screenwriter_studio import settings as studio_settings
+    salt = salt or secrets.token_hex(4)
+    text = build_input(idea, salt=salt) + film_line(film)
+    if references:
+        if not " ".join(idea.split()):
+            # The references lead; the random spark would only pull the story somewhere else.
+            text = text.replace(f"Let this spark steer the invention so two clicks do not match: {spark_for(salt)}. ", "")
+        text += reference_line(references) + "\n\n" + reference_text(references)
     return {
         "model": studio_settings.load()["chat"]["development"] or DEVELOPMENT_MODEL,
         "instructions": instructions(),
-        "input": build_input(idea, salt=salt or secrets.token_hex(4)) + film_line(film),
+        "input": text,
         # Reasoning tokens count against this cap. A medium effort pass can
         # spend the whole budget before any visible paragraph exists.
         "max_output_tokens": 4096,
@@ -378,6 +499,9 @@ def brief_from_body(raw: str) -> str:
 
 
 def _safe_error(exc: Exception, key: str) -> str:
+    from screenwriter_studio.errors import provider_down, provider_message
+    if provider_down(exc):
+        return provider_message(exc)
     message = getattr(exc, "message", None) or str(exc)
     if key:
         message = message.replace(key, "[key]")
@@ -407,17 +531,29 @@ def _text_from_client_response(response, *, key: str) -> str:
     return text
 
 
-def suggest_brief(idea: str, *, client=None, salt: str | None = None, film: dict | None = None) -> str:
+def _create_with_retries(chat, request: dict, key: str):
+    """A gateway error, overload or dropped connection is usually brief on KIE's side: try twice more."""
+    from screenwriter_studio.errors import provider_down
+    for attempt in range(len(RETRY_WAITS) + 1):
+        try:
+            return chat.responses.create(**request)
+        except Exception as exc:
+            transient = provider_down(exc) or type(exc).__name__ in {"APIConnectionError", "APITimeoutError"}
+            if not transient or attempt == len(RETRY_WAITS):
+                raise BriefSuggestError(_safe_error(exc, key)) from exc
+            time.sleep(RETRY_WAITS[attempt])
+
+
+def suggest_brief(idea: str, *, client=None, salt: str | None = None, film: dict | None = None,
+                  references: list | None = None) -> str:
     """Return one paragraph. Raises BriefSuggestError when the key or the model fails."""
     key = load_kie_api_key()
     if not key:
         raise BriefSuggestError(MISSING_KEY)
-    request = build_request(idea if isinstance(idea, str) else "", salt=salt, film=film)
+    resolved = resolve_references(references) if references else None
+    request = build_request(idea if isinstance(idea, str) else "", salt=salt, film=film, references=resolved)
     chat = client or kie_responses_client(api_key=key)
-    try:
-        response = chat.responses.create(**request)
-    except Exception as exc:
-        raise BriefSuggestError(_safe_error(exc, key)) from exc
+    response = _create_with_retries(chat, request, key)
     try:
         text = _text_from_client_response(response, key=key)
     except BriefSuggestError as exc:

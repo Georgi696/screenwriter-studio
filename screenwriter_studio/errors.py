@@ -17,10 +17,40 @@ _MAX = 300
 _ABSOLUTE = re.compile(r"(?:/(?:Users|home|var|private|tmp|opt|Volumes)/|[A-Za-z]:\\)[^\s'\"]*")
 
 
+_GATEWAY_CODES = {429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
+_STATUS = re.compile(r"(?:Error code|HTTP|status)[:\s]*(\d{3})", re.I)
+
+
+def status_code(error: object) -> int | None:
+    """The HTTP status of a provider error, from the SDK attribute or the message text."""
+    code = getattr(error, "status_code", None)
+    if isinstance(code, int):
+        return code
+    match = _STATUS.search(str(error or ""))
+    return int(match.group(1)) if match else None
+
+
+def provider_down(error: object) -> bool:
+    """KIE (or the Cloudflare gateway in front of it) failed or is overloaded; trying again may work."""
+    text = str(error or "")
+    return status_code(error) in _GATEWAY_CODES or bool(re.search(r"bad gateway|gateway time-?out|cloudflare", text, re.I))
+
+
+def provider_message(error: object) -> str:
+    code = status_code(error)
+    if code == 429:
+        return "KIE is rate-limiting requests right now (429). Wait a minute and try again."
+    label = f" ({code})" if code else ""
+    return (f"KIE's server did not answer{label}. This is on KIE's side, not in your files; "
+            "try again in a minute. Nothing was generated.")
+
+
 def friendly(error: object, secret: str = "") -> str:
     text = str(error or "").strip()
     if secret and len(secret) >= 8:
         text = text.replace(secret, "[redacted]")
+    if provider_down(error):
+        return provider_message(error)
     if isinstance(error, FileNotFoundError) and getattr(error, "filename", None):
         return f"A required file is missing: {Path(str(error.filename)).name}."
     if isinstance(error, PermissionError) and getattr(error, "filename", None):

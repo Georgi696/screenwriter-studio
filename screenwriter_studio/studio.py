@@ -37,9 +37,13 @@ from screenwriter_studio.crew.development import development_agent
 from screenwriter_studio.crew.editor import editor_agent
 from screenwriter_studio.playbooks import CAMERA_COVERAGE, PLAYBOOKS
 from screenwriter_studio.paths import WORKSPACE_ROOT
+from screenwriter_studio.images.upload import SOURCE_LIMIT
 from screenwriter_studio.pricing import production_estimate
 from screenwriter_studio.models import load_kie_api_key
 from screenwriter_studio.settings import chat_agent, load as load_settings
+from screenwriter_studio.references import (
+    REFERENCE_MODES, covered_sheets, reference_choices, reference_direction, story_role, validate_reference_shots,
+)
 from screenwriter_studio.schemas import Development, Screenplay, ScriptVerdict, StillPackage
 from screenwriter_studio.images.service import validate_still_package, render_stills
 from screenwriter_studio.crew.writer import writer_agent
@@ -49,7 +53,7 @@ set_tracing_disabled(True)
 
 MAX_REWRITES = 2
 _STOP_TEXT = "Generation stopped. Saved images can be resumed.\n\n"
-_MAX_REFERENCE_BYTES = 8_000_000
+_MAX_REFERENCE_BYTES = SOURCE_LIMIT
 _REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
@@ -221,43 +225,22 @@ def _reference_source(relative: str) -> Path:
     return file
 
 
-REFERENCE_MODES = ("style", "lock")
-
-
-def reference_choices(references) -> list[tuple[str, str]]:
-    """(path, mode) pairs. A bare path is a lock, which is how references worked before modes."""
-    if references is None:
-        return []
-    if not isinstance(references, list):
-        raise ValueError("Reference images must be chosen from the library.")
-    chosen: list[tuple[str, str]] = []
-    for item in references:
-        if isinstance(item, dict):
-            path, mode = item.get("path"), item.get("mode", "lock")
-        else:
-            path, mode = item, "lock"
-        if type(path) is not str or not path.strip():
-            raise ValueError("Reference images must be chosen from the library.")
-        if mode not in REFERENCE_MODES:
-            raise ValueError("Reference mode must be style or lock.")
-        chosen.append((path.strip(), mode))
-    return chosen
-
-
-def _plan_references(choices: list[tuple[str, str]]) -> list[dict]:
+def _plan_references(choices: list[dict]) -> list[dict]:
     planned = []
     seen: set[str] = set()
-    counts = {"lock": 0, "style": 0}
-    for relative, mode in choices:
+    counts = {mode: 0 for mode in REFERENCE_MODES}
+    for choice in choices:
+        relative, mode = choice["path"], choice["mode"]
         if relative in seen:
             continue
         seen.add(relative)
         source = _reference_source(relative)
         counts[mode] += 1
-        prefix = "style" if mode == "style" else "ref"
+        prefix = "ref" if mode == "lock" else mode
         planned.append({
+            **{key: value for key, value in choice.items() if key != "path"},
             "id": f"{prefix}-{counts[mode]:02d}",
-            "name": source.name,
+            "name": choice.get("name") or source.name,
             "source": relative,
             "source_path": source,
             "mode": mode,
@@ -287,6 +270,7 @@ def _copy_references(folder: Path, planned: list[dict]) -> list[dict]:
             raise ValueError("Reference destination already exists.")
         shutil.copyfile(source, dest)
         stored.append({
+            **{key: value for key, value in item.items() if key != "source_path"},
             "id": item["id"],
             "name": item["name"],
             "source": item["source"],
@@ -304,7 +288,17 @@ def _styles(references: list[dict] | None) -> list[dict]:
     return [item for item in references or [] if item.get("mode") == "style"]
 
 
-def _reference_note(references: list[dict] | None) -> str:
+STORY_NAMING = (
+    "Name a referenced character exactly as its reference. Begin the location a Location reference "
+    "shows with the reference's name. The studio attaches each picture and its image directions itself: in "
+    "character and location locks, write only what the picture does not show and what the story adds (time, "
+    "weather, dirt, injuries, removed or added clothing). Do not mention reference ids and do not write "
+    "instructions about copying, keeping or preserving a reference."
+)
+
+
+def _reference_note(references: list[dict] | None, story: bool = False) -> str:
+    """References as listed to the crew. The story crew (story=True) gets roles, not image directions."""
     lines = []
     locked = _locked(references)
     if locked:
@@ -321,6 +315,14 @@ def _reference_note(references: list[dict] | None) -> str:
             "They do not fix the story, the cast, the wardrobe, or the places.",
         ]
         lines += [f"- {item['id']}: {item.get('name') or item.get('source')}" for item in styles]
+    for item in references or []:
+        scope = "Only shots " + ", ".join(str(n) for n in item["shots"]) if item.get("shots") else "Relevant shots automatically"
+        if story:
+            lines.append(f"- {item.get('name') or item['id']}: {story_role(item)} Applies to: {scope}.")
+        else:
+            lines.append(f"- {item['id']} ({item.get('name', '')}): {reference_direction(item)} Applies to: {scope}.")
+    if story and references:
+        lines.append(STORY_NAMING)
     return "\n".join(lines)
 
 
@@ -389,10 +391,15 @@ def video_feasibility(development: Development, screenplay: Screenplay, *, image
     return issues
 
 
+def _covered(development: Development, references: list[dict] | None) -> int:
+    """Character and location sheets already shown by a reference, so not counted as images to make."""
+    return covered_sheets(references, [c.name for c in development.characters], list(development.locations))
+
+
 def _estimate_line(development: Development, screenplay: Screenplay, image_count: int | None,
                    references: list[dict] | None) -> str:
     """The credit estimate for the images and clips that approving these pages leads to."""
-    locked_count = sum(1 for item in references or [] if item.get("mode", "lock") == "lock")
+    locked_count = _covered(development, references)
     try:
         estimate = production_estimate(development, screenplay, values=load_settings(),
                                        image_count=image_count, locked_count=locked_count)
@@ -486,7 +493,7 @@ class ScreenwriterStudio:
                 f"The user allows at most {image_count} generated stills. "
                 f"The shot list is capped separately at {max_shots} shots."
             )
-        reference_lock = _reference_note(planned)
+        reference_lock = _reference_note(planned, story=True)
         if reference_lock:
             locks.append(reference_lock)
         if aspect_ratio:
@@ -664,7 +671,7 @@ class ScreenwriterStudio:
 
     async def _produce(self, folder, development, screenplay, brief, *, dry_run, inspection_mode, cancel=None, image_count=None, references=None):
         _raise_if_stopped(cancel)
-        locked_count = sum(1 for item in references or [] if item.get("mode", "lock") == "lock")
+        locked_count = _covered(development, references)
         problems = video_feasibility(development, screenplay, image_count=image_count, locked_count=locked_count)
         if problems:
             listed = "\n".join(f"- {problem}" for problem in problems)
@@ -673,6 +680,7 @@ class ScreenwriterStudio:
                 f"images were paid for:\n{listed}\n\nChange Models and quality in the Idea tab (video model, "
                 "quality or sound), or start again with a different length or shot count.\n\n")
             return
+        validate_reference_shots(references or [], [shot.model_dump() for shot in screenplay.shots])
         reference_ids = [item["id"] for item in references] if references else []
         package = _reusable_plan(folder, development, screenplay, image_count, reference_ids)
         if package is not None:
@@ -689,7 +697,7 @@ class ScreenwriterStudio:
         _raise_if_stopped(cancel)
         yield StudioEvent("stills", "**Stills** is calling KIE.ai.\n\n")
         locked = [
-            {"id": item["id"], "path": item["path"], "mode": item.get("mode", "lock")} for item in references
+            dict(item) for item in references
         ] if references else None
         async for line in _stream_stills(
             package,
@@ -827,7 +835,7 @@ def writer_user_message(
                 CAMERA_COVERAGE,
             ]
         )
-    note = _reference_note(references)
+    note = _reference_note(references, story=True)
     if note:
         message += "\n\n" + note
     if _locked(references):
@@ -915,9 +923,19 @@ def art_user_message(
         )
     if _styles(references):
         notes.append(
-            "Style ids are attached to every keyframe and location job by the stills step. "
+            "Style ids are attached to keyframes and location jobs by the stills step, respecting any selected shots. "
             "Do not build character or location jobs from them and do not describe their people or places. "
-            "Write the look they share into each prompt in words: grade, light, lens, texture."
+            "Write the look they share into applicable prompts only: grade, light, lens, texture."
+        )
+    if references:
+        notes.append(
+            "Respect each reference role and shot scope. Attach character, location and object ids only where "
+            "that named subject appears; match reference names to the shot's characters or location when possible. "
+            "For composition, attach the id to the shots whose framing it should guide. "
+            "Explicit shot selections are enforced by the stills step; do not use those references on shared sheets. "
+            "Do not recreate a character or location sheet already fully covered by an automatic reference. "
+            "Face-only or wardrobe-only references may guide a new sheet with the other attributes from the script. "
+            "Write only the selected attributes into prompts, respecting face and wardrobe switches."
         )
     if notes:
         body += "\n" + "\n\n".join(notes)
