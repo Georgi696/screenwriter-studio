@@ -11,6 +11,7 @@ import threading
 import tempfile
 from unittest import mock
 import unittest
+from screenwriter_studio.web import library
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -344,7 +345,7 @@ class DeskPageTest(unittest.TestCase):
                 ScriptVerdict(passed=False, issues=["Shot 1 has two actions."]).model_dump_json(),
                 encoding="utf-8",
             )
-            with mock.patch.object(desk, "PRODUCTIONS", root / "productions"), mock.patch.object(desk, "WORKSPACE_ROOT", root):
+            with mock.patch.object(library, "PRODUCTIONS", root / "productions"), mock.patch.object(desk, "WORKSPACE_ROOT", root), mock.patch.object(library, "WORKSPACE_ROOT", root):
                 self.assertTrue(desk.can_proceed("productions/hall"))
                 self.assertFalse(desk.can_proceed("../.env"))
                 images = folder / "images"
@@ -560,7 +561,7 @@ class LibraryHintsTest(unittest.TestCase):
                  "history": [{"path": str(images / "lena.png"), "url": "https://host/a.png"}]},
                 {"id": "s01", "path": str(images / "s01.take-2.png"),
                  "history": [{"path": str(images / "s01.png"), "url": "https://host/b.png"}]}]}))
-            with mock.patch.object(server, "PRODUCTIONS", root):
+            with mock.patch.object(library, "PRODUCTIONS", root):
                 projects, _ = server.library_catalog()
         hints = {item["name"]: {k: v for k, v in item.items() if k not in ("path", "name")} for item in projects[0]["images"]}
         self.assertEqual(hints["images/lena.repair-1.png"], {"label": "Lena · character", "role": "character", "subject": "Lena"})
@@ -678,7 +679,7 @@ class AppShellTest(unittest.TestCase):
                 {"id": "lena", "state": "done", "path": str(film / "images/missing.png")},
                 {"id": "s01", "state": "review", "path": str(film / "images/s01.png")}]}))
             (film / "videos/manifest.json").write_text(json.dumps({"clips": [{"id": "s01", "state": "done"}, {"id": "s02"}]}))
-            summary = server._project_summary(film, root)
+            summary = library._project_summary(film, root)
             view = server.production_view(film)
         self.assertEqual(summary, {"title": "What the Water Takes", "stage": "clips", "needs": 1,
                                    "images": [1, 2], "clips": [1, 2], "thumb": "water/images/s01.png"})
@@ -729,7 +730,6 @@ class WorkflowLayoutTest(unittest.TestCase):
         self.assertEqual(result, {"times": ["0:00", "0:04", "1:05", "10:00"], "queue": ["b"], "empty": 0})
 
     def test_each_image_lists_the_references_it_should_match(self):
-        from screenwriter_studio.web import server
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             ref = root / "water/references/character-01.png"
@@ -738,8 +738,8 @@ class WorkflowLayoutTest(unittest.TestCase):
             spec = {"locked_references": [{"id": "character-01", "mode": "character", "name": "Lena", "path": str(ref)}],
                     "jobs": [{"id": "lake", "kind": "location"},
                              {"id": "s01", "kind": "keyframe", "references": ["character-01", "lake", "https://elsewhere/x.png"]}]}
-            with mock.patch.object(server, "PRODUCTIONS", root):
-                found = server.image_references(spec)
+            with mock.patch.object(library, "PRODUCTIONS", root):
+                found = library.image_references(spec)
         self.assertEqual(found, {"s01": [
             {"label": "Lena · character", "role": "character", "src": "/library-media?path=water%2Freferences%2Fcharacter-01.png"},
             {"label": "lake · location", "role": "location", "src": "/media?id=lake"}]})
@@ -1062,7 +1062,7 @@ class KeepWhileRunningTest(unittest.TestCase):
             board.folder = "productions/hall"
             board.note = "Continuing saved image work."
             board.images = [dict(image) for image in manifest["images"]]
-            with tempfile.TemporaryDirectory() as state, mock.patch.object(desk, "_board", board), mock.patch.object(desk, "PRODUCTIONS", root / "productions"), mock.patch.object(desk, "WORKSPACE_ROOT", root), mock.patch("screenwriter_studio.web.board.STATUS_PATH", Path(state) / "desk_status.json"), mock.patch("screenwriter_studio.web.server.run_batch") as batch:
+            with tempfile.TemporaryDirectory() as state, mock.patch.object(desk, "_board", board), mock.patch.object(library, "PRODUCTIONS", root / "productions"), mock.patch.object(desk, "WORKSPACE_ROOT", root), mock.patch.object(library, "WORKSPACE_ROOT", root), mock.patch("screenwriter_studio.web.board.STATUS_PATH", Path(state) / "desk_status.json"), mock.patch("screenwriter_studio.web.server.run_batch") as batch:
                 desk.resume_images({"id": "plate", "review_id": "version-token", "action": "keep"})
                 batch.assert_not_called()
             saved = json.loads((images / "manifest.json").read_text(encoding="utf-8"))

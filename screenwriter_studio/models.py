@@ -95,10 +95,11 @@ def _key_in_env_file(path: Path) -> str:
 
 def kie_chat_model(model_id: str) -> OpenAIResponsesModel:
     """A Responses model on KIE. One base URL; the model id goes in the request body."""
-    client = AsyncOpenAI(
-        api_key=load_kie_api_key() or "missing",
-        base_url=KIE_RESPONSES_BASE,
-    )
+    async def current_key() -> str:
+        # Read per request, so a rotated key in .env applies without restarting the desk.
+        return load_kie_api_key() or "missing"
+
+    client = AsyncOpenAI(api_key=current_key, base_url=KIE_RESPONSES_BASE)
     return OpenAIResponsesModel(model=model_id, openai_client=client)
 
 

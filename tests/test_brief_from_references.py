@@ -49,6 +49,31 @@ class BriefFromReferencesTest(unittest.TestCase):
         self.assertIn("No generation prompt is saved", text)  # avenue has no saved plan in this fixture
         self.assertIn("Keep the ash haze.", text)
 
+    def test_style_lends_its_look_and_angles_vary_the_story(self):
+        (self.root / "productions/frankfurt-core/images/jobs.json").write_text(json.dumps({"jobs": [
+            {"id": "crater", "kind": "location", "prompt": "Medium: photoreal still. Subject: a war crater in Frankfurt. "
+             "Light: smoky daylight. Palette: soot black, fire orange. Constraints: military realism."}]}))
+        refs = brief.resolve_references(self.chosen[2:])
+        text = build_request("", salt="alpha", references=refs)["input"]
+        self.assertIn("Light: smoky daylight.", text)
+        self.assertIn("Palette: soot black, fire orange.", text)
+        self.assertNotIn("Frankfurt", text)
+        self.assertNotIn("military realism", text)
+        self.assertIn(brief.angle_for("alpha"), text)
+        angles = {brief.angle_for(salt) for salt in ("a", "b", "c", "d", "e", "f", "g", "h")}
+        self.assertGreater(len(angles), 3)
+        self.assertIn("Do not default to whoever the setting suggests first.", text)
+
+    def test_earlier_suggestions_are_avoided_only_for_a_new_story(self):
+        refs = brief.resolve_references(self.chosen[1:2])
+        earlier = ["German soldier Lukas wants to reach the station.", "", "Medic Ana crosses the crater."]
+        text = build_request("", salt="alpha", references=refs, avoid=earlier)["input"]
+        self.assertIn("Write a different film", text)
+        self.assertIn("- German soldier Lukas wants to reach the station.", text)
+        self.assertIn("- Medic Ana crosses the crater.", text)
+        kept = build_request("a medic crosses the avenue", salt="alpha", references=refs, avoid=earlier)["input"]
+        self.assertNotIn("Write a different film", kept)
+
     def test_a_note_in_the_box_is_kept(self):
         text = build_request("a medic crosses the avenue", salt="alpha",
                              references=brief.resolve_references(self.chosen[1:2]))["input"]

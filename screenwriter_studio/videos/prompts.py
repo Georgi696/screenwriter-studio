@@ -5,7 +5,6 @@ seven uppercase fields or a fixed word budget. Seedance recommends a summary,
 shot order/timeline, material roles when applicable, and continuity instructions.
 """
 
-import re
 
 from screenwriter_studio.videos.catalog import KLING, SEEDANCE, has_speech
 

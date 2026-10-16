@@ -3,10 +3,10 @@
 import io
 import json
 from pathlib import Path
-import shutil
 import tempfile
 import threading
 import unittest
+from screenwriter_studio.web import library
 import urllib.error
 import urllib.request
 from unittest import mock
@@ -275,13 +275,15 @@ class VideoRecoveryTest(unittest.TestCase):
         self.create.assert_called_once()
 
     def test_definite_rejections_fail_cleanly_and_unknown_outcomes_can_be_forgotten(self):
-        import urllib.error
+        import httpx
+        from screenwriter_studio import kie
         from screenwriter_studio.images.generator import ProviderHTTPError
+        self.enterContext(mock.patch.object(kie, "RETRY_BASE", 0))
         self.create.side_effect = ProviderHTTPError(429, "HTTP 429: too many requests")
         with self.assertRaises(service.JobFailed):
             service.render_video(self.folder)
         self.assertEqual(read_json(self.folder / "videos/manifest.json")["clips"][0]["state"], "failed")
-        self.create.side_effect = urllib.error.URLError(ConnectionRefusedError("refused"))
+        self.create.side_effect = httpx.ConnectError("refused")
         with self.assertRaises(service.JobFailed):
             service.render_video(self.folder)
         self.create.side_effect = TimeoutError("read timed out")
@@ -520,7 +522,7 @@ class VideoHTTPTest(unittest.TestCase):
         self.folder = production(self.root)
         self.server = server
         for patcher in (
-            mock.patch.object(server, "PRODUCTIONS", self.root),
+            mock.patch.object(library, "PRODUCTIONS", self.root),
             mock.patch.object(server, "_board", Board(folder=str(self.folder))),
             mock.patch.object(server, "hub", server.Hub()),
             mock.patch.object(server, "_cancel", None),

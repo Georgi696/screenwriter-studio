@@ -937,6 +937,14 @@ function nextStep(state) {
   const video = state.video || {};
   const clips = video.clips || [];
   if (state.running) return { tone: "working", text: state.note || "The crew is working." };
+  if (state.can_resume) {
+    const stopped = /^The run stopped:/.test(state.note || "");
+    return {
+      tone: stopped ? "bad" : "needs",
+      text: (stopped ? state.note + " " : "") + "The development is saved. Retry continues at the Screenwriter without paying for it again.",
+      label: "Retry from saved development", action: resumeStory
+    };
+  }
   if (state.can_proceed) {
     return state.pages_passed
       ? { tone: "needs", text: "The script editor passed the script. Read it, then approve to write the image prompts.", label: "Review the script", view: "pipeline" }
@@ -2117,14 +2125,20 @@ function ideaCount() {
   setText(document.getElementById("idea-count"), idea.trim() ? chars.toLocaleString() + (chars === 1 ? " character" : " characters") : "Empty");
 }
 
+// Suggest always writes a new film; Strengthen (only with text in the box) rewrites the note and keeps its idea.
+const recentBriefs = [];
+let replacedIdea = null;
 function suggestLabel() {
   ideaCount();
   const button = document.getElementById("suggest");
+  const strengthen = document.getElementById("strengthen");
   if (!button || button.dataset.busy === "1") return;
   const empty = !document.getElementById("idea").value.trim();
   const count = selectedRefs.size;
   const from = count ? " from " + count + (count === 1 ? " reference" : " references") : "";
-  button.textContent = empty ? "Suggest a story" + from : "Strengthen this" + (count ? " with the references" : "");
+  button.textContent = (empty ? "Suggest a story" : "Suggest a new story") + from;
+  strengthen.hidden = empty;
+  strengthen.textContent = "Strengthen this" + (count ? " with the references" : "");
   button.title = count
     ? "The story is built from the prompts the selected images were generated from and their roles: characters, locations, objects, style and composition. The pictures themselves are not sent."
     : "Select reference images below and the story will be built around them.";
@@ -2145,12 +2159,16 @@ function releaseNote() {
   note.classList.toggle("is-bad", /not set|failed|stopped|cancelled|error/i.test(last.note || ""));
 }
 
-async function suggestBrief() {
-  const button = document.getElementById("suggest");
+async function suggestBrief(mode) {
+  const button = document.getElementById(mode === "strengthen" ? "strengthen" : "suggest");
+  const other = document.getElementById(mode === "strengthen" ? "suggest" : "strengthen");
   const idea = document.getElementById("idea");
   if (button.dataset.busy === "1") return;
+  const before = idea.value;
+  const fresh = mode !== "strengthen";
   button.dataset.busy = "1";
   button.disabled = true;
+  other.disabled = true;
   button.textContent = selectedRefs.size ? "Reading the references…" : "Writing…";
   // Only the role, name and direction matter here; shot ranges are checked when the run starts.
   const references = [...selectedRefs].map(([path, ref]) => {
@@ -2165,7 +2183,9 @@ async function suggestBrief() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        idea: idea.value,
+        idea: fresh ? "" : idea.value,
+        // The box and the last few suggestions, so a new click gives a different film.
+        avoid: fresh ? [before, ...recentBriefs].map((text) => text.trim()).filter(Boolean).slice(0, 3) : [],
         runtime_seconds: document.getElementById("runtime").value ? Number(document.getElementById("runtime").value) : null,
         aspect_ratio: document.getElementById("aspect").value || null,
         max_shots: document.getElementById("max-shots").value ? Number(document.getElementById("max-shots").value) : null,
@@ -2181,12 +2201,17 @@ async function suggestBrief() {
     }
     releaseNote();
     idea.value = data.brief;
+    recentBriefs.unshift(data.brief);
+    recentBriefs.splice(3);
+    replacedIdea = before.trim() && before !== data.brief ? before : null;
+    document.getElementById("idea-restore").hidden = !replacedIdea;
     idea.focus();
     toast(references.length ? "Brief built around your references. Edit it freely." : "Brief ready to edit");
   } catch (error) {
     toast("Could not write a brief.", 4000);
   } finally {
     button.disabled = false;
+    other.disabled = false;
     delete button.dataset.busy;
     suggestLabel();
   }
@@ -3294,7 +3319,21 @@ document.getElementById("reference-search").addEventListener("keydown", (event) 
   if (event.key === "Enter") event.preventDefault();
 });
 document.getElementById("toggle-library").addEventListener("click", toggleLibrary);
-document.getElementById("suggest").addEventListener("click", suggestBrief);
+document.getElementById("suggest").addEventListener("click", () => suggestBrief("new"));
+document.getElementById("strengthen").addEventListener("click", () => suggestBrief("strengthen"));
+document.getElementById("idea-restore").addEventListener("click", () => {
+  if (replacedIdea === null) return;
+  document.getElementById("idea").value = replacedIdea;
+  replacedIdea = null;
+  document.getElementById("idea-restore").hidden = true;
+  suggestLabel();
+  briefSummary();
+});
+document.getElementById("idea").addEventListener("input", () => {
+  // Once you edit the new text, Undo would throw your edits away.
+  replacedIdea = null;
+  document.getElementById("idea-restore").hidden = true;
+});
 document.getElementById("clear-brief").addEventListener("click", () => {
   document.getElementById("idea").value = "";
   document.getElementById("idea").focus();
@@ -3513,6 +3552,28 @@ async function proceedDraft() {
     toast("Continuing with the saved draft");
   } catch (error) {
     toast("Could not continue this draft.");
+    button.disabled = false;
+  }
+}
+
+async function resumeStory() {
+  const button = document.getElementById("next-step-action");
+  button.disabled = true;
+  follow = true;
+  document.getElementById("follow").classList.add("is-on");
+  setView("pipeline");
+  try {
+    const res = await fetch("/api/resume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) toast(data.error || "Could not retry this production.");
+    else toast("Retrying from the saved development");
+  } catch (error) {
+    toast("Could not retry this production.");
+  } finally {
     button.disabled = false;
   }
 }

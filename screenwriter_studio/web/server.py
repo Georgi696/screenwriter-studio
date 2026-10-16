@@ -7,22 +7,41 @@ No frontend build or third-party web framework is required.
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import json
 import re
 import os
 import shutil
 import subprocess
 import threading
-import traceback
+import time
+import logging
 import urllib.parse
 import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from uuid import uuid4
 
+from screenwriter_studio.fsio import atomic_write_json
+from screenwriter_studio import runlog
+from screenwriter_studio.web import library
+from screenwriter_studio.web.library import (
+    _REFERENCE_SUFFIXES,
+    _safe_image,
+    _under,
+    _version_label,
+    can_proceed,
+    cost_view,
+    library_catalog,
+    library_file,
+    library_text,
+    parse_image_count,
+    parse_references,
+    production_path,
+    production_view,
+    save_reference_upload,
+    saved_verdict,
+    shot_plan,
+)
 from screenwriter_studio.web.brief import BriefSuggestError, suggest_brief
 from screenwriter_studio.web.board import (
     Board,
@@ -37,22 +56,15 @@ from screenwriter_studio.web.board import (
     board_from_folder,
 )
 from screenwriter_studio.models import (
-    ART_MODEL,
-    DEVELOPMENT_MODEL,
     EDIT_MODEL,
-    EDITOR_MODEL,
     GPT_IMAGE_MODEL,
     IMAGE_MODEL_BY_KIND,
     NANO_BANANA_MODEL,
     SEEDREAM_MODEL,
-    WRITER_MODEL,
 )
-from screenwriter_studio.studio import ScreenwriterStudio, _load_settings as load_run_settings, reference_choices
-from screenwriter_studio.pricing import production_estimate, remaining_images, spent_estimate
-from screenwriter_studio.schemas import Development, Screenplay
+from screenwriter_studio.studio import ScreenwriterStudio, story_unfinished
 from screenwriter_studio.images.generator import run_batch
-from screenwriter_studio.images.upload import SOURCE_LIMIT, thumbnail
-from screenwriter_studio.references import covered_sheets
+from screenwriter_studio.images.upload import thumbnail
 from screenwriter_studio.images.review import (
     apply_live_keep, attach_image_task, forget_image_submission, restore_version, validate_decision, versions,
 )
@@ -65,20 +77,14 @@ from screenwriter_studio.errors import friendly
 from screenwriter_studio.budget import shot_budget
 from screenwriter_studio.videos.web import clips_zip, video_file, video_status, stream_video
 
+log = logging.getLogger("screenwriter_studio")
 STATIC = Path(__file__).resolve().parent / "static"
 PAGE = STATIC / "desk.html"
-PRODUCTIONS = WORKSPACE_ROOT / "productions"
-DOCUMENT_SUFFIXES = {".json", ".md", ".fountain", ".txt"}
-IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 DEFAULT_IDEA = "A 30-second vertical film about someone who keeps a seat on the last bus."
 _MAX_BODY = 100_000
 _MAX_UPLOAD_BODY = 12_000_000
-_MAX_TEXT = 200_000
-_MAX_IMAGE = SOURCE_LIMIT
 _thumbs: dict[tuple, bytes] = {}
 _thumb_lock = threading.Lock()
-_MAX_UPLOADED_IMAGE = 8_000_000
-_REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 _STOP_NOTE = "Generation stopped. Saved images can be resumed."
 _VIDEO_STOP_NOTE = "Generation stopped. Use Resume video clips to continue saved work."
 _ABORT_NOTE = "This draft was aborted. The pages remain in the folder."
@@ -129,7 +135,7 @@ def _restore() -> None:
         if not folder.is_absolute():
             folder = WORKSPACE_ROOT / folder
         try:
-            folder.resolve().relative_to(PRODUCTIONS.resolve())
+            folder.resolve().relative_to(library.PRODUCTIONS.resolve())
             spec = json.loads((folder / "images/jobs.json").read_text())
             manifest = json.loads((folder / "images/manifest.json").read_text())
             if spec.get("inspection") and isinstance(manifest.get("images"), list):
@@ -172,7 +178,7 @@ def open_production(slug) -> None:
     """Put a saved production on the desk so its story, images and clips can be continued."""
     if not isinstance(slug, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}", slug):
         raise ValueError("Choose a production from the library.")
-    folder = production_path(str(PRODUCTIONS / slug))
+    folder = production_path(str(library.PRODUCTIONS / slug))
     if folder is None:
         raise ValueError("That production folder no longer exists.")
     with _lock:
@@ -188,517 +194,73 @@ def open_production(slug) -> None:
 
 
 def public_view() -> dict:
+    """The page's snapshot. The board is copied under the lock; every file read happens after it
+    is released, so a slow disk never blocks the crew thread that is publishing the next event."""
     with _lock:
-        payload = client_payload(_board, _secret())
-        payload["boot"] = BOOT
-        images = []
-        for image, raw in zip(payload["images"], _board.images):
-            item = dict(image)
-            path = str(raw.get("path") or "")
-            if raw.get("state") in {"done", "review", "inspecting"} and _safe_image(path, _board.folder) is not None:
-                item["src"] = "/media?id=" + urllib.parse.quote(str(raw.get("id") or ""), safe="") + "&v=" + str(raw.get("repairs", 0))
-            else:
-                item["src"] = ""
-            image_id = urllib.parse.quote(str(raw.get("id") or ""), safe="")
-            item["versions"] = [
-                {"name": Path(entry["path"]).name,
-                 "src": "/media?id=" + image_id + "&version=" + urllib.parse.quote(Path(entry["path"]).name, safe=""),
-                 "label": _version_label(entry)}
-                for entry in versions(raw) if _safe_image(str(entry["path"]), _board.folder) is not None]
-            item["uncertain"] = raw.get("state") == "submitting" and not raw.get("task_id") and not _board.running
-            item["edited"] = isinstance(raw.get("job_override"), dict)
-            images.append(item)
-        payload["images"] = images
-        chat = studio_settings.load()["chat"]
-        payload["crew"] = [
-            {"id": "development", "name": "Development", "model": chat["development"]},
-            {"id": "writer", "name": "Screenwriter", "model": chat["writer"]},
-            {"id": "editor", "name": "Script editor", "model": chat["editor"]},
-            {"id": "art", "name": "Image prompts", "model": chat["art"]},
-        ]
-        payload["image_agents"] = [
-            {"model": model, "kinds": kinds} for model, kinds in _image_agents()
-        ]
-        payload.update(shot_plan(production_path(_board.folder)))
-        payload["can_proceed"] = (not _board.running) and can_proceed(_board.folder)
-        payload["pages_passed"] = saved_verdict(_board.folder)
-        payload.update(cost_view(production_path(_board.folder), payload["can_proceed"]))
-        payload["production"] = production_view(production_path(_board.folder))
-        prompts = payload.pop("image_prompts", {})
-        references = payload.pop("image_references", {})
-        for item, raw in zip(payload["images"], _board.images):
-            override = raw.get("job_override") if isinstance(raw.get("job_override"), dict) else {}
-            item["prompt"] = scrub(str(override.get("prompt") or prompts.get(str(raw.get("id") or ""), "")), _secret())
-            item["references"] = references.get(str(raw.get("id") or ""), [])
-        payload["video"] = json.loads(scrub(json.dumps(video_status(production_path(_board.folder))), _secret()))
-        return payload
-
-
-_cost_cache: dict = {}
-
-
-def _version_label(entry: dict) -> str:
-    if entry.get("repairs"):
-        return f"Repair {entry['repairs']}" + (f" of take {entry['take']}" if int(entry.get("take") or 1) > 1 else "")
-    return f"Take {entry['take']}" if int(entry.get("take") or 1) > 1 else "Original"
-
-
-def production_view(folder: Path | None) -> dict:
-    """The open production as the app bar shows it: its title and the credits it has used."""
-    if folder is None:
-        return {"title": "", "slug": "", "spent": None}
-    development = _read_saved(folder / "00_development.json")
-    title = str(development.get("title") or "") if isinstance(development, dict) else ""
-    spec = _read_saved(folder / "images/jobs.json")
-    manifest = _read_saved(folder / "images/manifest.json")
-    plan = _read_saved(folder / "videos/jobs.json")
-    clips = _read_saved(folder / "videos/manifest.json")
-    spent = None
-    if isinstance(spec, dict) and isinstance(manifest, dict):
-        try:
-            spent = spent_estimate(spec, manifest, plan if isinstance(plan, dict) else None,
-                                   (clips or {}).get("clips") if isinstance(clips, dict) else None)
-        except (TypeError, ValueError, KeyError):
-            spent = None
-    return {"title": title, "slug": folder.name, "spent": spent}
-
-
-def image_references(spec: dict) -> dict[str, list[dict]]:
-    """The pictures each image was asked to follow, so a review can show them side by side."""
-    jobs = {str(job.get("id")): job for job in spec.get("jobs") or [] if isinstance(job, dict)}
-    locked = {str(item.get("id")): item for item in spec.get("locked_references") or [] if isinstance(item, dict)}
-    root = PRODUCTIONS.resolve()
-    found: dict[str, list[dict]] = {}
-    for image_id, job in jobs.items():
-        refs = []
-        for ref in job.get("references") or []:
-            ref = str(ref)
-            if ref in jobs:
-                kind = str(jobs[ref].get("kind") or "image")
-                refs.append({"label": f"{ref} · {kind}", "role": _KIND_ROLES.get(kind, ""),
-                             "src": "/media?id=" + urllib.parse.quote(ref, safe="")})
-            elif ref in locked:
-                try:
-                    path = Path(str(locked[ref].get("path") or "")).resolve()
-                except OSError:
-                    continue
-                if path.is_file() and _under(path, root):
-                    role = str(locked[ref].get("mode") or "")
-                    refs.append({"label": str(locked[ref].get("name") or ref) + (f" · {role}" if role else ""), "role": role,
-                                 "src": "/library-media?path=" + urllib.parse.quote(path.relative_to(root).as_posix(), safe="")})
-        if refs:
-            found[image_id] = refs
-    return found
-
-
-def cost_view(folder: Path | None, proceed: bool) -> dict:
-    """Credit estimates for the next paid step, from the saved files. Cached until one of them changes."""
-    result = {"estimate": None, "images_estimate": None, "image_resolution": "", "image_prompts": {}, "image_references": {}}
-    if folder is None:
-        return result
-    names = ("00_development.json", "01_screenplay.json", "run_settings.json", "images/jobs.json", "images/manifest.json")
-    stamps = []
-    for path in [folder / name for name in names] + [studio_settings.PATH]:
-        try:
-            stamps.append(path.stat().st_mtime_ns)
-        except OSError:
-            stamps.append(0)
-    key = (str(folder), proceed, tuple(stamps))
-    if _cost_cache.get("key") == key:
-        value = _cost_cache["value"]
-        return {**value, "image_prompts": dict(value["image_prompts"]), "image_references": dict(value["image_references"])}
-    try:
-        if proceed:
-            development = Development.model_validate(read_video_json(folder / "00_development.json"))
-            screenplay = Screenplay.model_validate(read_video_json(folder / "01_screenplay.json"))
-            image_count, references = load_run_settings(folder)
-            locked = covered_sheets(references, [c.name for c in development.characters], list(development.locations))
-            result["estimate"] = production_estimate(development, screenplay, values=studio_settings.load(),
-                                                     image_count=image_count, locked_count=locked)
-        spec_path = folder / "images/jobs.json"
-        if spec_path.is_file():
-            spec = read_video_json(spec_path)
-            manifest_path = folder / "images/manifest.json"
-            manifest = read_video_json(manifest_path) if manifest_path.is_file() else {}
-            result["image_resolution"] = str(spec.get("resolution") or "1K")
-            result["image_prompts"] = {str(job.get("id")): str(job.get("prompt") or "")
-                                       for job in spec.get("jobs", []) if isinstance(job, dict)}
-            result["image_references"] = image_references(spec)
-            remaining = remaining_images(spec, manifest)
-            if remaining["count"]:
-                result["images_estimate"] = remaining
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
-    _cost_cache.update(key=key, value=result)
-    return {**result, "image_prompts": dict(result["image_prompts"]), "image_references": dict(result["image_references"])}
-
-
-def shot_plan(folder: Path | None) -> dict:
-    """The saved shot list, so every tab can tie an image or clip back to its shot."""
-    empty = {"shots": [], "runtime_seconds": 0, "aspect_ratio": ""}
-    if folder is None:
-        return empty
-    try:
-        development = json.loads((folder / "00_development.json").read_text(encoding="utf-8"))
-        screenplay = json.loads((folder / "01_screenplay.json").read_text(encoding="utf-8"))
-        shots = [{"id": f"s{int(shot['number']):02d}", "number": int(shot["number"]),
-                  "duration_seconds": int(shot["duration_seconds"]),
-                  **{key: str(shot.get(key) or "") for key in ("framing", "camera_move", "location", "action", "audio", "notes")},
-                  "characters": [str(name) for name in shot.get("characters") or []],
-                  "dialogue": [{"speaker": str(line.get("speaker") or ""), "text": str(line.get("text") or "")}
-                               for line in shot.get("dialogue") or [] if isinstance(line, dict)]}
-                 for shot in screenplay["shots"]]
-        return {"shots": shots, "runtime_seconds": int(development.get("runtime_seconds") or 0),
-                "aspect_ratio": str(development.get("aspect_ratio") or "")}
-    except (OSError, ValueError, KeyError, TypeError):
-        return empty
-
-
-def saved_verdict(folder: str) -> bool | None:
-    """Whether the editor passed the saved pages, or nothing when there is no verdict yet."""
-    path = production_path(folder)
-    if path is None:
-        return None
-    try:
-        verdict = json.loads((path / "verdict.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    passed = verdict.get("passed") if isinstance(verdict, dict) else None
-    return passed if isinstance(passed, bool) else None
-
-
-def production_path(folder: str) -> Path | None:
-    """A production directory under productions/, or nothing."""
-    if not folder or not isinstance(folder, str):
-        return None
-    path = Path(folder)
-    if not path.is_absolute():
-        path = WORKSPACE_ROOT / folder
-    try:
-        resolved = path.resolve()
-    except OSError:
-        return None
-    if not resolved.is_dir() or not _under(resolved, PRODUCTIONS):
-        return None
-    return resolved
-
-
-def can_proceed(folder: str) -> bool:
-    """Saved pages can continue when stills have not been submitted and the draft was not aborted."""
-    path = production_path(folder)
-    if path is None:
-        return False
-    if (path / "aborted.json").is_file():
-        return False
-    needed = ("00_development.json", "01_screenplay.json", "verdict.json")
-    if not all((path / name).is_file() for name in needed):
-        return False
-    images = path / "images"
-    if (images / "jobs.json").is_file() or (images / "manifest.json").is_file():
-        return False
-    try:
-        verdict = json.loads((path / "verdict.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    return isinstance(verdict, dict) and isinstance(verdict.get("passed"), bool)
-
-
-def _under(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-    except (OSError, ValueError):
-        return False
-    return True
-
-
-def _production_roots(folder: str) -> list[Path]:
-    roots: list[Path] = []
-    if PRODUCTIONS.is_dir():
-        roots.append(PRODUCTIONS.resolve())
-    if folder:
-        candidate = Path(folder)
-        if not candidate.is_absolute():
-            candidate = WORKSPACE_ROOT / folder
-        if candidate.is_dir():
-            roots.append(candidate.resolve())
-    return roots
-
-
-def _safe_image(path: str, folder: str) -> Path | None:
-    if not path:
-        return None
-    file = Path(path)
-    try:
-        if not file.is_file():
-            return None
-        resolved = file.resolve()
-    except OSError:
-        return None
-    if resolved.suffix.lower() not in IMAGE_SUFFIXES:
-        return None
-    if resolved.stat().st_size > _MAX_IMAGE:
-        return None
-    if any(_under(resolved, root) for root in _production_roots(folder)):
-        return resolved
-    return None
-
-
-def library_catalog() -> tuple[list[dict], str]:
-    """Documents and images under productions/<slug>/, plus a change signature."""
-    root = PRODUCTIONS.resolve() if PRODUCTIONS.is_dir() else PRODUCTIONS
-    projects: list[dict] = []
-    signature: list[str] = []
-    if not root.is_dir():
-        return projects, ""
-    for folder in sorted(path for path in root.iterdir() if path.is_dir() and not path.name.startswith(".")):
-        documents: list[dict] = []
-        images: list[dict] = []
-        videos: list[dict] = []
-        for file in sorted(folder.rglob("*")):
-            if not file.is_file() or file.name.startswith("."):
-                continue
-            resolved = file.resolve()
-            if not _under(resolved, root):
-                continue
-            suffix = resolved.suffix.lower()
-            if suffix in IMAGE_SUFFIXES:
-                bucket = images
-            elif suffix in DOCUMENT_SUFFIXES:
-                bucket = documents
-            elif suffix == ".mp4" and video_file(root, resolved.relative_to(root).as_posix()):
-                bucket = videos
-            else:
-                continue
-            relative = resolved.relative_to(root).as_posix()
-            stat = resolved.stat()
-            bucket.append({"path": relative, "name": resolved.relative_to(folder.resolve()).as_posix()})
-            signature.append(f"{relative}:{stat.st_mtime_ns}:{stat.st_size}")
-        hints, saved = _image_hints(folder, root)
-        summary = _project_summary(folder, root)
-        for item in images:
-            item.update(hints.get(item["path"], {}))
-        projects.append({"slug": folder.name, "documents": documents, "images": images, "videos": videos,
-                         "references": saved, "summary": summary})
-    return projects, "|".join(signature)
-
-
-_ROLE_LABELS = {"style": "style", "character": "character", "location": "location",
-                "object": "object", "composition": "composition"}
-_KIND_ROLES = {"character": "character", "location": "location", "product": "object", "packshot": "object"}
-
-
-def _read_saved(path: Path):
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-
-
-def _project_summary(folder: Path, root: Path) -> dict:
-    """How far a production got, what waits for the user, and a picture to recognise it by."""
-    root = root.resolve()
-    development = _read_saved(folder / "00_development.json")
-    title = str(development.get("title") or "") if isinstance(development, dict) else ""
-    summary = {"title": title or folder.name, "stage": "idea", "needs": 0, "images": [0, 0], "clips": [0, 0], "thumb": ""}
-    if (folder / "01_screenplay.json").is_file():
-        summary["stage"] = "story"
-    manifest = _read_saved(folder / "images/manifest.json")
-    records = [r for r in (manifest or {}).get("images") or [] if isinstance(r, dict)] if isinstance(manifest, dict) else []
-    if records:
-        summary["stage"] = "images"
-        summary["images"] = [sum(1 for r in records if r.get("state") == "done"), len(records)]
-        summary["needs"] = sum(1 for r in records if r.get("state") in {"review", "failed"})
-        shots = sorted((r for r in records if re.fullmatch(r"s\d{2,3}", str(r.get("id") or ""))), key=lambda r: r["id"])
-        for record in shots + records:
-            try:
-                path = Path(str(record.get("path") or "")).resolve()
-            except OSError:
-                continue
-            if path.is_file() and _under(path, root) and path.suffix.lower() in _REFERENCE_SUFFIXES:
-                summary["thumb"] = path.relative_to(root).as_posix()
-                break
-    videos = _read_saved(folder / "videos/manifest.json")
-    clips = [c for c in (videos or {}).get("clips") or [] if isinstance(c, dict)] if isinstance(videos, dict) else []
-    if clips:
-        summary["stage"] = "clips"
-        summary["clips"] = [sum(1 for c in clips if c.get("state") == "done"), len(clips)]
-    return summary
-
-
-def _image_hints(folder: Path, root: Path) -> tuple[dict[str, dict], list[dict]]:
-    """What the studio already knows about a production's images, so the picker need not guess.
-
-    Returns hints by library path (role, subject, a readable label, and whether the file is an
-    earlier version) and the production's saved reference choices, pointing at its own copies.
-    """
-    def library_path(raw) -> str | None:
-        try:
-            path = Path(str(raw)).resolve()
-            return path.relative_to(root).as_posix() if path.is_file() and _under(path, root) else None
-        except (OSError, ValueError):
-            return None
-
-    hints: dict[str, dict] = {}
-    saved: list[dict] = []
-    settings = _read_saved(folder / "run_settings.json")
-    refs = settings.get("references") if isinstance(settings, dict) else None
-    for ref in refs if isinstance(refs, list) else []:
-        if not isinstance(ref, dict) or ref.get("mode") not in _ROLE_LABELS:
-            continue
-        path = library_path(ref.get("path"))
-        if path is None:
-            continue
-        name = str(ref.get("name") or "")
-        hint = {"role": ref["mode"], "subject": name, "label": f"{name or ref.get('id', '')} · {_ROLE_LABELS[ref['mode']]} reference"}
-        if ref["mode"] == "character":
-            hint.update(face=ref.get("face", True) is not False, wardrobe=ref.get("wardrobe", True) is not False)
-        hints[path] = hint
-        saved.append({"path": path, "mode": ref["mode"], "name": name, "instruction": str(ref.get("instruction") or ""),
-                      "scope": "shots" if ref.get("shots") else "auto", "shots": list(ref.get("shots") or []),
-                      **({"face": hint["face"], "wardrobe": hint["wardrobe"]} if ref["mode"] == "character" else {})})
-
-    jobs = _read_saved(folder / "images/jobs.json")
-    manifest = _read_saved(folder / "images/manifest.json")
-    development = _read_saved(folder / "00_development.json")
-    if not isinstance(jobs, dict) or not isinstance(manifest, dict):
-        return hints, saved
-    characters = development.get("characters") if isinstance(development, dict) else None
-    names = {str(c.get("name", "")).casefold(): str(c.get("name")) for c in characters or [] if isinstance(c, dict)}
-    kinds = {job.get("id"): job.get("kind") for job in jobs.get("jobs") or [] if isinstance(job, dict)}
-    for record in manifest.get("images") or []:
-        if not isinstance(record, dict) or not isinstance(record.get("id"), str):
-            continue
-        image_id, kind = record["id"], kinds.get(record["id"])
-        role = _KIND_ROLES.get(kind)
-        shot = re.fullmatch(r"s(\d{2,3})", image_id) if kind in {"keyframe", "scene"} else None
-        if role == "character":
-            subject = names.get(image_id.casefold(), image_id.replace("-", " ").replace("_", " ").title())
+        secret = _secret()
+        payload = client_payload(_board, secret)
+        raw_images = [dict(raw) for raw in _board.images]
+        folder_label = _board.folder
+        running = _board.running
+    folder = production_path(folder_label)
+    images = []
+    for image, raw in zip(payload["images"], raw_images):
+        item = dict(image)
+        path = str(raw.get("path") or "")
+        if raw.get("state") in {"done", "review", "inspecting"} and _safe_image(path, folder_label) is not None:
+            item["src"] = "/media?id=" + urllib.parse.quote(str(raw.get("id") or ""), safe="") + "&v=" + str(raw.get("repairs", 0))
         else:
-            subject = image_id.replace("-", " ").replace("_", " ")
-        label = f"Shot {int(shot.group(1))}" if shot else f"{subject} · {kind or 'image'}"
-        hint = {"label": label, **({"role": role, "subject": subject} if role else {})}
-        current = library_path(record.get("path"))
-        if current:
-            hints.setdefault(current, hint)
-        for entry in versions(record):
-            earlier = library_path(entry.get("path"))
-            if earlier:
-                hints.setdefault(earlier, {**hint, "label": label + " · earlier version", "earlier": True})
-    return hints, saved
+            item["src"] = ""
+        image_id = urllib.parse.quote(str(raw.get("id") or ""), safe="")
+        item["versions"] = [
+            {"name": Path(entry["path"]).name,
+             "src": "/media?id=" + image_id + "&version=" + urllib.parse.quote(Path(entry["path"]).name, safe=""),
+             "label": _version_label(entry)}
+            for entry in versions(raw) if _safe_image(str(entry["path"]), folder_label) is not None]
+        item["uncertain"] = raw.get("state") == "submitting" and not raw.get("task_id") and not running
+        item["edited"] = isinstance(raw.get("job_override"), dict)
+        images.append(item)
+    payload["boot"] = BOOT
+    payload["images"] = images
+    chat = studio_settings.load()["chat"]
+    payload["crew"] = [
+        {"id": "development", "name": "Development", "model": chat["development"]},
+        {"id": "writer", "name": "Screenwriter", "model": chat["writer"]},
+        {"id": "editor", "name": "Script editor", "model": chat["editor"]},
+        {"id": "art", "name": "Image prompts", "model": chat["art"]},
+    ]
+    payload["image_agents"] = [
+        {"model": model, "kinds": kinds} for model, kinds in _image_agents()
+    ]
+    payload.update(shot_plan(folder))
+    payload["can_proceed"] = (not running) and can_proceed(folder_label)
+    payload["can_resume"] = (not running) and folder is not None and story_unfinished(folder)
+    payload["pages_passed"] = saved_verdict(folder_label)
+    payload.update(cost_view(folder, payload["can_proceed"]))
+    payload["production"] = production_view(folder)
+    prompts = payload.pop("image_prompts", {})
+    references = payload.pop("image_references", {})
+    for item, raw in zip(payload["images"], raw_images):
+        override = raw.get("job_override") if isinstance(raw.get("job_override"), dict) else {}
+        item["prompt"] = scrub(str(override.get("prompt") or prompts.get(str(raw.get("id") or ""), "")), secret)
+        item["references"] = references.get(str(raw.get("id") or ""), [])
+    payload["video"] = json.loads(scrub(json.dumps(video_status(folder)), secret))
+    return payload
 
 
-def _image_header_kind(header: bytes) -> str | None:
-    if header.startswith(b"\x89PNG\r\n\x1a\n"):
-        return ".png"
-    if header.startswith(b"\xff\xd8\xff"):
-        return ".jpg"
-    if len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"WEBP":
-        return ".webp"
-    return None
+_COALESCE_SECONDS = 0.05
+_view_cache: tuple[int, bytes] = (-1, b"")
+_view_lock = threading.Lock()
 
 
-def _suffix_matches_image(suffix: str, header: bytes) -> bool:
-    kind = _image_header_kind(header)
-    if kind == ".jpg":
-        return suffix in {".jpg", ".jpeg"}
-    return kind is not None and kind == suffix
+def view_bytes(revision: int) -> bytes:
+    """The serialized snapshot for a board revision, built once and shared by every open page."""
+    global _view_cache
+    with _view_lock:
+        if _view_cache[0] != revision:
+            _view_cache = (revision, json.dumps(public_view(), separators=(",", ":")).encode("utf-8"))
+        return _view_cache[1]
 
-
-def reference_file(path: str) -> Path | None:
-    """A PNG, JPEG, or WebP already stored under productions/."""
-    file = library_file(path)
-    if file is None or file.suffix.lower() not in _REFERENCE_SUFFIXES:
-        return None
-    try:
-        size = file.stat().st_size
-        header = file.read_bytes()[:12]
-    except OSError:
-        return None
-    if size <= 0 or size > _MAX_IMAGE or not _suffix_matches_image(file.suffix.lower(), header):
-        return None
-    return file
-
-
-def parse_image_count(value) -> int | None:
-    if value is None:
-        return None
-    if type(value) is not int or not 1 <= value <= 240:
-        raise ValueError("Image count must be an integer between 1 and 240.")
-    return value
-
-
-def parse_references(value) -> list[dict]:
-    """Validate reference roles and settings against files in the library."""
-    chosen: list[dict] = []
-    seen: set[str] = set()
-    for choice in reference_choices(value):
-        relative = choice["path"]
-        if reference_file(relative) is None:
-            raise ValueError("Reference image is not in a production folder.")
-        if relative not in seen:
-            seen.add(relative)
-            chosen.append(choice)
-    return chosen
-
-
-def save_reference_upload(filename, encoded) -> dict:
-    """Store an uploaded still under productions/.references without using the client path."""
-    if not isinstance(filename, str) or not isinstance(encoded, str):
-        raise ValueError("Upload must be a PNG, JPEG, or WebP image.")
-    suffix = Path(filename).suffix.lower()
-    if suffix not in _REFERENCE_SUFFIXES or Path(filename).name != filename:
-        raise ValueError("Upload must be a PNG, JPEG, or WebP image.")
-    try:
-        data = base64.b64decode(encoded, validate=True)
-    except (ValueError, binascii.Error) as exc:
-        raise ValueError("Upload must be a PNG, JPEG, or WebP image.") from exc
-    if not data or len(data) > _MAX_UPLOADED_IMAGE or not _suffix_matches_image(suffix, data[:12]):
-        raise ValueError("Upload must be a PNG, JPEG, or WebP image within the size limit.")
-    if not PRODUCTIONS.is_dir():
-        raise ValueError("Upload path is not allowed.")
-    root = PRODUCTIONS.resolve()
-    dest_dir = (root / ".references").resolve()
-    if not _under(dest_dir, root):
-        raise ValueError("Upload path is not allowed.")
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = (dest_dir / f"{uuid4().hex}{suffix}").resolve()
-    if not _under(dest, dest_dir) or dest.exists():
-        raise ValueError("Upload path is not allowed.")
-    temporary = dest.with_suffix(dest.suffix + ".part")
-    temporary.write_bytes(data)
-    temporary.replace(dest)
-    relative = dest.relative_to(root).as_posix()
-    return {
-        "id": relative,
-        "src": "/library-media?path=" + urllib.parse.quote(relative, safe=""),
-    }
-
-
-def library_file(path: str) -> Path | None:
-    raw = (path or "").strip()
-    if not raw or raw.startswith(("/", "\\")) or ".." in Path(raw).parts:
-        return None
-    if not PRODUCTIONS.is_dir():
-        return None
-    root = PRODUCTIONS.resolve()
-    file = (root / raw).resolve()
-    if not file.is_file() or not _under(file, root):
-        return None
-    if file.suffix.lower() not in DOCUMENT_SUFFIXES | IMAGE_SUFFIXES:
-        return None
-    return file
-
-
-def library_text(file: Path) -> str:
-    text = file.read_text(encoding="utf-8", errors="replace")
-    if file.suffix.lower() == ".json":
-        try:
-            text = json.dumps(json.loads(text), indent=2)
-        except json.JSONDecodeError:
-            pass
-    if len(text) > _MAX_TEXT:
-        text = text[:_MAX_TEXT] + "\n\n… truncated"
-    return scrub(text, _secret())
 
 
 STAGES = ("brief", "development", "writer", "editor", "approval", "art")
@@ -729,7 +291,7 @@ def stage_detail(station: str) -> dict:
         brief = _board.brief
     folder = production_path(folder_label)
     detail: dict = {"station": station, "folder": folder_label, "files": [], "data": {}}
-    root = PRODUCTIONS.resolve() if PRODUCTIONS.is_dir() else None
+    root = library.PRODUCTIONS.resolve() if library.PRODUCTIONS.is_dir() else None
 
     def add_file(path: Path, label: str = "") -> None:
         if root is None or not path.is_file() or not _under(path, root):
@@ -890,7 +452,7 @@ async def _consume(serial: int, stream) -> None:
         message = str(exc)
         secret = _secret()
         if not secret or secret not in message:
-            traceback.print_exc()
+            log.exception("Desk request or run failed")
         note = "The run stopped: " + friendly(exc, secret)
     finally:
         _finish(serial, note)
@@ -1070,9 +632,7 @@ def _keep_without_provider(out: Path, decision: dict) -> None:
     else:
         saved["status"] = "paused"
         note = "Images paused. Review the image cards or resume saved image work."
-    temporary = out / "manifest.tmp"
-    temporary.write_text(json.dumps(saved, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(out / "manifest.json")
+    atomic_write_json(out / "manifest.json", saved)
     with _lock:
         _board.images = [dict(image) for image in saved["images"] if isinstance(image, dict)]
         if not waiting:
@@ -1135,7 +695,7 @@ def resume_images(data):
         if not folder.is_absolute():
             folder = WORKSPACE_ROOT / folder
         out = folder / "images"
-        if not _board.folder or not _under(out, PRODUCTIONS):
+        if not _board.folder or not _under(out, library.PRODUCTIONS):
             raise ValueError("No saved image production is selected.")
         spec = json.loads((out / "jobs.json").read_text())
         if not spec.get("inspection"):
@@ -1182,10 +742,7 @@ def abort_draft() -> None:
         folder = production_path(_board.folder)
         if folder is None:
             raise ValueError("This draft cannot be aborted.")
-        marker = folder / "aborted.json"
-        temporary = marker.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps({"aborted": True}) + "\n", encoding="utf-8")
-        temporary.replace(marker)
+        atomic_write_json(folder / "aborted.json", {"aborted": True})
         _board.note = _ABORT_NOTE
         _replace(_board)
 
@@ -1218,6 +775,34 @@ def proceed_saved(dry_run: bool, inspection_mode: str) -> None:
     )
 
 
+async def _drive_resume(serial: int, folder: Path, cancel: threading.Event) -> None:
+    studio = ScreenwriterStudio()
+    await _consume(serial, studio.resume(folder, cancel=cancel))
+
+
+def resume_story() -> None:
+    """Retry a story run that stopped at the screenwriter or editor. Development is not paid for again."""
+    global _run_serial, _cancel
+    _ensure_loop()
+    with _lock:
+        if _board.running:
+            raise ValueError("Wait for the current run to finish before retrying.")
+        folder = production_path(_board.folder)
+        if folder is None or not story_unfinished(folder):
+            raise ValueError("This production has nothing to retry.")
+        previous_cancel = _cancel
+        previous_future = _future
+        cancel = threading.Event()
+        _cancel = cancel
+        _run_serial += 1
+        serial = _run_serial
+        _board.running = True
+        _board.note = "Retrying from the saved development."
+        _replace(_board)
+    _cut(previous_cancel, previous_future)
+    _commit_future(serial, cancel, _drive_resume(serial, folder, cancel))
+
+
 async def _drive_video(serial, folder, mode, sound, dry_run, cancel, selection=None, shots=None, redo=None, prompts=None):
     def update(manifest):
         complete = sum(clip.get("state") == "done" for clip in manifest["clips"])
@@ -1235,7 +820,7 @@ async def _drive_video(serial, folder, mode, sound, dry_run, cancel, selection=N
         cancel.set()
         raise
     except Exception as exc:
-        traceback.print_exc()
+        log.exception("Desk request or run failed")
         note = friendly(exc, _secret())
     finally:
         _finish(serial, note)
@@ -1303,6 +888,41 @@ def _content_type(path: Path) -> str:
     if suffix == ".gif":
         return "image/gif"
     return "application/octet-stream"
+
+
+def parse_run_request(data: dict) -> dict:
+    """Validate a /api/run body into start_crew arguments. Raises ValueError with the sentence to show."""
+    idea = data.get("idea") if isinstance(data.get("idea"), str) else ""
+    max_shots = data.get("max_shots")
+    if max_shots is not None and (type(max_shots) is not int or not 1 <= max_shots <= 240):
+        raise ValueError("Shot limit must be an integer between 1 and 240.")
+    runtime, ratio = data.get("runtime_seconds"), data.get("aspect_ratio")
+    if runtime is not None and (type(runtime) is not int or not 6 <= runtime <= 720):
+        raise ValueError("Runtime must be a whole number of seconds between 6 and 720.")
+    if ratio is not None and ratio not in ("16:9", "9:16", "1:1"):
+        raise ValueError("Aspect ratio must be 16:9, 9:16, or 1:1.")
+    if runtime is not None and max_shots is not None:
+        shot_budget(runtime, max_shots, studio_settings.load()["video"]["selection"])
+    image_count = parse_image_count(data.get("image_count"))
+    references = parse_references(data.get("references"))
+    mode = data.get("inspection_mode", "manual")
+    if mode not in ("manual", "auto"):
+        raise ValueError("Inspection mode must be manual or auto.")
+    if not idea.strip():
+        raise ValueError("Write an idea first, or use Suggest a story.")
+    request: dict = {"idea": idea.strip(), "pages_only": bool(data.get("pages_only")),
+                     "dry_run": bool(data.get("dry_run")), "max_shots": max_shots, "inspection_mode": mode}
+    if image_count is not None:
+        request["image_count"] = image_count
+    if references:
+        request["references"] = references
+    if data.get("approval") is True:
+        request["approval"] = True
+    if runtime is not None:
+        request["runtime_seconds"] = runtime
+    if ratio is not None:
+        request["aspect_ratio"] = ratio
+    return request
 
 
 class DeskHandler(BaseHTTPRequestHandler):
@@ -1373,7 +993,7 @@ class DeskHandler(BaseHTTPRequestHandler):
                 self._send(404, b"No finished clips", "text/plain")
             return
         if route == "/video-media":
-            path = video_file(PRODUCTIONS, query.get("path", [""])[0])
+            path = video_file(library.PRODUCTIONS, query.get("path", [""])[0])
             if path is None:
                 self._send(404, b"Video not found", "text/plain")
             else:
@@ -1388,190 +1008,157 @@ class DeskHandler(BaseHTTPRequestHandler):
         except (ConnectionResetError, BrokenPipeError):
             raise
         except Exception as exc:
-            traceback.print_exc()
+            log.exception("Desk request or run failed")
             try:
                 self._json(500, {"error": friendly(exc, _secret())})
             except OSError:
                 pass
 
+    # path -> (handler, body). body None reads nothing, "json" a small body, "upload" a large one.
+    _POST_ROUTES = {
+        "/api/log/clear": ("_post_log_clear", None),
+        "/api/session/clear": ("_post_session_clear", None),
+        "/api/stop": ("_post_stop", None),
+        "/api/abort-draft": ("_post_abort_draft", None),
+        "/api/references": ("_post_reference_upload", "upload"),
+        "/api/settings": ("_post_settings", "json"),
+        "/api/video/forget": ("_post_video_forget", "json"),
+        "/api/production/open": ("_post_production_open", "json"),
+        "/api/video": ("_post_video", "json"),
+        "/api/video/take": ("_post_video_take", "json"),
+        "/api/images/version": ("_post_image_action", "json"),
+        "/api/images/forget": ("_post_image_action", "json"),
+        "/api/images/attach": ("_post_image_action", "json"),
+        "/api/images/review": ("_post_images_review", "json"),
+        "/api/proceed": ("_post_proceed", "json"),
+        "/api/resume": ("_post_resume", "json"),
+        "/api/brief/suggest": ("_post_brief_suggest", "json"),
+        "/api/run": ("_post_run", "json"),
+    }
+
     def _post(self) -> None:
         if not self._local_request(mutating=True):
             return
-        parsed = urllib.parse.urlparse(self.path)
-        if parsed.path == "/api/log/clear":
-            clear_log()
-            self._json(200, {"ok": True})
-            return
-        if parsed.path == "/api/session/clear":
-            clear_session()
-            self._json(200, {"ok": True})
-            return
-        if parsed.path == "/api/stop":
-            stop_run()
-            self._json(200, {"ok": True})
-            return
-        if parsed.path == "/api/abort-draft":
-            try:
-                abort_draft()
-            except ValueError as exc:
-                self._json(409, {"error": scrub(str(exc), _secret())})
-                return
-            self._json(200, {"ok": True})
-            return
-        if parsed.path == "/api/references":
-            data = self._read_json(_MAX_UPLOAD_BODY)
-            if data is None:
-                return
-            try:
-                saved = save_reference_upload(data.get("filename"), data.get("data"))
-            except ValueError as exc:
-                self._json(400, {"error": str(exc)})
-                return
-            self._json(200, saved)
-            return
-        if parsed.path not in {"/api/run", "/api/brief/suggest", "/api/images/review", "/api/proceed", "/api/video", "/api/settings",
-                               "/api/production/open", "/api/video/forget", "/api/video/take",
-                               "/api/images/version", "/api/images/forget", "/api/images/attach"}:
+        route = self._POST_ROUTES.get(urllib.parse.urlparse(self.path).path)
+        if route is None:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return
-        data = self._read_json()
-        if data is None:
-            return
-        if parsed.path == "/api/settings":
-            try:
-                values = studio_settings.save(studio_settings.DEFAULTS if data.get("reset") is True else data.get("values"))
-            except ValueError as exc:
-                self._json(400, {"error": str(exc)})
+        handler, body = route
+        data: dict | None = {}
+        if body is not None:
+            data = self._read_json(_MAX_UPLOAD_BODY if body == "upload" else None)
+            if data is None:
                 return
-            with _lock:
-                # Estimates and model labels on the desk follow the new choices.
-                _board.revision += 1
-                hub.publish(_board.revision)
-            self._json(200, {"values": values})
-            return
-        if parsed.path == "/api/video/forget":
-            shot = data.get("shot")
-            with _lock:
-                running = _board.running
-                folder = production_path(_board.folder)
-            if running or folder is None or not isinstance(shot, str) or not re.fullmatch(r"s\d{2,3}", shot):
-                self._json(409, {"error": "Stop the current run and choose a shot first."})
-                return
-            try:
-                forget_submission(folder, shot)
-            except (ValueError, OSError) as exc:
-                self._json(409, {"error": friendly(exc, _secret())})
-                return
-            with _lock:
-                _replace(_board)
-            self._json(200, {"ok": True})
-            return
-        if parsed.path == "/api/production/open":
-            try:
-                open_production(data.get("slug"))
-            except ValueError as exc:
-                self._json(409, {"error": friendly(exc, _secret())})
-                return
-            self._json(200, {"ok": True})
-            return
-        if parsed.path == "/api/video":
-            try:
-                start_video(data)
-            except (ValueError, OSError) as exc:
-                self._json(409, {"error": friendly(exc, _secret())})
-                return
-            self._json(202, {"ok": True})
-            return
-        if parsed.path in {"/api/images/version", "/api/images/forget", "/api/images/attach"}:
-            try:
-                image_action(parsed.path.rsplit("/", 1)[1], data)
-            except (ValueError, OSError) as exc:
-                self._json(409, {"error": friendly(exc, _secret())})
-                return
-            self._json(200, {"ok": True})
-            return
-        if parsed.path == "/api/video/take":
-            try:
-                video_take(data.get("shot"), data.get("take"))
-            except (ValueError, OSError) as exc:
-                self._json(409, {"error": friendly(exc, _secret())})
-                return
-            self._json(200, {"ok": True})
-            return
-        if parsed.path == "/api/images/review":
-            try:
-                resume_images(data)
-            except (ValueError, OSError) as exc:
-                self._json(409, {"error": friendly(exc, _secret())})
-                return
-            self._json(202, {"ok": True})
-            return
-        if parsed.path == "/api/proceed":
-            mode = data.get("inspection_mode", "manual")
-            if mode not in ("manual", "auto"):
-                self._json(400, {"error": "Inspection mode must be manual or auto."})
-                return
-            try:
-                proceed_saved(bool(data.get("dry_run")), mode)
-            except (ValueError, OSError) as exc:
-                self._json(409, {"error": friendly(exc, _secret())})
-                return
-            self._json(202, {"ok": True})
-            return
-        idea = data.get("idea") if isinstance(data.get("idea"), str) else ""
-        if parsed.path == "/api/brief/suggest":
-            film = {key: data.get(key) for key in ("runtime_seconds", "aspect_ratio", "max_shots")
-                    if (type(data.get(key)) is int and data.get(key) > 0) or data.get(key) in ("16:9", "9:16", "1:1")}
-            references = data.get("references")
-            self._suggest(idea, film, references if isinstance(references, list) and references else None)
-            return
-        max_shots = data.get("max_shots")
-        if max_shots is not None and (type(max_shots) is not int or not 1 <= max_shots <= 240):
-            self._json(400, {"error": "Shot limit must be an integer between 1 and 240."})
-            return
-        runtime, ratio = data.get("runtime_seconds"), data.get("aspect_ratio")
-        if runtime is not None and (type(runtime) is not int or not 6 <= runtime <= 720):
-            self._json(400, {"error": "Runtime must be a whole number of seconds between 6 and 720."})
-            return
-        if ratio is not None and ratio not in ("16:9", "9:16", "1:1"):
-            self._json(400, {"error": "Aspect ratio must be 16:9, 9:16, or 1:1."})
-            return
-        if runtime is not None and max_shots is not None:
-            try:
-                shot_budget(runtime, max_shots, studio_settings.load()["video"]["selection"])
-            except ValueError as exc:
-                self._json(400, {"error": str(exc)})
-                return
+        getattr(self, handler)(data)
+
+    def _act(self, action, ok: int = 200, errors=(ValueError, OSError)) -> None:
+        """Run action; a refusal becomes a 409 with a one-line reason the desk can show."""
         try:
-            image_count = parse_image_count(data.get("image_count"))
-            references = parse_references(data.get("references"))
+            action()
+        except errors as exc:
+            self._json(409, {"error": friendly(exc, _secret())})
+            return
+        self._json(ok, {"ok": True})
+
+    def _post_log_clear(self, data: dict) -> None:
+        clear_log()
+        self._json(200, {"ok": True})
+
+    def _post_session_clear(self, data: dict) -> None:
+        clear_session()
+        self._json(200, {"ok": True})
+
+    def _post_stop(self, data: dict) -> None:
+        stop_run()
+        self._json(200, {"ok": True})
+
+    def _post_abort_draft(self, data: dict) -> None:
+        try:
+            abort_draft()
+        except ValueError as exc:
+            self._json(409, {"error": scrub(str(exc), _secret())})
+            return
+        self._json(200, {"ok": True})
+
+    def _post_reference_upload(self, data: dict) -> None:
+        try:
+            saved = save_reference_upload(data.get("filename"), data.get("data"))
         except ValueError as exc:
             self._json(400, {"error": str(exc)})
             return
+        self._json(200, saved)
+
+    def _post_settings(self, data: dict) -> None:
+        try:
+            values = studio_settings.save(studio_settings.DEFAULTS if data.get("reset") is True else data.get("values"))
+        except ValueError as exc:
+            self._json(400, {"error": str(exc)})
+            return
+        with _lock:
+            # Estimates and model labels on the desk follow the new choices.
+            _board.revision += 1
+            hub.publish(_board.revision)
+        self._json(200, {"values": values})
+
+    def _post_video_forget(self, data: dict) -> None:
+        shot = data.get("shot")
+        with _lock:
+            running = _board.running
+            folder = production_path(_board.folder)
+        if running or folder is None or not isinstance(shot, str) or not re.fullmatch(r"s\d{2,3}", shot):
+            self._json(409, {"error": "Stop the current run and choose a shot first."})
+            return
+        try:
+            forget_submission(folder, shot)
+        except (ValueError, OSError) as exc:
+            self._json(409, {"error": friendly(exc, _secret())})
+            return
+        with _lock:
+            _replace(_board)
+        self._json(200, {"ok": True})
+
+    def _post_production_open(self, data: dict) -> None:
+        self._act(lambda: open_production(data.get("slug")), errors=(ValueError,))
+
+    def _post_video(self, data: dict) -> None:
+        self._act(lambda: start_video(data), ok=202)
+
+    def _post_video_take(self, data: dict) -> None:
+        self._act(lambda: video_take(data.get("shot"), data.get("take")))
+
+    def _post_image_action(self, data: dict) -> None:
+        self._act(lambda: image_action(urllib.parse.urlparse(self.path).path.rsplit("/", 1)[1], data))
+
+    def _post_images_review(self, data: dict) -> None:
+        self._act(lambda: resume_images(data), ok=202)
+
+    def _post_proceed(self, data: dict) -> None:
         mode = data.get("inspection_mode", "manual")
         if mode not in ("manual", "auto"):
             self._json(400, {"error": "Inspection mode must be manual or auto."})
             return
-        kwargs = {}
-        if image_count is not None:
-            kwargs["image_count"] = image_count
-        if references:
-            kwargs["references"] = references
-        if data.get("approval") is True:
-            kwargs["approval"] = True
-        if runtime is not None:
-            kwargs["runtime_seconds"] = runtime
-        if ratio is not None:
-            kwargs["aspect_ratio"] = ratio
-        if not idea.strip():
-            self._json(400, {"error": "Write an idea first, or use Suggest a story."})
-            return
+        self._act(lambda: proceed_saved(bool(data.get("dry_run")), mode), ok=202)
+
+    def _post_resume(self, data: dict) -> None:
+        self._act(resume_story, ok=202)
+
+    def _post_brief_suggest(self, data: dict) -> None:
+        idea = data.get("idea") if isinstance(data.get("idea"), str) else ""
+        film = {key: data.get(key) for key in ("runtime_seconds", "aspect_ratio", "max_shots")
+                if (type(data.get(key)) is int and data.get(key) > 0) or data.get(key) in ("16:9", "9:16", "1:1")}
+        references = data.get("references")
+        avoid = data.get("avoid")
+        avoid = [text for text in avoid if isinstance(text, str)][:3] if isinstance(avoid, list) else None
+        self._suggest(idea, film, references if isinstance(references, list) and references else None, avoid)
+
+    def _post_run(self, data: dict) -> None:
         try:
-            start_crew(idea.strip(), bool(data.get("pages_only")), bool(data.get("dry_run")), max_shots, mode, **kwargs)
+            request = parse_run_request(data)
         except ValueError as exc:
-            self._json(409, {"error": friendly(exc, _secret())})
+            self._json(400, {"error": str(exc)})
             return
-        self._json(202, {"ok": True})
+        head = [request.pop(name) for name in ("idea", "pages_only", "dry_run", "max_shots", "inspection_mode")]
+        self._act(lambda: start_crew(*head, **request), ok=202, errors=(ValueError,))
 
     def _local_request(self, mutating: bool = False) -> bool:
         host = self.headers.get("Host", "")
@@ -1609,16 +1196,16 @@ class DeskHandler(BaseHTTPRequestHandler):
             return None
         return data
 
-    def _suggest(self, idea: str, film: dict | None = None, references: list | None = None) -> None:
+    def _suggest(self, idea: str, film: dict | None = None, references: list | None = None, avoid: list | None = None) -> None:
         """Fill the brief box. Does not start the crew."""
-        options = {key: value for key, value in (("film", film), ("references", references)) if value}
+        options = {key: value for key, value in (("film", film), ("references", references), ("avoid", avoid)) if value}
         try:
             brief = suggest_brief(idea, **options)
         except BriefSuggestError as exc:
             self._json(503, {"error": str(exc)})
             return
         except Exception:
-            traceback.print_exc()
+            log.exception("Desk request or run failed")
             self._json(503, {"error": "Could not write a brief."})
             return
         self._json(200, {"brief": brief})
@@ -1628,8 +1215,8 @@ class DeskHandler(BaseHTTPRequestHandler):
         if file is None:
             self._json(404, {"error": "That file is not in a production folder."})
             return
-        label = file.relative_to(PRODUCTIONS.resolve()).as_posix()
-        if file.suffix.lower() in IMAGE_SUFFIXES:
+        label = file.relative_to(library.PRODUCTIONS.resolve()).as_posix()
+        if file.suffix.lower() in library.IMAGE_SUFFIXES:
             self._json(
                 200,
                 {
@@ -1650,7 +1237,7 @@ class DeskHandler(BaseHTTPRequestHandler):
 
     def _library_media(self, path: str) -> None:
         file = library_file(path)
-        if file is None or file.suffix.lower() not in IMAGE_SUFFIXES:
+        if file is None or file.suffix.lower() not in library.IMAGE_SUFFIXES:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return
         self._send(200, file.read_bytes(), _content_type(file))
@@ -1691,8 +1278,11 @@ class DeskHandler(BaseHTTPRequestHandler):
                     self.wfile.write(b": ping\n\n")
                     self.wfile.flush()
                     continue
+                # A burst of image events becomes one push: wait a beat, then send the latest state.
+                time.sleep(_COALESCE_SECONDS)
+                revision = hub.revision
                 seen = revision
-                payload = json.dumps(public_view(), separators=(",", ":")).encode("utf-8")
+                payload = view_bytes(revision)
                 self.wfile.write(b"data: " + payload + b"\n\n")
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
@@ -1726,8 +1316,10 @@ def _open_browser(url: str) -> None:
     """Open a window on this display. xdg-open hangs on the xfce helper and never shows the page."""
     chrome = shutil.which("google-chrome") or shutil.which("google-chrome-stable")
     if chrome and os.environ.get("DISPLAY"):
+        # Chrome refuses to start as root without --no-sandbox (containers); never drop it for a normal user.
+        flags = ["--no-sandbox", "--disable-dev-shm-usage"] if os.geteuid() == 0 else []
         subprocess.Popen(
-            [chrome, "--new-window", url, "--no-sandbox", "--disable-dev-shm-usage"],
+            [chrome, "--new-window", url, *flags],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -1738,6 +1330,7 @@ def _open_browser(url: str) -> None:
 
 
 def serve(port: int = 7860, open_browser: bool = True) -> None:
+    runlog.configure_logging()
     httpd = None
     last_error: OSError | None = None
     for candidate in range(port, port + 10):

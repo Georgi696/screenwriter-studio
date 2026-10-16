@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from screenwriter_studio.fsio import atomic_write_json
 from screenwriter_studio.images.upload import SOURCE_LIMIT
 from screenwriter_studio.schemas import Development, Screenplay
 from screenwriter_studio.videos.catalog import (
@@ -26,9 +27,7 @@ def read_json(path: Path) -> dict:
 
 
 def write_json(path: Path, value: dict) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    atomic_write_json(path, value)
 
 
 def digest(value: dict) -> str:

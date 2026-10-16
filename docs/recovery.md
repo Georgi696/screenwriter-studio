@@ -48,7 +48,9 @@ python -m screenwriter_studio.videos ../productions/last-train --forget-submissi
 ```
 
 In the desk, the clip card offers **Not on KIE? Send it again** for the same purpose.
-A definite rejection (an HTTP 4xx answer, a refused connection or an unknown host) is
+A rate limit (429 or 408) is retried automatically with backoff before a submission is
+failed, and an out-of-credits answer (402) stops the whole batch with the failure saved;
+add credits, then resume. A definite rejection (any other HTTP 4xx answer, a refused connection or an unknown host) is
 recorded as a failed submission straight away, because no task can exist; only
 timeouts and server errors after sending are left uncertain. Status checks are retried
 three times before a clip pauses. A clip shorter than its shot is kept as

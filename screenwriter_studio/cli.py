@@ -7,8 +7,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+load_dotenv(override=False)
 
+from screenwriter_studio import runlog
 from screenwriter_studio.paths import WORKSPACE_ROOT
 from screenwriter_studio.studio import ScreenwriterStudio
 
@@ -26,6 +27,8 @@ def _parse() -> argparse.Namespace:
                         help="Continue straight into paid image work when the editor passes the pages. "
                              "By default the run pauses with the pages; continue it with --proceed FOLDER.")
     parser.add_argument("--ui", action="store_true", help="Open the browser desk")
+    parser.add_argument("--usage", metavar="FOLDER",
+                        help="Show how many calls, tokens and seconds each crew role used in a saved production")
     parser.add_argument(
         "--proceed",
         metavar="FOLDER",
@@ -60,8 +63,26 @@ async def _proceed(folder: str, dry_run: bool, inspection_mode: str) -> None:
         print(chunk.text, end="", flush=True)
 
 
+def _usage(folder: str) -> int:
+    path = Path(folder)
+    if not path.is_absolute():
+        path = Path.cwd() / folder if (Path.cwd() / folder).is_dir() else WORKSPACE_ROOT / folder
+    totals = runlog.summary(path)
+    if not totals:
+        print("No crew calls are logged for that production.", file=sys.stderr)
+        return 1
+    print(f"{'role':<12}{'calls':>6}{'retries':>8}{'failed':>7}{'in tokens':>11}{'out tokens':>11}{'seconds':>9}  models")
+    for role, row in totals.items():
+        print(f"{role:<12}{row['calls']:>6}{row['retries']:>8}{row['failures']:>7}{row['input_tokens']:>11}"
+              f"{row['output_tokens']:>11}{row['seconds']:>9.1f}  {', '.join(row['models'])}")
+    return 0
+
+
 def main() -> int:
     args = _parse()
+    runlog.configure_logging()
+    if args.usage:
+        return _usage(args.usage)
     if args.ui:
         from screenwriter_studio.web.server import serve
 

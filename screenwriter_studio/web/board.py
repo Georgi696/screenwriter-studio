@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
+from screenwriter_studio.fsio import atomic_write_json
 from screenwriter_studio.events import StudioEvent
 
 from screenwriter_studio.paths import PROJECT_ROOT, STATE_DIR
@@ -307,9 +308,7 @@ def save_status(board: Board, secret: str = "") -> None:
         "overridden": sorted(board.overridden),
     }
     STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temporary = STATUS_PATH.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(STATUS_PATH)
+    atomic_write_json(STATUS_PATH, payload, durable=False)
 
 
 def board_from_folder(folder, label: str) -> Board:

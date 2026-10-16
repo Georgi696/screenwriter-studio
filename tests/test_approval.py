@@ -4,6 +4,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+from screenwriter_studio.web import library
 from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -148,8 +149,8 @@ class StageDetailTest(unittest.TestCase):
             board = Board()
             board.folder = "productions/hall"
             board.brief = "A hall at night."
-            with mock.patch.object(desk, "PRODUCTIONS", root / "productions"), \
-                    mock.patch.object(desk, "WORKSPACE_ROOT", root), \
+            with mock.patch.object(library, "PRODUCTIONS", root / "productions"), \
+                    mock.patch.object(desk, "WORKSPACE_ROOT", root), mock.patch.object(library, "WORKSPACE_ROOT", root), \
                     mock.patch.object(desk, "_board", board):
                 details = {station: desk.stage_detail(station) for station in desk.STAGES}
                 with self.assertRaises(ValueError):

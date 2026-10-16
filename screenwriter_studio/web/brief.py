@@ -48,6 +48,25 @@ SPARKS = (
     "a pastry chef who wants the cake to reach the hospital intact",
 )
 
+# With references the pictures fix the places and look; an angle varies the story told in them.
+ANGLES = (
+    "a quiet, personal moment rather than action",
+    "a rescue that goes wrong in a small way",
+    "a reunion between two people who thought the other was lost",
+    "something precious has gone missing and must be found",
+    "a race against a clock the audience can see",
+    "an act of mercy toward someone who does not deserve it",
+    "a child sees what the adults miss",
+    "a stranger who does not belong in this place",
+    "a promise that has to be kept before the light changes",
+    "a dark comedy: one stubborn person versus the situation",
+    "the aftermath, years later, when someone returns",
+    "a message that has to reach one person",
+)
+_LOOK_LABELS = {"medium", "light", "lighting", "palette", "colour", "color", "grade", "texture", "look", "style", "lens", "mood"}
+_LABELED = re.compile(r"(?:^|(?<=[.;]\s))([A-Z][A-Za-z ]{1,20}):\s*")
+MAX_AVOID = 3
+
 _FENCE = re.compile(r"```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)\s*```")
 _LABEL = re.compile(r"^(?:brief|story|logline)\s*:\s*", re.IGNORECASE)
 _JSON_STRING = re.compile(
@@ -100,6 +119,32 @@ def spark_for(salt: str) -> str:
     return SPARKS[int.from_bytes(digest[:4], "big") % len(SPARKS)]
 
 
+def angle_for(salt: str) -> str:
+    digest = hashlib.sha256(("angle:" + salt).encode("utf-8")).digest()
+    return ANGLES[int.from_bytes(digest[:4], "big") % len(ANGLES)]
+
+
+def look_only(prompt: str) -> str:
+    """The light, palette and medium parts of a structured image prompt; its people and places stay out."""
+    marks = list(_LABELED.finditer(prompt or ""))
+    kept = []
+    for at, mark in enumerate(marks):
+        end = marks[at + 1].start() if at + 1 < len(marks) else len(prompt)
+        if mark.group(1).strip().lower() in _LOOK_LABELS:
+            kept.append(prompt[mark.start():end].strip())
+    return " ".join(kept)
+
+
+def avoid_line(avoid: list[str] | None) -> str:
+    """Earlier suggestions from this desk, so a new click does not hand back the same film."""
+    earlier = [" ".join(str(text).split())[:600] for text in (avoid or [])[:MAX_AVOID] if str(text).strip()]
+    if not earlier:
+        return ""
+    return ("\n\nThese briefs were already suggested. Write a different film: do not reuse their characters, names, "
+            "premise, obstacle or visual hook, even if the references are the same.\n"
+            + "\n".join(f"- {text}" for text in earlier))
+
+
 def build_input(idea: str, *, salt: str) -> str:
     note = " ".join(idea.split())
     if note:
@@ -148,7 +193,9 @@ def reference_line(references: list[dict]) -> str:
         "props and light, not its camera directions or technical wording. "
         "Use the names given; name an unnamed character yourself."
         + ("" if any(item["mode"] in {"character", "lock"} for item in references)
-           else " No character is selected; invent one that fits the places and look.")
+           else " No character is selected; invent one. The places do not decide who it is: a resident, a child, "
+                "a medic, a musician, a thief or a stranger can be here as well as the most obvious person. "
+                "Do not default to whoever the setting suggests first.")
     )
 
 
@@ -212,8 +259,14 @@ def reference_text(references: list[dict]) -> str:
         label = (f"Reference {number}{name} ({path.name}) · {item['mode']}: use it as "
                  f"{ROLE_USE.get(item['mode'], ROLE_USE['lock'])}. " + reference_direction(item))
         prompt = image_prompt(path)
-        label += (f"\nThe prompt this image was generated from: \u201c{_clip(prompt, _MAX_REFERENCE_PROMPT)}\u201d" if prompt
-                  else "\nNo generation prompt is saved for this image (an upload); go by its role, name and file name.")
+        if prompt and item["mode"] == "style":
+            # A style picture lends its look. Its subject (a city, a war, a person) must not choose the story.
+            look = look_only(prompt)
+            label += (f"\nThe look of this image, from its generation prompt: \u201c{_clip(look, _MAX_REFERENCE_PROMPT)}\u201d" if look
+                      else "\nIts generation prompt is left out so its people and places do not enter the story.")
+        else:
+            label += (f"\nThe prompt this image was generated from: \u201c{_clip(prompt, _MAX_REFERENCE_PROMPT)}\u201d" if prompt
+                      else "\nNo generation prompt is saved for this image (an upload); go by its role, name and file name.")
         lines.append(label)
     return "\n\n".join(lines)
 
@@ -230,7 +283,7 @@ def resolve_references(references) -> list[dict]:
 
 
 def build_request(idea: str, *, salt: str | None = None, film: dict | None = None,
-                  references: list[dict] | None = None) -> dict:
+                  references: list[dict] | None = None, avoid: list[str] | None = None) -> dict:
     """Body fields for `responses.create` on the KIE chat client. References must already be resolved.
 
     The input is always plain text; references are described, never attached as pictures.
@@ -241,8 +294,11 @@ def build_request(idea: str, *, salt: str | None = None, film: dict | None = Non
     if references:
         if not " ".join(idea.split()):
             # The references lead; the random spark would only pull the story somewhere else.
-            text = text.replace(f"Let this spark steer the invention so two clicks do not match: {spark_for(salt)}. ", "")
+            text = text.replace(f"Let this spark steer the invention so two clicks do not match: {spark_for(salt)}. ",
+                                f"Tell this kind of story in the referenced places: {angle_for(salt)}. ")
         text += reference_line(references) + "\n\n" + reference_text(references)
+    if not " ".join(idea.split()):
+        text += avoid_line(avoid)
     return {
         "model": studio_settings.load()["chat"]["development"] or DEVELOPMENT_MODEL,
         "instructions": instructions(),
@@ -545,13 +601,14 @@ def _create_with_retries(chat, request: dict, key: str):
 
 
 def suggest_brief(idea: str, *, client=None, salt: str | None = None, film: dict | None = None,
-                  references: list | None = None) -> str:
+                  references: list | None = None, avoid: list | None = None) -> str:
     """Return one paragraph. Raises BriefSuggestError when the key or the model fails."""
     key = load_kie_api_key()
     if not key:
         raise BriefSuggestError(MISSING_KEY)
     resolved = resolve_references(references) if references else None
-    request = build_request(idea if isinstance(idea, str) else "", salt=salt, film=film, references=resolved)
+    request = build_request(idea if isinstance(idea, str) else "", salt=salt, film=film, references=resolved,
+                            avoid=[text for text in avoid or [] if isinstance(text, str)])
     chat = client or kie_responses_client(api_key=key)
     response = _create_with_retries(chat, request, key)
     try:

@@ -18,26 +18,33 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
+import time
 import unicodedata
 import queue
+import random
 import re
 import shutil
 import threading
 from pathlib import Path
 
 from agents import Runner, set_tracing_disabled
+from agents.exceptions import ModelBehaviorError
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
 from screenwriter_studio.crew.art import art_agent
 from screenwriter_studio.budget import shot_budget
 from screenwriter_studio.videos.catalog import choose_model, clip_bounds
+from screenwriter_studio import runlog
+from screenwriter_studio.errors import provider_down, status_code
 from screenwriter_studio.events import StudioEvent
+from screenwriter_studio.fsio import atomic_write_json, atomic_write_text
 from screenwriter_studio.crew.development import development_agent
 from screenwriter_studio.crew.editor import editor_agent
 from screenwriter_studio.playbooks import CAMERA_COVERAGE, PLAYBOOKS
 from screenwriter_studio.paths import WORKSPACE_ROOT
-from screenwriter_studio.images.upload import SOURCE_LIMIT
+from screenwriter_studio.images.upload import SOURCE_LIMIT, suffix_matches
 from screenwriter_studio.pricing import production_estimate
 from screenwriter_studio.models import load_kie_api_key
 from screenwriter_studio.settings import chat_agent, load as load_settings
@@ -48,10 +55,14 @@ from screenwriter_studio.schemas import Development, Screenplay, ScriptVerdict, 
 from screenwriter_studio.images.service import validate_still_package, render_stills
 from screenwriter_studio.crew.writer import writer_agent
 
-load_dotenv(override=True)
+load_dotenv(override=False)
 set_tracing_disabled(True)
+log = logging.getLogger("screenwriter_studio")
 
 MAX_REWRITES = 2
+MAX_ART_REPAIRS = 1
+# Seconds to wait before each retry when KIE's chat gateway answers 429/5xx (about two minutes in all).
+OUTAGE_WAITS = (5, 20, 45)
 _STOP_TEXT = "Generation stopped. Saved images can be resumed.\n\n"
 _MAX_REFERENCE_BYTES = SOURCE_LIMIT
 _REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -179,23 +190,6 @@ def _slug(value: str) -> str:
     return (cleaned or "untitled")[:48]
 
 
-def _image_header_kind(header: bytes) -> str | None:
-    if header.startswith(b"\x89PNG\r\n\x1a\n"):
-        return ".png"
-    if header.startswith(b"\xff\xd8\xff"):
-        return ".jpg"
-    if len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"WEBP":
-        return ".webp"
-    return None
-
-
-def _suffix_matches_image(suffix: str, header: bytes) -> bool:
-    kind = _image_header_kind(header)
-    if kind == ".jpg":
-        return suffix in {".jpg", ".jpeg"}
-    return kind is not None and kind == suffix
-
-
 def _under_root(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -220,7 +214,7 @@ def _reference_source(relative: str) -> Path:
         header = file.read_bytes()[:12]
     except OSError as exc:
         raise ValueError("Reference image is not available.") from exc
-    if size <= 0 or size > _MAX_REFERENCE_BYTES or not _suffix_matches_image(suffix, header):
+    if size <= 0 or size > _MAX_REFERENCE_BYTES or not suffix_matches(suffix, header):
         raise ValueError("Reference image must be a PNG, JPEG, or WebP within the size limit.")
     return file
 
@@ -329,10 +323,31 @@ def _reference_note(references: list[dict] | None, story: bool = False) -> str:
 _SETTINGS = "run_settings.json"
 
 
-def _save_settings(folder: Path, *, image_count: int | None, references: list[dict], brief: str = "") -> None:
-    """What proceed() needs to continue the same run after a pause."""
-    payload = {"image_count": image_count, "references": references, "brief": brief}
-    (folder / _SETTINGS).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+def _save_settings(folder: Path, *, image_count: int | None, references: list[dict], brief: str = "",
+                   flow: dict | None = None) -> None:
+    """What proceed() and resume() need to continue the same run after a pause or a failure."""
+    payload = {"image_count": image_count, "references": references, "brief": brief, "flow": flow or {}}
+    atomic_write_json(folder / _SETTINGS, payload)
+
+
+def _saved_flow(folder: Path) -> dict:
+    """The options the run started with, so resuming it behaves the same way."""
+    try:
+        data = json.loads((folder / _SETTINGS).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = None
+    flow = data.get("flow") if isinstance(data, dict) else None
+    flow = flow if isinstance(flow, dict) else {}
+    mode = flow.get("inspection_mode")
+    return {"pages_only": flow.get("pages_only") is True, "approval": flow.get("approval", True) is not False,
+            "dry_run": flow.get("dry_run") is True, "inspection_mode": mode if mode in {"manual", "auto"} else "manual"}
+
+
+def story_unfinished(folder: Path) -> bool:
+    """True when development is saved but the screenwriter/editor loop never reached a verdict."""
+    if not (folder / "00_development.json").is_file() or (folder / "aborted.json").is_file() or _image_work_started(folder):
+        return False
+    return not ((folder / "01_screenplay.json").is_file() and (folder / "verdict.json").is_file())
 
 
 def _saved_brief(folder: Path) -> str:
@@ -444,6 +459,67 @@ def _project_dir(slug: str) -> Path:
 
 
 class ScreenwriterStudio:
+    def __init__(self) -> None:
+        self._folder: Path | None = None
+        self._pending: list[dict] = []
+
+    def _bind(self, folder: Path) -> None:
+        """Calls made before the production folder existed are written to its run log now."""
+        self._folder = folder
+        for entry in self._pending:
+            runlog.append(folder, entry)
+        self._pending = []
+
+    def _note(self, entry: dict) -> None:
+        if self._folder is None:
+            self._pending.append(entry)
+        else:
+            runlog.append(self._folder, entry)
+
+    async def _call(self, role: str, agent, message: str, output, *, max_turns: int):
+        """One crew call. An unusable reply gets one more try that shows the model what was wrong.
+
+        Every attempt is logged with its model, tokens and time, so spend is visible per role.
+        """
+        chosen = chat_agent(role, agent)
+        model = str(getattr(chosen.model, "model", chosen.model))
+        prompt = message
+        outages = 0
+        attempt = 0
+        while attempt < 2:
+            attempt += 1
+            started = time.monotonic()
+            entry = {"role": role, "model": model, "attempt": attempt}
+            try:
+                result = await Runner.run(chosen, prompt, max_turns=max_turns)
+                value = result.final_output_as(output)
+            except (ModelBehaviorError, ValidationError) as exc:
+                reason = " ".join(str(exc).split())[:400]
+                self._note({**entry, "outcome": "invalid_output", "error": reason,
+                            "seconds": round(time.monotonic() - started, 2)})
+                if attempt == 2:
+                    raise
+                log.warning("%s reply was unusable (%s); asking once more", role, reason)
+                prompt = (message + "\n\nYour previous reply could not be used: " + reason
+                          + "\nReply again with output that matches the required schema exactly.")
+                continue
+            except Exception as exc:
+                self._note({**entry, "outcome": "error", "error": str(exc)[:300],
+                            "seconds": round(time.monotonic() - started, 2)})
+                if provider_down(exc) and outages < len(OUTAGE_WAITS):
+                    # KIE's gateway failed or is rate-limiting. Nothing was produced, so wait and ask again.
+                    wait = OUTAGE_WAITS[outages] * random.uniform(0.7, 1.3)
+                    outages += 1
+                    log.warning("%s: provider unavailable (%s); retry %d in %.0fs", role, status_code(exc), outages, wait)
+                    await asyncio.sleep(wait)
+                    attempt -= 1  # an outage does not use up the one retry for an unusable reply
+                    continue
+                raise
+            self._note({**entry, "outcome": "ok", "seconds": round(time.monotonic() - started, 2),
+                        **runlog.usage_of(result)})
+            return value
+        raise AssertionError("unreachable")  # pragma: no cover
+
     async def run(
         self,
         idea: str,
@@ -530,11 +606,11 @@ class ScreenwriterStudio:
             shot_budget(development.runtime_seconds, development.max_shots, selection)
             folder = _project_dir(development.slug or development.title)
             folder.mkdir(parents=True, exist_ok=True)
+            self._bind(folder)
             stored = _copy_references(folder, planned)
-            _save_settings(folder, image_count=image_count, references=stored, brief=idea)
-            (folder / "00_development.json").write_text(
-                development.model_dump_json(indent=2) + "\n", encoding="utf-8"
-            )
+            _save_settings(folder, image_count=image_count, references=stored, brief=idea, flow={
+                "pages_only": pages_only, "approval": approval, "dry_run": dry_run, "inspection_mode": inspection_mode})
+            atomic_write_text(folder / "00_development.json", development.model_dump_json(indent=2) + "\n")
             yield StudioEvent("developed",
                 f"**{development.title}** · {development.job_type} · "
                 f"{development.runtime_seconds}s · {development.aspect_ratio}\n\n"
@@ -542,65 +618,122 @@ class ScreenwriterStudio:
                 f"Folder: `{folder.relative_to(WORKSPACE_ROOT)}`\n\n", folder=str(folder.relative_to(WORKSPACE_ROOT))
             )
 
-            _raise_if_stopped(cancel)
+            async for event in self._story(
+                folder, development, stored, idea, pages_only=pages_only, approval=approval, dry_run=dry_run,
+                inspection_mode=inspection_mode, cancel=cancel, image_count=image_count,
+            ):
+                yield event
+        except _GenerationStopped:
+            yield StudioEvent("failed", _STOP_TEXT)
+
+    async def _story(self, folder: Path, development: Development, stored: list[dict], idea: str, *,
+                     pages_only: bool, approval: bool, dry_run: bool, inspection_mode: str,
+                     cancel: threading.Event | None, image_count: int | None,
+                     screenplay: Screenplay | None = None):
+        """Screenwriter, then the editor loop, then (unless paused) the image steps.
+
+        Shared by run() and resume(). A saved screenplay skips the first write.
+        """
+        _raise_if_stopped(cancel)
+        if screenplay is None:
             yield StudioEvent("writing", "**Screenwriter** is writing the pages.\n\n")
             screenplay = await self._write(development, previous=None, issues=None, references=stored)
-            verdict = ScriptVerdict(passed=False, issues=["not yet read"])
-            drafts = folder / "drafts"
-            drafts.mkdir()
-            previous_issues: list[str] | None = None
-            for attempt in range(MAX_REWRITES + 1):
-                (drafts / f"{attempt + 1:02d}_screenplay.json").write_text(screenplay.model_dump_json(indent=2) + "\n", encoding="utf-8")
-                _raise_if_stopped(cancel)
-                yield StudioEvent("reviewing", f"**Script editor** is reading draft {attempt + 1}.\n\n")
-                verdict = await self._edit(development, screenplay, previous_issues)
-                (drafts / f"{attempt + 1:02d}_verdict.json").write_text(verdict.model_dump_json(indent=2) + "\n", encoding="utf-8")
-                # The latest draft is always on disk, so a stop or an error mid-loop can be continued.
-                (folder / "01_screenplay.json").write_text(screenplay.model_dump_json(indent=2) + "\n", encoding="utf-8")
-                (folder / "verdict.json").write_text(verdict.model_dump_json(indent=2) + "\n", encoding="utf-8")
-                if verdict.passed:
-                    yield StudioEvent("approved", "The editor passed the draft.\n\n")
-                    break
-                listed = "\n".join(f"- {issue}" for issue in verdict.issues)
-                yield StudioEvent("rejected", f"The editor sent it back:\n{listed}\n\n")
-                if attempt == MAX_REWRITES:
-                    yield StudioEvent("failed", "Rewrite limit reached. The last draft is the one on disk.\n\n")
-                    break
-                _raise_if_stopped(cancel)
-                previous_issues = list(verdict.issues)
-                yield StudioEvent("rewriting", "**Screenwriter** is rewriting from the editor's notes.\n\n")
-                screenplay = await self._write(development, previous=screenplay, issues=verdict.issues, references=stored)
+        verdict = ScriptVerdict(passed=False, issues=["not yet read"])
+        drafts = folder / "drafts"
+        drafts.mkdir(exist_ok=True)
+        # A resumed run keeps the earlier drafts and numbers its own after them.
+        earlier = len(list(drafts.glob("*_screenplay.json")))
+        previous_issues: list[str] | None = None
+        for attempt in range(MAX_REWRITES + 1):
+            number = earlier + attempt + 1
+            atomic_write_text(drafts / f"{number:02d}_screenplay.json", screenplay.model_dump_json(indent=2) + "\n")
+            _raise_if_stopped(cancel)
+            yield StudioEvent("reviewing", f"**Script editor** is reading draft {number}.\n\n")
+            verdict = await self._edit(development, screenplay, previous_issues)
+            atomic_write_text(drafts / f"{number:02d}_verdict.json", verdict.model_dump_json(indent=2) + "\n")
+            # The latest draft is always on disk, so a stop or an error mid-loop can be continued.
+            atomic_write_text(folder / "01_screenplay.json", screenplay.model_dump_json(indent=2) + "\n")
+            atomic_write_text(folder / "verdict.json", verdict.model_dump_json(indent=2) + "\n")
+            if verdict.passed:
+                yield StudioEvent("approved", "The editor passed the draft.\n\n")
+                break
+            listed = "\n".join(f"- {issue}" for issue in verdict.issues)
+            yield StudioEvent("rejected", f"The editor sent it back:\n{listed}\n\n")
+            if attempt == MAX_REWRITES:
+                yield StudioEvent("failed", "Rewrite limit reached. The last draft is the one on disk.\n\n")
+                break
+            _raise_if_stopped(cancel)
+            previous_issues = list(verdict.issues)
+            yield StudioEvent("rewriting", "**Screenwriter** is rewriting from the editor's notes.\n\n")
+            screenplay = await self._write(development, previous=screenplay, issues=verdict.issues, references=stored)
 
-            (folder / "01_screenplay.json").write_text(screenplay.model_dump_json(indent=2) + "\n", encoding="utf-8")
-            (folder / "01_script.fountain").write_text(screenplay.fountain.rstrip() + "\n", encoding="utf-8")
-            (folder / "02_shots.md").write_text(_shots_markdown(screenplay), encoding="utf-8")
-            (folder / "verdict.json").write_text(verdict.model_dump_json(indent=2) + "\n", encoding="utf-8")
-            yield StudioEvent("pages", f"Pages: `{(folder / '01_script.fountain').relative_to(WORKSPACE_ROOT)}`\n\n")
+        atomic_write_text(folder / "01_screenplay.json", screenplay.model_dump_json(indent=2) + "\n")
+        atomic_write_text(folder / "01_script.fountain", screenplay.fountain.rstrip() + "\n")
+        atomic_write_text(folder / "02_shots.md", _shots_markdown(screenplay))
+        atomic_write_text(folder / "verdict.json", verdict.model_dump_json(indent=2) + "\n")
+        yield StudioEvent("pages", f"Pages: `{(folder / '01_script.fountain').relative_to(WORKSPACE_ROOT)}`\n\n")
 
-            if not verdict.passed:
-                yield StudioEvent(
-                    "failed",
-                    "The editor did not pass the draft. Use Proceed with this draft to continue into stills.\n\n",
-                )
-                return
+        if not verdict.passed:
+            yield StudioEvent(
+                "failed",
+                "The editor did not pass the draft. Use Proceed with this draft to continue into stills.\n\n",
+            )
+            return
 
-            if pages_only:
-                yield StudioEvent("complete", "Pages only. Stills were not requested.\n\n")
-                return
+        if pages_only:
+            yield StudioEvent("complete", "Pages only. Stills were not requested.\n\n")
+            return
 
-            if approval:
-                yield StudioEvent(
-                    "awaiting",
-                    "The pages are waiting for your approval. Approve them in the desk, or run "
-                    f"`python -m screenwriter_studio --proceed {folder.relative_to(WORKSPACE_ROOT)}` from the workspace, "
-                    "to write the image prompts and generate the images.\n\n"
-                    + _estimate_line(development, screenplay, image_count, stored),
-                )
-                return
+        if approval:
+            yield StudioEvent(
+                "awaiting",
+                "The pages are waiting for your approval. Approve them in the desk, or run "
+                f"`python -m screenwriter_studio --proceed {folder.relative_to(WORKSPACE_ROOT)}` from the workspace, "
+                "to write the image prompts and generate the images.\n\n"
+                + _estimate_line(development, screenplay, image_count, stored),
+            )
+            return
 
-            async for event in self._produce(
-                folder, development, screenplay, idea, dry_run=dry_run, inspection_mode=inspection_mode, cancel=cancel,
-                image_count=image_count, references=stored,
+        async for event in self._produce(
+            folder, development, screenplay, idea, dry_run=dry_run, inspection_mode=inspection_mode, cancel=cancel,
+            image_count=image_count, references=stored,
+        ):
+            yield event
+
+    async def resume(self, folder: Path, *, cancel: threading.Event | None = None):
+        """Continue a story run that stopped before the pages were finished.
+
+        Development is not paid for again. A provider outage, a stop or a restart during the
+        screenwriter or editor steps leaves the saved development (and any saved draft) behind;
+        this picks up from there with the options the run started with.
+        """
+        if not story_unfinished(folder):
+            raise ValueError("This production has nothing to retry: its pages are already written.")
+        try:
+            development = Development.model_validate_json((folder / "00_development.json").read_text(encoding="utf-8"))
+        except (OSError, ValidationError, json.JSONDecodeError) as exc:
+            raise ValueError("The saved development cannot be read, so this production cannot be retried.") from exc
+        screenplay = None
+        try:
+            screenplay = Screenplay.model_validate_json((folder / "01_screenplay.json").read_text(encoding="utf-8"))
+        except (OSError, ValidationError, json.JSONDecodeError):
+            pass
+        self._bind(folder)
+        stopped = _stop_event(cancel)
+        if stopped is not None:
+            yield stopped
+            return
+        if not load_kie_api_key():
+            yield StudioEvent("failed", "KIE_API_KEY is not set. Add it to `.env` in the repo root. "
+                                        "Keys are created at https://kie.ai/api-key\n")
+            return
+        image_count, references = _load_settings(folder)
+        flow = _saved_flow(folder)
+        try:
+            async for event in self._story(
+                folder, development, references, _saved_brief(folder), pages_only=flow["pages_only"],
+                approval=flow["approval"], dry_run=flow["dry_run"], inspection_mode=flow["inspection_mode"],
+                cancel=cancel, image_count=image_count, screenplay=screenplay,
             ):
                 yield event
         except _GenerationStopped:
@@ -623,6 +756,7 @@ class ScreenwriterStudio:
         if inspection_mode not in {"manual", "auto"}:
             raise ValueError("Inspection mode must be manual or auto.")
         development, screenplay, verdict = _load_saved(folder)
+        self._bind(folder)
         brief = brief or _saved_brief(folder)
         if _image_work_started(folder):
             raise ValueError("Image work is already saved. Resume it instead of starting again.")
@@ -639,18 +773,11 @@ class ScreenwriterStudio:
             return
 
         label = _folder_label(folder)
-        (folder / "greenlight.json").write_text(
-            json.dumps(
-                {
-                    "proceeded": True,
-                    "editor_passed": verdict.passed,
-                    "note": "Continued with the saved draft.",
-                },
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        atomic_write_json(folder / "greenlight.json", {
+            "proceeded": True,
+            "editor_passed": verdict.passed,
+            "note": "Continued with the saved draft.",
+        })
         if verdict.passed:
             yield StudioEvent("signed_off", "You approved the pages. Continuing to the art director.\n\n", folder=label)
         else:
@@ -689,10 +816,21 @@ class ScreenwriterStudio:
             yield StudioEvent("art", "**Art director** is writing the still jobs.\n\n"
                               + _estimate_line(development, screenplay, image_count, references))
             package = await self._art(development, screenplay, references=references, image_count=image_count)
-            (folder / "03_still_plan.json").write_text(package.model_dump_json(indent=2) + "\n", encoding="utf-8")
-            validate_still_package(
-                package, development, screenplay, image_count=image_count, reference_ids=reference_ids,
-            )
+            for repair in range(MAX_ART_REPAIRS + 1):
+                atomic_write_text(folder / "03_still_plan.json", package.model_dump_json(indent=2) + "\n")
+                try:
+                    validate_still_package(
+                        package, development, screenplay, image_count=image_count, reference_ids=reference_ids,
+                    )
+                    break
+                except ValueError as exc:
+                    if repair == MAX_ART_REPAIRS:
+                        raise
+                    # Nothing was sent to the image provider; show the art director what was wrong.
+                    yield StudioEvent("art", "**Art director** is correcting the plan: " + str(exc) + "\n\n")
+                    _raise_if_stopped(cancel)
+                    package = await self._art(development, screenplay, references=references, image_count=image_count,
+                                              previous=package, issues=[str(exc)])
         images = folder / "images"
         _raise_if_stopped(cancel)
         yield StudioEvent("stills", "**Stills** is calling KIE.ai.\n\n")
@@ -715,12 +853,8 @@ class ScreenwriterStudio:
             yield line
 
     async def _develop(self, idea: str, lock_block: str) -> Development:
-        result = await Runner.run(
-            chat_agent("development", development_agent),
-            f"{lock_block}Brief:\n{idea.strip()}",
-            max_turns=3,
-        )
-        return result.final_output_as(Development)
+        return await self._call("development", development_agent, f"{lock_block}Brief:\n{idea.strip()}",
+                                Development, max_turns=3)
 
     async def _write(
         self,
@@ -729,26 +863,25 @@ class ScreenwriterStudio:
         issues: list[str] | None,
         references: list[dict] | None = None,
     ) -> Screenplay:
-        result = await Runner.run(
-            chat_agent("writer", writer_agent),
-            writer_user_message(development, previous, issues, references),
-            max_turns=4,
-        )
-        return result.final_output_as(Screenplay)
+        return await self._call("writer", writer_agent,
+                                writer_user_message(development, previous, issues, references),
+                                Screenplay, max_turns=4)
 
     async def _edit(self, development: Development, screenplay: Screenplay, previous_issues: list[str] | None = None) -> ScriptVerdict:
-        result = await Runner.run(
-            chat_agent("editor", editor_agent),
-            editor_user_message(development, screenplay, previous_issues),
-            max_turns=3,
-        )
-        verdict = result.final_output_as(ScriptVerdict)
-        if not verdict.passed and not verdict.issues:
-            # Nothing to fix: rewriting blind would only spend two more drafts.
-            verdict.passed = True
+        # Rules the code can check exactly come first: a draft that breaks one goes straight
+        # back to the writer, so the editor model is only paid to read drafts that can pass.
         extra = _script_issues(development, screenplay) + _shot_issues(development, screenplay)
         if extra:
-            verdict.issues = extra + verdict.issues
+            self._note({"role": "editor", "outcome": "skipped", "reason": "deterministic issues",
+                        "issues": len(extra)})
+            return ScriptVerdict(passed=False, issues=extra)
+        verdict = await self._call("editor", editor_agent,
+                                   editor_user_message(development, screenplay, previous_issues),
+                                   ScriptVerdict, max_turns=3)
+        if not verdict.passed and not verdict.issues:
+            # Nothing to fix: rewriting blind would only spend two more drafts.
+            log.warning("The editor rejected a draft without naming an issue; treating it as passed.")
+            verdict.passed = True
         if verdict.issues:
             verdict.passed = False
         return verdict
@@ -759,13 +892,18 @@ class ScreenwriterStudio:
         screenplay: Screenplay,
         references: list[dict] | None = None,
         image_count: int | None = None,
+        previous: StillPackage | None = None,
+        issues: list[str] | None = None,
     ) -> StillPackage:
-        result = await Runner.run(
-            chat_agent("art", art_agent),
-            art_user_message(development, screenplay, references, image_count),
-            max_turns=4,
-        )
-        return result.final_output_as(StillPackage)
+        message = art_user_message(development, screenplay, references, image_count)
+        if previous is not None and issues:
+            message += (
+                "\n\nYour previous still plan was rejected before any image was made:\n"
+                + "\n".join(f"- {issue}" for issue in issues)
+                + "\nReturn the complete corrected plan. Keep what was valid.\nPrevious plan:\n"
+                + previous.model_dump_json()
+            )
+        return await self._call("art", art_agent, message, StillPackage, max_turns=4)
 
 
 def _clip_sentence(selection: str | None = None) -> str:

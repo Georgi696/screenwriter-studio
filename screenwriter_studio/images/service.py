@@ -1,15 +1,14 @@
 """Stills desk — writes jobs.json and calls KIE.ai. No model choice here; the generator routes."""
 
-import json
 import re
 from collections.abc import Callable
 from pathlib import Path
 
+from screenwriter_studio.fsio import atomic_write_json
 from screenwriter_studio.budget import select_stills
 from screenwriter_studio.images.catalog import NANO_BANANA_MODEL, card_for, prompt_length_error
 from screenwriter_studio.images.generator import _ref_list, choose, run_batch, waves
 from screenwriter_studio import settings as studio_settings
-from screenwriter_studio.models import ART_MODEL
 from screenwriter_studio.schemas import Development, Screenplay, StillPackage
 from screenwriter_studio.references import reference_direction, validate_reference_shots
 
@@ -228,5 +227,5 @@ def render_stills(
     }
     if locked_references:
         spec["locked_references"] = locked_references
-    (out / "jobs.json").write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(out / "jobs.json", spec)
     return run_batch(spec, out, dry_run=dry_run, on_record=on_record, on_start=on_start, cancel=cancel)

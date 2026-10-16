@@ -6,11 +6,12 @@ from pathlib import Path
 import re
 import threading
 import time
-import urllib.request
 
+from screenwriter_studio import kie
 from screenwriter_studio.images.generator import (
     POLL_URL, JobFailed, _first_url, _request, _within, hosted_reference_url, submit_task,
 )
+from screenwriter_studio.kie import CreditsExhausted
 from screenwriter_studio import settings as studio_settings
 from screenwriter_studio.models import load_kie_api_key
 from screenwriter_studio.videos.probe import check_cancel, sound_check, validate_clip, validate_keyframes
@@ -20,7 +21,6 @@ from screenwriter_studio.videos.plan import build_plan, digest, file_digest, pay
 POLL_INTERVAL = 5
 MAX_WAIT = 1800
 POLL_RETRIES = 3
-USER_AGENT = "ScreenwriterStudio/1.0"
 
 
 def download_video(url: str, path: Path, cancel=None) -> None:
@@ -28,21 +28,7 @@ def download_video(url: str, path: Path, cancel=None) -> None:
         raise ValueError("Provider video URL must use HTTPS.")
     temporary = path.with_suffix(".mp4.part")
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as stream:
-            size = 0
-            deadline = time.monotonic() + 600
-            while True:
-                check_cancel(cancel)
-                if time.monotonic() > deadline:
-                    raise TimeoutError("Video download timed out; resume to retry the saved URL.")
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > 2_000_000_000:
-                    raise ValueError("Provider clip exceeds the 2 GB download limit.")
-                stream.write(chunk)
+        size = kie.stream_to_file(url, temporary, cancel=cancel, check=check_cancel)
         if not size:
             raise ValueError("Provider returned an empty video.")
         temporary.replace(path)
@@ -133,6 +119,7 @@ def render_video(folder: Path, *, mode: str | None = None, sound: bool | None = 
             raise ValueError("Only a finished clip can be regenerated.")
         write_json(out / "jobs.json", plan)
         guard = threading.Lock()
+        out_of_credits = threading.Event()
 
         def checkpoint(clip=None, **changes):
             # Workers share the manifest; mutate and write under one lock.
@@ -156,6 +143,8 @@ def render_video(folder: Path, *, mode: str | None = None, sound: bool | None = 
                 clip.update(history=history, state="pending", error="")
         def work(shot, clip):
             check_cancel(cancel)
+            if out_of_credits.is_set():
+                return  # Credits ran out on another clip; this one stays as it was for the next resume.
             path = out / f"{shot['id']}.mp4"
             if clip.get("state") == "done" and path.is_file():
                 # A finished clip is final, even if you trimmed it in place; use redo to replace it.
@@ -179,7 +168,7 @@ def render_video(folder: Path, *, mode: str | None = None, sound: bool | None = 
                                    image_sha256=shot.get("image_sha256"))
                         try:
                             # Late lookup keeps this module's request function the one in use.
-                            reply = submit_task(key, request, send=lambda *a, **k: _request(*a, **k))
+                            reply = submit_task(key, request, send=lambda *a, **k: _request(*a, **k), cancel=cancel)
                             if reply.get("code") != 200:
                                 raise JobFailed(str(reply.get("msg") or "Video submission rejected."))
                             task_id = (reply.get("data") or {}).get("taskId")
@@ -211,6 +200,8 @@ def render_video(folder: Path, *, mode: str | None = None, sound: bool | None = 
                         check_cancel(cancel)  # a failed measurement never fails a paid clip
                 checkpoint(clip, state="done", sha256=file_digest(path), error="", **({"audio": audio} if audio else {}))
             except Exception as exc:
+                if isinstance(exc, CreditsExhausted):
+                    out_of_credits.set()
                 checkpoint(clip, **({"state": "failed"} if isinstance(exc, JobFailed) else {}), error=str(exc))
                 raise
 

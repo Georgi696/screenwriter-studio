@@ -10,7 +10,7 @@ from tests.fixtures import _piece
 from screenwriter_studio import pricing, settings as studio_settings
 from screenwriter_studio.images.catalog import GPT_CARD, NANO_CARD
 from screenwriter_studio.images.service import attach_cast
-from screenwriter_studio.schemas import CharacterLock, KieOutput, Line, Screenplay, Shot
+from screenwriter_studio.schemas import CharacterLock, KieOutput, Line, Screenplay
 from screenwriter_studio.studio import _script_issues, _shot_issues, _shots_markdown
 from screenwriter_studio.videos.catalog import CARDS, KLING, SEEDANCE, choose_model, has_speech
 from screenwriter_studio.videos.plan import digest, screenplay_digest, write_json

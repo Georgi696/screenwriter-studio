@@ -26,7 +26,7 @@ class BriefRunTest(unittest.TestCase):
             mock.patch("screenwriter_studio.web.board.STATUS_PATH", Path(state.name) / "desk_status.json"),
             mock.patch("screenwriter_studio.web.server._board", Board()),
             mock.patch("screenwriter_studio.web.server.hub", Hub()),
-            mock.patch("screenwriter_studio.web.server.PRODUCTIONS", Path(root.name) / "productions"),
+            mock.patch("screenwriter_studio.web.library.PRODUCTIONS", Path(root.name) / "productions"),
         ]:
             replacement.start()
             self.addCleanup(replacement.stop)

@@ -9,6 +9,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from uuid import uuid4
 
+from screenwriter_studio.fsio import atomic_write_json
 from screenwriter_studio.images.inspection import Inspection, inspect_image, normalize_review
 from screenwriter_studio.models import ART_MODEL
 
@@ -125,11 +126,8 @@ def _release_blocked(records, keep):
 
 
 def _parallel() -> int:
-    try:
-        from screenwriter_studio.settings import load
-        return int(load()["images"]["parallel"])
-    except (KeyError, TypeError, ValueError):
-        return 3
+    from screenwriter_studio.images.generator import _parallel as parallel
+    return parallel()
 
 
 def run_reviewed(spec, out, ordered, records, api_key, checkpoint, keep,
@@ -453,9 +451,7 @@ class _image_record:
                                    if isinstance(item, dict)]
         states = [item.get("state") for item in self.manifest["images"]]
         self.manifest["status"] = "complete" if states and all(state == "done" for state in states) else "paused"
-        temporary = self.out / "manifest.tmp"
-        temporary.write_text(json.dumps(self.manifest, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(self.out / "manifest.json")
+        atomic_write_json(self.out / "manifest.json", self.manifest)
         return self.manifest
 
     def __exit__(self, *exc) -> None:

@@ -462,6 +462,9 @@ screenwriter_studio/
 ├── pricing.py           # KIE credit prices and estimates before paid steps
 ├── settings.py          # saved model and quality choices
 ├── errors.py            # one-line, path-free error text for the desk
+├── kie.py               # shared KIE transport: pooled HTTP, retry and backoff, error classes
+├── fsio.py              # crash-safe (atomic) writes for every state file
+├── runlog.py            # per-production runs.jsonl, log redaction, --usage totals
 ├── events.py            # typed workflow events
 ├── paths.py             # shared workspace and session locations
 ├── models.py            # KIE clients, credentials, and model routing
@@ -481,7 +484,8 @@ screenwriter_studio/
 │   ├── probe.py         # optional ffprobe checks on keyframes and clips
 │   └── web.py           # public summaries and seekable video delivery
 └── web/
-    ├── server.py        # local HTTP routes and event streaming
+    ├── server.py        # local HTTP routes, run control and event streaming
+    ├── library.py       # saved productions, files, uploads and cost views read from disk
     ├── board.py         # desk state and persistence
     ├── brief.py         # story suggestions
     └── static/          # desk.html, desk.css, and desk.js
@@ -491,6 +495,8 @@ docs/                    # operational guidance
 run.py                   # compatibility launcher
 generate_stills.py       # compatibility launcher
 requirements.txt         # tested dependency versions
+pyproject.toml           # package metadata, ruff and mypy settings
+.github/workflows/       # CI: lint and tests
 ```
 
 Use package-qualified imports throughout the application. The crew defines
@@ -499,14 +505,37 @@ provider jobs and recovery. The web layer renders structured events rather than
 inferring state from activity text. Model IDs live in `models.py` and image
 capabilities in `images/catalog.py`.
 
+## Reliability
+
+- **Provider calls.** `kie.py` retries a rate limit (429) or request timeout (408) on a submit with
+  exponential backoff and `Retry-After`, because those prove no task was created. A timeout, a reset or a
+  5xx on submit may have created a billable task, so it is never resent automatically; see
+  `docs/recovery.md`. Status checks retry transient failures. A 402 (out of credits) stops the batch and
+  keeps the failure on disk; add credits and resume.
+- **Crew calls.** A reply that does not match its schema gets one more try that shows the model the error.
+  The script editor model is only called for drafts that already pass the exact checks (shot count,
+  durations, names), and an invalid image plan goes back to the art director once before any image is paid for.
+- **Files.** Screenplay, verdict, manifests and settings are written to a temporary file and renamed, so a
+  crash cannot leave a half-written file behind.
+- **Spend visibility.** Every crew call is appended to `runs.jsonl` in the production folder (role, model,
+  attempt, tokens, seconds, outcome). Print the totals with
+  `python -m screenwriter_studio --usage productions/<slug>`.
+
+Set `STUDIO_WORKSPACE` to keep `productions/` somewhere other than beside the checkout. Environment
+variables set in your shell win over `.env`.
+
 ## Development checks
 
 With the virtual environment activated, run from the repository root:
 
 ```bash
-python -B -m unittest discover -s tests -t . -v
+python -B -m unittest discover -s tests -t . -v      # or: python -m pytest -q
 node --check screenwriter_studio/web/static/desk.js
+ruff check .
 ```
+
+`pip install -e '.[dev]'` installs the tools and a `screenwriter-studio` command. CI
+(`.github/workflows/ci.yml`) runs `ruff` and the tests on every push; a `mypy` job is advisory.
 
 Tests mock the generation providers and spend no credits. The suite refuses any
 network connection other than loopback, so a missed mock fails instead of calling

@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
+from screenwriter_studio.web import library
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -53,7 +54,7 @@ class AbortDraftTest(unittest.TestCase):
             }
             for name, text in pages.items():
                 (folder / name).write_text(text, encoding="utf-8")
-            with mock.patch.object(desk, "PRODUCTIONS", root / "productions"), mock.patch.object(desk, "WORKSPACE_ROOT", root):
+            with mock.patch.object(library, "PRODUCTIONS", root / "productions"), mock.patch.object(desk, "WORKSPACE_ROOT", root), mock.patch.object(library, "WORKSPACE_ROOT", root):
                 self.assertTrue(desk.can_proceed("productions/hall"))
                 desk._board.folder = "productions/hall"
                 desk.abort_draft()

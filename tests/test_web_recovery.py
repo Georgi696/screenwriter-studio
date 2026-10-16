@@ -3,6 +3,7 @@
 import json
 import tempfile
 import unittest
+from screenwriter_studio.web import library
 from pathlib import Path
 from unittest import mock
 
@@ -27,7 +28,7 @@ class OpenProductionTest(unittest.TestCase):
         _write(self.film / "01_screenplay.json", {"shots": []})
         _write(self.film / "verdict.json", {"passed": False, "issues": ["x"]})
         for patcher in (
-            mock.patch.object(server, "PRODUCTIONS", self.root),
+            mock.patch.object(library, "PRODUCTIONS", self.root),
             mock.patch.object(server, "_board", Board()),
             mock.patch("screenwriter_studio.web.board.STATUS_PATH", self.root / "status.json"),
         ):

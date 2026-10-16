@@ -32,28 +32,25 @@ import threading
 import fcntl
 import json
 import uuid
-import socket
 import re
 import sys
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from screenwriter_studio.fsio import atomic_write_json
+from screenwriter_studio import kie
+from screenwriter_studio.kie import CreditsExhausted, JobFailed, ProviderHTTPError  # noqa: F401  (re-exported)
 from screenwriter_studio.paths import WORKSPACE_ROOT
 from screenwriter_studio.images.catalog import (
-    EDIT_MODEL as EDIT,
-    GPT_IMAGE_MODEL as GPT_IMAGE,
     NANO_BANANA_MODEL as NANO,
     SEEDREAM_MODEL as SEEDREAM,
     card_for,
     prompt_length_error,
     ratio_allowed,
 )
-from screenwriter_studio.images.upload import SOURCE_LIMIT, UPLOAD_LIMIT, fit_image
+from screenwriter_studio.images.upload import SOURCE_LIMIT, UPLOAD_LIMIT, fit_image, header_kind, suffix_matches
 from screenwriter_studio.models import IMAGE_MODEL_BY_KIND, load_kie_api_key as load_api_key
 
 CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
@@ -106,6 +103,15 @@ def choose(job: dict, aspect: str, resolution: str) -> tuple[str, str]:
     return model, why
 
 
+def _parallel() -> int:
+    """Images in flight at once: the desk's Models and quality setting."""
+    try:
+        from screenwriter_studio.settings import load
+        return max(1, int(load()["images"]["parallel"]))
+    except (KeyError, TypeError, ValueError):
+        return 3
+
+
 def _ratio_ok(model: str, aspect: str, resolution: str) -> bool:
     return ratio_allowed(model, aspect, resolution)
 
@@ -136,73 +142,18 @@ def build_payload(model: str, prompt: str, aspect: str, resolution: str, ref_url
 
 
 def _within(seconds: float, fn):
-    """Bound a provider call. A socket that ignores its timeout must not hold the batch."""
-    box: dict = {}
-
-    def run() -> None:
-        try:
-            box["value"] = fn()
-        except BaseException as exc:
-            box["error"] = exc
-
-    worker = threading.Thread(target=run, daemon=True)
-    worker.start()
-    worker.join(seconds)
-    if worker.is_alive():
-        raise TimeoutError(f"Provider request timed out after {seconds}s.")
-    if "error" in box:
-        raise box["error"]
-    return box["value"]
+    """Bound a provider call by wall-clock time. See kie.within."""
+    return kie.within(seconds, fn)
 
 
 def _request(url: str, api_key: str, payload: dict | None = None, query: dict | None = None) -> dict:
-    if query:
-        url = url + "?" + urllib.parse.urlencode(query)
-    data = None if payload is None else json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST" if payload is not None else "GET",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:400]
-        raise ProviderHTTPError(exc.code, f"HTTP {exc.code}: {detail}") from exc
+    return kie.request(url, api_key, payload=payload, query=query)
 
 
-class ProviderHTTPError(RuntimeError):
-    """The provider answered with an HTTP error status."""
-
-    def __init__(self, code: int, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-
-class JobFailed(RuntimeError):
-    """Provider reports a terminal failure; an explicit resume may submit a retry."""
-
-
-def submit_task(api_key: str, payload: dict, send=None) -> dict:
-    """createTask, sorting failures into "certainly not created" and "unknown".
-
-    A 4xx answer, a refused connection or an unknown host means no task exists, so
-    the job is failed and an explicit resume may submit it again. A timeout, a reset
-    after sending, or a 5xx may have created a billable task, so those stay unknown.
-    """
-    send = send or _request
-    try:
-        return _within(REQUEST_TIMEOUT, lambda: send(CREATE_URL, api_key, payload=payload))
-    except ProviderHTTPError as exc:
-        if 400 <= exc.code < 500:
-            raise JobFailed(f"submit rejected: {exc}") from exc
-        raise
-    except urllib.error.URLError as exc:
-        if isinstance(exc.reason, (socket.gaierror, ConnectionRefusedError)):
-            raise JobFailed(f"not sent, the provider could not be reached: {exc.reason}") from exc
-        raise
+def submit_task(api_key: str, payload: dict, send=None, cancel=None) -> dict:
+    """createTask, sorting failures into "certainly not created" and "unknown". See kie.submit_task."""
+    return kie.submit_task(CREATE_URL, api_key, payload, send=send or _request,
+                           timeout=REQUEST_TIMEOUT, cancel=cancel)
 
 
 def wait_for(payload: dict) -> float:
@@ -218,7 +169,7 @@ def generate_one(api_key: str, payload: dict, *, task_id: str | None = None,
     if cancel is not None and cancel.is_set():
         raise RuntimeError("Generation cancelled.")
     if task_id is None:
-        created = submit_task(api_key, payload)
+        created = submit_task(api_key, payload, cancel=cancel)
         if created.get("code") != 200:
             raise JobFailed(f"submit rejected: {created.get('msg') or created}")
         task_id = (created.get("data") or {}).get("taskId")
@@ -234,7 +185,9 @@ def generate_one(api_key: str, payload: dict, *, task_id: str | None = None,
                 raise RuntimeError("Generation cancelled; provider task saved for resume.")
         else:
             time.sleep(POLL_INTERVAL)
-        polled = _within(REQUEST_TIMEOUT, lambda: _request(POLL_URL, api_key, query={"taskId": task_id}))
+        polled = kie.poll_reply(
+            lambda: _within(REQUEST_TIMEOUT, lambda: _request(POLL_URL, api_key, query={"taskId": task_id})),
+            cancel=cancel)
         if polled.get("code") != 200:
             raise RuntimeError(f"Polling task {task_id} failed: {polled.get('msg')}")
         data = polled.get("data") or {}
@@ -246,36 +199,20 @@ def generate_one(api_key: str, payload: dict, *, task_id: str | None = None,
             return {"task_id": task_id, "url": url}
         if state == "fail":
             raise JobFailed(f"task {task_id} failed: {data.get('failMsg') or state}")
-    raise RuntimeError(f"task {task_id} timed out after {MAX_WAIT}s; resume to continue polling")
+    raise RuntimeError(f"task {task_id} timed out after {round(wait_for(payload))}s; resume to continue polling")
 
 
-def _first_url(result_json) -> str:
-    if isinstance(result_json, str) and result_json.strip():
-        try:
-            result_json = json.loads(result_json)
-        except json.JSONDecodeError:
-            return ""
-    if not isinstance(result_json, dict):
-        return ""
-    urls = result_json.get("resultUrls") or result_json.get("result_urls") or []
-    if isinstance(urls, str):
-        return urls
-    if urls:
-        return str(urls[0])
-    for key in ("resultUrl", "url", "image_url"):
-        if result_json.get(key):
-            return str(result_json[key])
-    return ""
+_first_url = kie.first_url
 
 
 def download(url: str, dest: Path) -> None:
     def fetch() -> bytes:
-        req = urllib.request.Request(url, headers={"User-Agent": "screenwriter-stills/1.0"})
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            return resp.read()
+        response = kie.client().get(url)
+        response.raise_for_status()
+        return response.content
 
     payload = _within(90, fetch)
-    if _header_kind(payload[:12]) is None:
+    if header_kind(payload[:12]) is None:
         # An expired link or a CDN error page arrives as HTML; never save it as a still.
         raise RuntimeError("The provider returned a file that is not an image. Resume to retry the download.")
     temporary = dest.with_suffix(dest.suffix + ".part")
@@ -285,23 +222,6 @@ def download(url: str, dest: Path) -> None:
 
 _MAX_REFERENCE_BYTES = SOURCE_LIMIT
 _REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
-
-
-def _header_kind(header: bytes) -> str | None:
-    if header.startswith(b"\x89PNG\r\n\x1a\n"):
-        return ".png"
-    if header.startswith(b"\xff\xd8\xff"):
-        return ".jpg"
-    if len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"WEBP":
-        return ".webp"
-    return None
-
-
-def _suffix_matches(suffix: str, header: bytes) -> bool:
-    kind = _header_kind(header)
-    if kind == ".jpg":
-        return suffix in {".jpg", ".jpeg"}
-    return kind is not None and kind == suffix
 
 
 def locked_files(spec: dict) -> dict[str, Path]:
@@ -341,7 +261,7 @@ def locked_files(spec: dict) -> dict[str, Path]:
             header = resolved.read_bytes()[:12]
         except OSError as exc:
             raise ValueError("Reference image is not available.") from exc
-        if size <= 0 or size > _MAX_REFERENCE_BYTES or not _suffix_matches(suffix, header):
+        if size <= 0 or size > _MAX_REFERENCE_BYTES or not suffix_matches(suffix, header):
             raise ValueError("Reference image must be a PNG, JPEG, or WebP within the size limit.")
         found[ref_id] = resolved
     return found
@@ -360,7 +280,7 @@ def reference_data_url(path: Path) -> str:
     data = path.read_bytes()
     if not data or len(data) > _MAX_REFERENCE_BYTES:
         raise ValueError("Reference image is too large.")
-    if _header_kind(data[:12]) is None:
+    if header_kind(data[:12]) is None:
         raise ValueError(f"Reference {path.name} must be a PNG, JPEG, or WebP image.")
     data, kind = fit_image(data, UPLOAD_LIMIT)
     # Label the upload by its real bytes: a JPEG saved as .png must not be sent as image/png.
@@ -508,6 +428,12 @@ def run_job(
             save(**result, state="downloading")
         download(result["url"], dest)
         record.update(result, state="done", error="")
+    except CreditsExhausted as exc:
+        # Nothing was created. Keep the failure on disk, then stop the whole batch.
+        record.update(error=str(exc), state="failed")
+        if checkpoint is not None:
+            checkpoint(dict(record))
+        raise
     except JobFailed as exc:
         record.update(error=str(exc), state="failed")
         return record
@@ -607,9 +533,7 @@ def _run_locked(spec, out, ordered, aspect, resolution, fingerprint,
                     record = previous
                 records[record["id"]] = dict(record)
             manifest["images"] = [records[job["id"]] for job in spec["jobs"] if job["id"] in records]
-            temporary = manifest_path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-            temporary.replace(manifest_path)
+            atomic_write_json(manifest_path, manifest, durable=False)
 
     def keep(record):
         checkpoint(record)
@@ -639,7 +563,7 @@ def _run_locked(spec, out, ordered, aspect, resolution, fingerprint,
                 keep(previous)
             else:
                 pending.append(job)
-        with ThreadPoolExecutor(max_workers=min(3, max(1, len(pending)))) as pool:
+        with ThreadPoolExecutor(max_workers=min(_parallel(), max(1, len(pending)))) as pool:
             futures = [pool.submit(
                 run_job, api_key, job, aspect, resolution, out, dict(urls), dry_run, on_start,
                 previous=records.get(job["id"]), checkpoint=checkpoint, cancel=cancel, locked=locked,

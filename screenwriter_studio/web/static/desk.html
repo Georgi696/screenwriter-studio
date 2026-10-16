@@ -55,11 +55,13 @@
           <h3 id="idea-heading"><label for="idea">The idea</label></h3>
           <button class="help" id="help-idea" type="button" aria-expanded="false" aria-label="What is this?">?</button>
         </div>
-        <p class="help-copy" id="help-idea-copy" hidden>This is the idea the crew turns into a developed story, a screenplay with a shot list, and the image prompts. Each shot becomes one image and then one video clip. Suggest a story writes one if the box is empty. Strengthen this rewrites a note you already typed. Set the length and format in Film.</p>
+        <p class="help-copy" id="help-idea-copy" hidden>This is the idea the crew turns into a developed story, a screenplay with a shot list, and the image prompts. Each shot becomes one image and then one video clip. Suggest a story always writes a new one and avoids your last few suggestions; Undo brings back what was in the box. Strengthen this rewrites the note you typed and keeps its idea. Set the length and format in Film.</p>
         <textarea id="idea" name="idea" placeholder="A 30-second vertical film about someone who keeps a seat on the last bus."></textarea>
         <p class="field-note">Say who wants what, where it happens, what stands in the way, and the tone.</p>
         <div class="idea-tools">
           <button class="ghost" id="suggest" type="button">Suggest a story</button>
+          <button class="ghost" id="strengthen" type="button" hidden>Strengthen this</button>
+          <button class="linkish" id="idea-restore" type="button" hidden>Undo · bring back my text</button>
           <span class="idea-count" id="idea-count">Empty</span>
           <button class="ghost" id="copy-brief" type="button">Copy brief</button>
           <button class="ghost" id="clear-brief" type="button">Clear</button>

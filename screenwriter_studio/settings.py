@@ -13,6 +13,7 @@ import os
 from copy import deepcopy
 from pathlib import Path
 
+from screenwriter_studio.fsio import atomic_write_json
 from screenwriter_studio.images.catalog import (
     CARD_BY_ID, EDIT_CARD, GPT_CARD, NANO_CARD, NANO_PRO_CARD, RESOLUTION_VALUES, SEEDREAM_CARD,
 )
@@ -217,9 +218,7 @@ def load() -> dict:
 def save(raw: object) -> dict:
     values = validate(raw)
     PATH.parent.mkdir(parents=True, exist_ok=True)
-    temporary = PATH.with_suffix(".tmp")
-    temporary.write_text(json.dumps(values, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(PATH)
+    atomic_write_json(PATH, values)
     return values
 
 

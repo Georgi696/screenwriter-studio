@@ -26,6 +26,14 @@ def header_kind(header: bytes) -> str | None:
     return None
 
 
+def suffix_matches(suffix: str, header: bytes) -> bool:
+    """True when a file name's extension agrees with what its first bytes say it is."""
+    kind = header_kind(header)
+    if kind == ".jpg":
+        return suffix in {".jpg", ".jpeg"}
+    return kind is not None and kind == suffix
+
+
 def _encode(image: Image.Image, kind: str, **options) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, {".png": "PNG", ".jpg": "JPEG"}[kind], **options)
