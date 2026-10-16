@@ -48,10 +48,10 @@ from screenwriter_studio.models import (
     WRITER_MODEL,
 )
 from screenwriter_studio.studio import ScreenwriterStudio, _load_settings as load_run_settings, reference_choices
-from screenwriter_studio.pricing import production_estimate, remaining_images
+from screenwriter_studio.pricing import production_estimate, remaining_images, spent_estimate
 from screenwriter_studio.schemas import Development, Screenplay
 from screenwriter_studio.images.generator import run_batch
-from screenwriter_studio.images.upload import SOURCE_LIMIT
+from screenwriter_studio.images.upload import SOURCE_LIMIT, thumbnail
 from screenwriter_studio.references import covered_sheets
 from screenwriter_studio.images.review import (
     apply_live_keep, attach_image_task, forget_image_submission, restore_version, validate_decision, versions,
@@ -75,6 +75,8 @@ _MAX_BODY = 100_000
 _MAX_UPLOAD_BODY = 12_000_000
 _MAX_TEXT = 200_000
 _MAX_IMAGE = SOURCE_LIMIT
+_thumbs: dict[tuple, bytes] = {}
+_thumb_lock = threading.Lock()
 _MAX_UPLOADED_IMAGE = 8_000_000
 _REFERENCE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 _STOP_NOTE = "Generation stopped. Saved images can be resumed."
@@ -221,10 +223,13 @@ def public_view() -> dict:
         payload["can_proceed"] = (not _board.running) and can_proceed(_board.folder)
         payload["pages_passed"] = saved_verdict(_board.folder)
         payload.update(cost_view(production_path(_board.folder), payload["can_proceed"]))
+        payload["production"] = production_view(production_path(_board.folder))
         prompts = payload.pop("image_prompts", {})
+        references = payload.pop("image_references", {})
         for item, raw in zip(payload["images"], _board.images):
             override = raw.get("job_override") if isinstance(raw.get("job_override"), dict) else {}
             item["prompt"] = scrub(str(override.get("prompt") or prompts.get(str(raw.get("id") or ""), "")), _secret())
+            item["references"] = references.get(str(raw.get("id") or ""), [])
         payload["video"] = json.loads(scrub(json.dumps(video_status(production_path(_board.folder))), _secret()))
         return payload
 
@@ -238,9 +243,57 @@ def _version_label(entry: dict) -> str:
     return f"Take {entry['take']}" if int(entry.get("take") or 1) > 1 else "Original"
 
 
+def production_view(folder: Path | None) -> dict:
+    """The open production as the app bar shows it: its title and the credits it has used."""
+    if folder is None:
+        return {"title": "", "slug": "", "spent": None}
+    development = _read_saved(folder / "00_development.json")
+    title = str(development.get("title") or "") if isinstance(development, dict) else ""
+    spec = _read_saved(folder / "images/jobs.json")
+    manifest = _read_saved(folder / "images/manifest.json")
+    plan = _read_saved(folder / "videos/jobs.json")
+    clips = _read_saved(folder / "videos/manifest.json")
+    spent = None
+    if isinstance(spec, dict) and isinstance(manifest, dict):
+        try:
+            spent = spent_estimate(spec, manifest, plan if isinstance(plan, dict) else None,
+                                   (clips or {}).get("clips") if isinstance(clips, dict) else None)
+        except (TypeError, ValueError, KeyError):
+            spent = None
+    return {"title": title, "slug": folder.name, "spent": spent}
+
+
+def image_references(spec: dict) -> dict[str, list[dict]]:
+    """The pictures each image was asked to follow, so a review can show them side by side."""
+    jobs = {str(job.get("id")): job for job in spec.get("jobs") or [] if isinstance(job, dict)}
+    locked = {str(item.get("id")): item for item in spec.get("locked_references") or [] if isinstance(item, dict)}
+    root = PRODUCTIONS.resolve()
+    found: dict[str, list[dict]] = {}
+    for image_id, job in jobs.items():
+        refs = []
+        for ref in job.get("references") or []:
+            ref = str(ref)
+            if ref in jobs:
+                kind = str(jobs[ref].get("kind") or "image")
+                refs.append({"label": f"{ref} · {kind}", "role": _KIND_ROLES.get(kind, ""),
+                             "src": "/media?id=" + urllib.parse.quote(ref, safe="")})
+            elif ref in locked:
+                try:
+                    path = Path(str(locked[ref].get("path") or "")).resolve()
+                except OSError:
+                    continue
+                if path.is_file() and _under(path, root):
+                    role = str(locked[ref].get("mode") or "")
+                    refs.append({"label": str(locked[ref].get("name") or ref) + (f" · {role}" if role else ""), "role": role,
+                                 "src": "/library-media?path=" + urllib.parse.quote(path.relative_to(root).as_posix(), safe="")})
+        if refs:
+            found[image_id] = refs
+    return found
+
+
 def cost_view(folder: Path | None, proceed: bool) -> dict:
     """Credit estimates for the next paid step, from the saved files. Cached until one of them changes."""
-    result = {"estimate": None, "images_estimate": None, "image_resolution": "", "image_prompts": {}}
+    result = {"estimate": None, "images_estimate": None, "image_resolution": "", "image_prompts": {}, "image_references": {}}
     if folder is None:
         return result
     names = ("00_development.json", "01_screenplay.json", "run_settings.json", "images/jobs.json", "images/manifest.json")
@@ -253,7 +306,7 @@ def cost_view(folder: Path | None, proceed: bool) -> dict:
     key = (str(folder), proceed, tuple(stamps))
     if _cost_cache.get("key") == key:
         value = _cost_cache["value"]
-        return {**value, "image_prompts": dict(value["image_prompts"])}
+        return {**value, "image_prompts": dict(value["image_prompts"]), "image_references": dict(value["image_references"])}
     try:
         if proceed:
             development = Development.model_validate(read_video_json(folder / "00_development.json"))
@@ -270,13 +323,14 @@ def cost_view(folder: Path | None, proceed: bool) -> dict:
             result["image_resolution"] = str(spec.get("resolution") or "1K")
             result["image_prompts"] = {str(job.get("id")): str(job.get("prompt") or "")
                                        for job in spec.get("jobs", []) if isinstance(job, dict)}
+            result["image_references"] = image_references(spec)
             remaining = remaining_images(spec, manifest)
             if remaining["count"]:
                 result["images_estimate"] = remaining
     except (OSError, ValueError, KeyError, TypeError):
         pass
     _cost_cache.update(key=key, value=result)
-    return {**result, "image_prompts": dict(result["image_prompts"])}
+    return {**result, "image_prompts": dict(result["image_prompts"]), "image_references": dict(result["image_references"])}
 
 
 def shot_plan(folder: Path | None) -> dict:
@@ -420,10 +474,11 @@ def library_catalog() -> tuple[list[dict], str]:
             bucket.append({"path": relative, "name": resolved.relative_to(folder.resolve()).as_posix()})
             signature.append(f"{relative}:{stat.st_mtime_ns}:{stat.st_size}")
         hints, saved = _image_hints(folder, root)
+        summary = _project_summary(folder, root)
         for item in images:
             item.update(hints.get(item["path"], {}))
         projects.append({"slug": folder.name, "documents": documents, "images": images, "videos": videos,
-                         "references": saved})
+                         "references": saved, "summary": summary})
     return projects, "|".join(signature)
 
 
@@ -437,6 +492,37 @@ def _read_saved(path: Path):
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+def _project_summary(folder: Path, root: Path) -> dict:
+    """How far a production got, what waits for the user, and a picture to recognise it by."""
+    root = root.resolve()
+    development = _read_saved(folder / "00_development.json")
+    title = str(development.get("title") or "") if isinstance(development, dict) else ""
+    summary = {"title": title or folder.name, "stage": "idea", "needs": 0, "images": [0, 0], "clips": [0, 0], "thumb": ""}
+    if (folder / "01_screenplay.json").is_file():
+        summary["stage"] = "story"
+    manifest = _read_saved(folder / "images/manifest.json")
+    records = [r for r in (manifest or {}).get("images") or [] if isinstance(r, dict)] if isinstance(manifest, dict) else []
+    if records:
+        summary["stage"] = "images"
+        summary["images"] = [sum(1 for r in records if r.get("state") == "done"), len(records)]
+        summary["needs"] = sum(1 for r in records if r.get("state") in {"review", "failed"})
+        shots = sorted((r for r in records if re.fullmatch(r"s\d{2,3}", str(r.get("id") or ""))), key=lambda r: r["id"])
+        for record in shots + records:
+            try:
+                path = Path(str(record.get("path") or "")).resolve()
+            except OSError:
+                continue
+            if path.is_file() and _under(path, root) and path.suffix.lower() in _REFERENCE_SUFFIXES:
+                summary["thumb"] = path.relative_to(root).as_posix()
+                break
+    videos = _read_saved(folder / "videos/manifest.json")
+    clips = [c for c in (videos or {}).get("clips") or [] if isinstance(c, dict)] if isinstance(videos, dict) else []
+    if clips:
+        summary["stage"] = "clips"
+        summary["clips"] = [sum(1 for c in clips if c.get("state") == "done"), len(clips)]
+    return summary
 
 
 def _image_hints(folder: Path, root: Path) -> tuple[dict[str, dict], list[dict]]:
@@ -1277,6 +1363,9 @@ class DeskHandler(BaseHTTPRequestHandler):
         if route == "/library-media":
             self._library_media(query.get("path", [""])[0])
             return
+        if route == "/library-thumb":
+            self._library_thumb(query.get("path", [""])[0])
+            return
         if route == "/video-zip":
             with _lock:
                 folder = production_path(_board.folder)
@@ -1565,6 +1654,28 @@ class DeskHandler(BaseHTTPRequestHandler):
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return
         self._send(200, file.read_bytes(), _content_type(file))
+
+    def _library_thumb(self, path: str) -> None:
+        """Pictures in lists load a small cached preview instead of the multi-megabyte original."""
+        file = library_file(path)
+        if file is None or file.suffix.lower() not in _REFERENCE_SUFFIXES:
+            self._send(404, b"Not found", "text/plain; charset=utf-8")
+            return
+        try:
+            stat = file.stat()
+            key = (str(file), stat.st_mtime_ns, stat.st_size)
+            with _thumb_lock:
+                body = _thumbs.get(key)
+            if body is None:
+                body = thumbnail(file.read_bytes())
+                with _thumb_lock:
+                    if len(_thumbs) >= 256:
+                        _thumbs.pop(next(iter(_thumbs)))
+                    _thumbs[key] = body
+        except (OSError, ValueError):
+            self._send(404, b"Not found", "text/plain; charset=utf-8")
+            return
+        self._send(200, body, "image/jpeg")
 
     def _events(self) -> None:
         self.send_response(200)

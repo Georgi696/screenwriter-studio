@@ -7,44 +7,36 @@
 <link rel="stylesheet" href="/static/desk.css">
 </head>
 <body data-view="brief">
-<aside>
-  <p class="eyebrow">Library</p>
-  <p class="aside-title">Productions</p>
-  <p class="aside-note">Scripts, stills, and videos on this computer.</p>
-  <label class="search">Search files
-    <input id="library-search" type="search" placeholder="Filename or folder" aria-controls="library opened-folder" autocomplete="off">
-  </label>
-  <button class="linkish" id="clear-library-search" type="button" hidden>Clear search</button>
-  <p class="aside-note" id="library-search-status" role="status" aria-live="polite" hidden></p>
-  <button class="side" id="open-folder" type="button">Open folder</button>
-  <input id="folder-picker" type="file" hidden webkitdirectory multiple>
-  <div id="opened-folder"></div>
-  <nav id="library"></nav>
+<aside id="rail" aria-label="Productions">
+  <div class="rail-head">
+    <p class="aside-title">Productions</p>
+    <button class="rail-toggle" id="toggle-library" type="button" aria-expanded="true" aria-controls="production-list" aria-label="Collapse productions">‹</button>
+  </div>
+  <ol id="production-list"></ol>
 </aside>
 <main>
   <header class="topbar">
-    <div>
-      <p class="eyebrow">Desk</p>
-      <h1>Screenwriter Studio</h1>
+    <div class="production-id">
+      <p class="eyebrow">Screenwriter Studio</p>
+      <h1 id="production-title">No production open</h1>
       <p id="folder" hidden></p>
+    </div>
+    <div class="topbar-tools">
+      <p id="credit-meter" hidden></p>
+      <button class="ghost" id="open-activity" type="button" aria-expanded="false" aria-controls="drawer" title="What the crew has done (shortcut A)">Activity <span class="count" id="count-activity">0</span></button>
+      <button class="ghost" id="open-files" type="button" aria-expanded="false" aria-controls="drawer" title="Scripts, images and clips on this computer (shortcut F)">Files</button>
+      <button class="ghost is-on" id="follow" type="button" aria-pressed="true" title="Switch steps automatically as the production moves forward">Auto-follow</button>
     </div>
   </header>
   <div class="tabs">
-    <div class="tablist" role="tablist" aria-label="Production steps">
-      <button class="tab is-on" type="button" role="tab" data-tab="brief" aria-selected="true" title="Describe the film (shortcut 1)"><span class="step" aria-hidden="true">1</span>Idea</button>
-      <button class="tab" type="button" role="tab" data-tab="pipeline" aria-selected="false" title="Development, screenwriter, script editor, your approval and image prompts (shortcut 2)"><span class="step" aria-hidden="true">2</span>Story <span class="count" id="count-pipeline" title="Steps done">0</span></button>
-      <button class="tab" type="button" role="tab" data-tab="stills" aria-selected="false" title="Generate, inspect and approve the images (shortcut 3)"><span class="step" aria-hidden="true">3</span>Images <span class="count" id="count-stills" title="Images made">0</span></button>
-      <button class="tab" type="button" role="tab" data-tab="video" aria-selected="false" title="Turn each image into an animated video clip (shortcut 4)"><span class="step" aria-hidden="true">4</span>Video clips <span class="count" id="count-video" title="Clips ready">0</span></button>
+    <nav class="tablist" aria-label="Production">
+      <button class="tab tab-new is-on" type="button" id="new-session" data-tab="brief" aria-current="page" title="Describe a new film (shortcut N)">＋ New production</button>
       <span class="tab-divider" aria-hidden="true"></span>
-      <button class="tab" type="button" role="tab" data-tab="activity" aria-selected="false" title="Everything the crew has done (shortcut 5)">Log <span class="count" id="count-activity" title="Log entries">0</span></button>
-      <button class="tab" type="button" role="tab" data-tab="reader" aria-selected="false" title="Read a script or view an image from the library (shortcut 6)">Viewer</button>
+      <button class="tab" type="button" data-tab="pipeline" title="Development, screenwriter, script editor, your approval and image prompts (shortcut 1)"><span class="step" aria-hidden="true">1</span>Story <span class="count" id="count-pipeline" title="Steps done">0</span></button>
+      <button class="tab" type="button" data-tab="stills" title="Generate, inspect and approve the images (shortcut 2)"><span class="step" aria-hidden="true">2</span>Images <span class="count" id="count-stills" title="Images made">0</span></button>
+      <button class="tab" type="button" data-tab="video" title="Turn each image into an animated video clip (shortcut 3)"><span class="step" aria-hidden="true">3</span>Video clips <span class="count" id="count-video" title="Clips ready">0</span></button>
       <span id="tab-glider"></span>
-    </div>
-    <div class="tab-actions">
-      <button class="ghost" id="new-session" type="button">New production</button>
-      <button class="ghost" id="toggle-library" type="button">Hide library</button>
-      <button class="ghost is-on" id="follow" type="button" title="Switch tabs automatically as the production moves forward">Auto-follow</button>
-    </div>
+    </nav>
   </div>
   <div id="next-step" role="status" aria-live="polite">
     <span class="next-label">Next</span>
@@ -54,7 +46,7 @@
   <form id="brief-form">
     <div class="panel-head">
       <h2>Describe your film.</h2>
-      <p class="lead">Start with the idea. Film and Approval shape the story, and Images sets how many pictures are made and what they follow. Image credits start only after you approve the script.</p>
+      <p class="lead">Start with the idea. Film sets the length, format and budget, Approval decides where the run pauses, and Images sets which pictures the images follow. Image credits start only after you approve the script.</p>
       <p id="settings-status" class="field-note" role="alert" hidden></p>
     </div>
     <div class="brief-layout">
@@ -79,9 +71,9 @@
           <button class="help" id="help-film" type="button" aria-expanded="false" aria-label="What is this?">?</button>
           <span class="optional">Optional</span>
         </div>
-        <p class="help-copy" id="help-film-copy" hidden>Leave them empty and the idea decides. Length is 6–720 seconds. Shots last 3–15 seconds on Kling and 4–30 seconds on Seedance, and together they fill the length exactly. A clip longer than 15 seconds uses Seedance.</p>
-        <p class="section-lead">Length, format, and shot count. These lock the story, the images, and the clips.</p>
-        <div class="limits three">
+        <p class="help-copy" id="help-film-copy" hidden>Leave them empty and the idea decides. Length is 6–720 seconds. Shots last 3–15 seconds on Kling and 4–30 seconds on Seedance, and together they fill the length exactly. A clip longer than 15 seconds uses Seedance. Images to generate caps new images, including characters and locations; leave it blank and the shot list sets the count.</p>
+        <p class="section-lead">Length, format, shot count and image budget. These lock the story, the images, and the clips.</p>
+        <div class="limits four">
           <div class="limit-field">
             <label for="runtime">Length (seconds)</label>
             <input id="runtime" class="limit" type="number" min="6" max="720" step="1" placeholder="From the idea" inputmode="numeric" aria-describedby="format-estimate">
@@ -99,6 +91,10 @@
             <label for="max-shots">Maximum shots</label>
             <input id="max-shots" class="limit" type="number" min="1" max="240" step="1" placeholder="Automatic" inputmode="numeric" aria-describedby="format-estimate">
           </div>
+          <div class="limit-field">
+            <label for="image-count">Images to generate</label>
+            <input id="image-count" class="limit" type="number" min="1" max="240" step="1" placeholder="Automatic" inputmode="numeric">
+          </div>
         </div>
         <p class="field-note" id="format-estimate">Leave these empty and the idea decides. Shots last 3–30 seconds and together fill the length exactly. A clip longer than 15 seconds uses Seedance 2.5.</p>
       </section>
@@ -108,12 +104,13 @@
           <button class="help" id="help-gate" type="button" aria-expanded="false" aria-label="What is this?">?</button>
         </div>
         <p class="help-copy" id="help-gate-copy" hidden>The script editor always reads the draft and can send it back twice. This choice decides what happens after that. Open the Story tab and select a step to read its output while you decide.</p>
-        <fieldset class="choices">
+        <fieldset class="choices" aria-describedby="gate-note">
           <legend>After the script editor</legend>
           <label class="choice"><input type="radio" name="gate" value="approve" checked><span><strong>Wait for my approval</strong><small>Pause with the pages. Nothing moves on to image prompts or image generation until you approve.</small></span></label>
           <label class="choice"><input type="radio" name="gate" value="auto"><span><strong>Continue automatically</strong><small>Go straight to images when the editor passes the script.</small></span></label>
           <label class="choice"><input type="radio" name="gate" value="pages" id="pages"><span><strong>Script only</strong><small>Stop after the script. You can still approve it later.</small></span></label>
         </fieldset>
+        <p class="field-note" id="gate-note"></p>
       </section>
       <section class="brief-section span-all" aria-labelledby="images-heading">
         <div class="block-split">
@@ -122,12 +119,8 @@
               <h3 id="images-heading">Images</h3>
               <button class="help" id="help-images" type="button" aria-expanded="false" aria-label="What is this?">?</button>
             </div>
-            <p class="help-copy" id="help-images-copy" hidden>Images to generate caps new images for this run, including characters and locations; leave it blank and the shot list sets the count. Each shot image is the first frame of its clip. Image credits start only after you approve the script.</p>
-            <p class="section-lead">How many images this production makes and which pictures they follow.</p>
-            <div class="limit-field single">
-              <label for="image-count">Images to generate</label>
-              <input id="image-count" class="limit" type="number" min="1" max="240" step="1" placeholder="Automatic" inputmode="numeric">
-            </div>
+            <p class="help-copy" id="help-images-copy" hidden>Each shot image is the first frame of its clip. Inspection checks every image against the script and its references. Image credits start only after you approve the script.</p>
+            <p class="section-lead">How the images are checked, and which pictures they follow.</p>
             <div id="inspection-home">
               <div id="inspection-field">
                 <label for="inspection-mode">Image inspection</label>
@@ -151,7 +144,7 @@
               <button class="ref-clear" id="reference-clear" type="button" hidden>Clear all</button>
             </div>
             <div class="help-copy" id="help-references-copy" hidden>
-              <p>Choose images from this production, other productions, or upload a PNG, JPEG, or WebP. An image the studio already knows, such as a character sheet or a saved reference, starts in its role and name; anything else starts as Style. Name character, location and object references exactly as the script does so they match automatically. Reference settings limit a reference to specific shots or add direction.</p>
+              <p>Choose images from this production, other productions, or upload a PNG, JPEG, or WebP. An image the studio already knows, such as a character sheet or a saved reference, starts in its role and name; anything else starts as Style. Name character, location and object references exactly as the script does so they match automatically. Each card sets where the reference applies, takes an extra direction, and shows what the image model is told.</p>
               <div class="mode-key" aria-label="Reference roles">
                 <p><strong>Style</strong> Colour, light, texture and mood.</p>
                 <p><strong>Character</strong> Face, appearance and wardrobe, each switchable.</p>
@@ -162,8 +155,14 @@
             </div>
             <button class="ghost ref-restore" id="reference-restore" type="button" hidden></button>
             <div id="reference-selected" class="ref-tray" aria-label="Selected references"></div>
-            <details id="reference-browser">
-              <summary>Browse images</summary>
+            <button class="ghost ref-add" id="reference-add" type="button" aria-haspopup="dialog">＋ Add reference images</button>
+            <dialog id="reference-dialog" aria-labelledby="reference-dialog-title">
+              <div class="dialog-head">
+                <h3 id="reference-dialog-title">Add reference images</h3>
+                <input id="reference-search" type="search" placeholder="Search by name, shot or production" aria-label="Search images" autocomplete="off">
+                <button class="drawer-close" id="reference-dialog-close" type="button" aria-label="Close">×</button>
+              </div>
+              <div class="dialog-body" id="reference-browser">
               <p class="ref-label" id="reference-current-label">This production</p>
               <div id="reference-current" class="ref-grid" role="group" aria-labelledby="reference-current-label"></div>
               <p class="ref-label" id="reference-other-label">Other productions</p>
@@ -173,7 +172,12 @@
               <label class="upload" for="reference-upload">Upload a PNG, JPEG, or WebP
                 <input id="reference-upload" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" multiple>
               </label>
-            </details>
+              </div>
+              <div class="dialog-foot">
+                <span id="reference-dialog-count">None selected</span>
+                <button class="go" id="reference-dialog-done" type="button">Done</button>
+              </div>
+            </dialog>
           </div>
         </div>
       </section>
@@ -194,11 +198,17 @@
               <h4 class="block-label" id="video-heading-brief">Video <button class="help" id="help-video" type="button" aria-expanded="false" aria-label="What is this?">?</button></h4>
               <p class="help-copy" id="help-video-copy" hidden>Kling is 3–15 seconds and includes 4K. Seedance is 4–30 seconds, up to 1080p. Auto picks a compatible model for each shot.</p>
               <div id="settings-video"><p class="field-note">Loading video settings…</p></div>
-              <h4 class="block-label" id="writing-heading">Writing <button class="help" id="help-writing" type="button" aria-expanded="false" aria-label="What is this?">?</button></h4>
-              <p class="help-copy" id="help-writing-copy" hidden>Development locks the story, the screenwriter writes the pages and the shot list, and the script editor can send a draft back twice.</p>
-              <div id="settings-writing"><p class="field-note">Loading writing models…</p></div>
+            </div>
+            <div class="models-col">
+              <h4 class="block-label" id="writing-heading">Crew <button class="help" id="help-writing" type="button" aria-expanded="false" aria-label="What is this?">?</button></h4>
+              <p class="help-copy" id="help-writing-copy" hidden>The chat models behind each step. Development locks the story, the screenwriter writes the pages and the shot list, the script editor can send a draft back twice, the image prompt writer turns shots into image prompts, and the inspector checks every image. Astra is the strongest, Luna the faster GPT-6, and Sol a lighter choice for the script editor.</p>
+              <div id="settings-writing"><p class="field-note">Loading crew models…</p></div>
             </div>
           </div>
+          <details class="models-details">
+            <summary>Model details and sources</summary>
+            <ul id="models-details-list"></ul>
+          </details>
           <div class="models-foot">
             <label class="check"><input id="show-effort" type="checkbox"> Show reasoning effort (advanced)</label>
             <button class="ghost" id="settings-reset" type="button" title="Restore image, video, and writing models to the defaults. The idea, film, and references stay as they are.">Reset models</button>
@@ -222,13 +232,6 @@
         <p class="kicker">Status</p>
         <p id="note">Waiting for a brief.</p>
         <p id="plaque" hidden></p>
-        <div id="proceed-row" hidden>
-          <button type="button" id="proceed" class="go">Proceed with this draft</button>
-          <button type="button" id="abort-draft" class="ghost">Abort draft</button>
-          <div id="cost-choices"></div>
-        </div>
-        <p class="cost-line" id="proceed-cost" hidden></p>
-        <p class="help-copy" id="proceed-note" hidden>Sends this script to the image prompts and image generation. The editor's verdict stays on file. Plan images and image inspection beside this button set the cost.</p>
       </div>
       <div class="hud-side">
         <button type="button" id="review-stills" class="go" hidden>Review images</button>
@@ -243,6 +246,8 @@
       <span class="pip"></span><span class="pip"></span><span class="pip"></span>
       <span class="pip"></span><span class="pip"></span><span class="pip"></span><span class="pip"></span>
     </div>
+    <div id="story-layout">
+    <div id="story-steps">
     <div id="track" aria-label="Story steps">
       <div class="station is-idle" data-station="brief">
         <button type="button" class="piece" aria-pressed="false" aria-controls="stage-detail"><span class="mark">B</span><strong>Idea</strong><span class="model">The idea</span><span class="status">Waiting</span></button>
@@ -271,7 +276,22 @@
       </div>
       <p id="return-label">Editor loop · up to two rewrites</p>
     </div>
-    <section id="stage-detail" aria-labelledby="detail-title">
+    </div>
+    <div id="story-main">
+      <section id="approval-card" aria-labelledby="approval-title" hidden>
+        <p class="approval-kicker">Your approval</p>
+        <h2 id="approval-title">Approve these pages?</h2>
+        <p class="help-copy" id="proceed-note" hidden>Sends this script to the image prompts and image generation. The editor's verdict stays on file.</p>
+        <p class="cost-line" id="proceed-cost" hidden></p>
+        <div id="proceed-row" hidden>
+          <div id="cost-choices"></div>
+          <div class="approval-actions">
+            <button type="button" id="abort-draft" class="ghost">Abort draft</button>
+            <button type="button" id="proceed" class="go">Proceed with this draft</button>
+          </div>
+        </div>
+      </section>
+      <section id="stage-detail" aria-labelledby="detail-title">
       <div class="detail-head">
         <div>
           <p class="kicker" id="detail-kicker">Step</p>
@@ -289,6 +309,8 @@
       </div>
       <div id="detail-files" class="toolbar"></div>
     </section>
+    </div>
+    </div>
     <section id="shot-board" aria-labelledby="shot-board-title" hidden>
       <div class="board-head">
         <h2 id="shot-board-title">Shot list</h2>
@@ -312,6 +334,26 @@
       <button class="chip" type="button" data-filter="progress">In progress<span class="chip-count">0</span></button>
       <button class="chip" type="button" data-filter="done">Approved<span class="chip-count">0</span></button>
     </div>
+    <section id="review-panel" aria-labelledby="review-title" hidden>
+      <div class="review-head">
+        <div>
+          <p class="approval-kicker">Needs your review</p>
+          <h2 id="review-title">Image</h2>
+        </div>
+        <div class="review-nav">
+          <button type="button" class="ghost" id="review-prev" aria-label="Previous image to review">‹ Prev</button>
+          <span id="review-count">1 of 1</span>
+          <button type="button" class="ghost" id="review-next" aria-label="Next image to review">Next ›</button>
+        </div>
+      </div>
+      <div class="review-body">
+        <div class="review-compare">
+          <figure class="review-candidate"><img id="review-image" alt=""><figcaption>This image</figcaption></figure>
+          <div class="review-refs" id="review-refs"></div>
+        </div>
+        <div class="review-decision" id="review-decision"></div>
+      </div>
+    </section>
     <div id="image-bay"></div>
     <section id="video-pane" aria-labelledby="video-heading">
       <div class="panel-head">
@@ -331,20 +373,39 @@
       <p id="video-summary"></p>
       <p id="video-cost" class="cost-line" hidden></p>
       <p id="video-settings-note" class="field-note"></p>
-      <p class="field-note">Auto selects a compatible model for each shot’s action, camera, timing, language, and quality. Review the choices and prompts below. Video generation uses additional KIE credits; model, quality, and sound affect cost. Resume keeps saved model choices and tasks. Each clip can be redone on its own. Retrying failed provider jobs may incur a new charge.</p>
+      <details class="video-help">
+        <summary>How models, cost and retries work</summary>
+        <p class="field-note">Auto selects a compatible model for each shot’s action, camera, timing, language, and quality. Review the choices and prompts below. Video generation uses additional KIE credits; model, quality, and sound affect cost. Resume keeps saved model choices and tasks. Each clip can be redone on its own. Retrying failed provider jobs may incur a new charge.</p>
+      </details>
       <div class="toolbar">
         <button type="button" class="ghost" id="plan-video" disabled>Preview clip plan · free</button>
         <button type="button" class="go" id="generate-video" disabled>Animate all clips</button>
         <a class="video-download" id="download-all" href="/video-zip" hidden download>Download all clips (.zip)</a>
       </div>
-      <div id="video-clips" class="video-clips"></div>
+      <section id="sequence" hidden aria-label="Play the clips in order">
+        <div class="sequence-head">
+          <button type="button" class="ghost" id="sequence-play">▶ Play in order</button>
+          <span id="sequence-label"></span>
+        </div>
+        <video id="sequence-video" controls playsinline preload="none" hidden aria-label="Clips played in shot order"></video>
+      </section>
+      <div id="clip-timeline" aria-label="How the shots share the runtime" hidden></div>
+      <div id="video-clips" class="video-clips" aria-label="Clips in shot order"></div>
       <details id="video-plan" hidden>
         <summary>Model choices, clip lengths, and video prompts</summary>
         <div id="video-prompts"></div>
       </details>
     </section>
   </div>
-  <div id="lower">
+</main>
+<section id="drawer" aria-label="Activity and files" hidden>
+  <div class="drawer-head">
+    <div class="drawer-tabs" role="group" aria-label="Show">
+      <button type="button" class="drawer-tab" data-pane="activity">Activity</button>
+      <button type="button" class="drawer-tab" data-pane="files">Files</button>
+    </div>
+    <button type="button" class="drawer-close" id="drawer-close" aria-label="Close">×</button>
+  </div>
     <section id="activity-pane">
       <div class="toolbar">
         <h2>Activity log</h2>
@@ -357,8 +418,21 @@
       </div>
       <div id="log"></div>
     </section>
+    <section id="files-pane">
+      <p class="aside-note">Scripts, images and clips on this computer.</p>
+      <label class="search">Search files
+        <input id="library-search" type="search" placeholder="Filename or folder" aria-controls="library opened-folder" autocomplete="off">
+      </label>
+      <button class="linkish" id="clear-library-search" type="button" hidden>Clear search</button>
+      <p class="aside-note" id="library-search-status" role="status" aria-live="polite" hidden></p>
+      <button class="side" id="open-folder" type="button">Open folder</button>
+      <input id="folder-picker" type="file" hidden webkitdirectory multiple>
+      <div id="opened-folder"></div>
+      <nav id="library" aria-label="Files"></nav>
+    </section>
     <section id="reader-pane">
       <div class="toolbar">
+        <button class="ghost" id="reader-back" type="button">‹ Files</button>
         <h2 id="reader-title">Viewer</h2>
         <button class="ghost" id="preview-reader" type="button" hidden aria-pressed="false">Preview</button>
         <button class="ghost" id="copy-reader" type="button">Copy text</button>
@@ -372,8 +446,7 @@
       <img id="reader-image" alt="" hidden>
       <video id="reader-video" controls playsinline preload="metadata" hidden aria-label="Saved production video"></video>
     </section>
-  </div>
-</main>
+</section>
 <p id="toast" role="status" aria-live="polite" hidden></p>
 <noscript>Turn on JavaScript to run the crew and open the library.</noscript>
 <script src="/static/desk.js" defer></script>

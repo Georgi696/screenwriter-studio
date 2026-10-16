@@ -67,3 +67,16 @@ def fit_image(data: bytes, limit: int = UPLOAD_LIMIT) -> tuple[bytes, str]:
             if min(image.size) * 3 // 4 < _MIN_SIDE:
                 raise ValueError("Image cannot be reduced to the upload size limit.")
             image = image.resize((image.width * 3 // 4, image.height * 3 // 4), Image.Resampling.LANCZOS)
+
+
+def thumbnail(data: bytes, max_side: int = 320) -> bytes:
+    """A small JPEG preview for lists of pictures; the original file is untouched."""
+    with Image.open(io.BytesIO(data)) as source:
+        source.draft("RGB", (max_side, max_side))
+        image = source.convert("RGBA") if "A" in source.getbands() else source.convert("RGB")
+        image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+        if image.mode == "RGBA":
+            flat = Image.new("RGB", image.size, "white")
+            flat.paste(image, mask=image.getchannel("A"))
+            image = flat
+        return _encode(image, ".jpg", quality=82)

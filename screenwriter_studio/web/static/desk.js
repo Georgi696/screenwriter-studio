@@ -136,19 +136,24 @@ function moveGlider() {
 }
 
 function setView(name, fromUser) {
+  if (name === "activity" || name === "reader") {
+    openDrawer(name === "activity" ? "activity" : "viewer");
+    return;
+  }
   if (fromUser) {
     follow = false;
     viewChosen = true;
-    document.getElementById("follow").classList.remove("is-on");
+    syncFollow();
   }
   document.body.dataset.view = name;
-  document.querySelectorAll(".tab").forEach((tab) => {
+  document.querySelectorAll(".tab[data-tab]").forEach((tab) => {
     const on = tab.dataset.tab === name;
     tab.classList.toggle("is-on", on);
-    tab.setAttribute("aria-selected", on ? "true" : "false");
+    if (on) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
     if (on) tab.classList.remove("has-news");
   });
-  if (last) syncNextStep(last);
+  if (last) { syncNextStep(last); syncProductionHeader(last); }
   document.body.classList.remove("is-entering");
   void document.body.offsetWidth;
   document.body.classList.add("is-entering");
@@ -156,6 +161,52 @@ function setView(name, fromUser) {
     moveGlider();
     placeRail();
     if (last) moveToken(last.station || "brief", false);
+  });
+}
+
+function syncFollow() {
+  const button = document.getElementById("follow");
+  button.classList.toggle("is-on", follow);
+  button.setAttribute("aria-pressed", follow ? "true" : "false");
+}
+
+// The drawer shows the activity log, the file tree, or one file opened from it.
+function openDrawer(pane) {
+  const drawer = document.getElementById("drawer");
+  if (pane === "files" && readerOpen && drawer.dataset.pane === "viewer" && drawer.hidden) pane = "viewer";
+  drawer.dataset.pane = pane;
+  drawer.hidden = false;
+  document.body.classList.add("drawer-open");
+  syncDrawerButtons();
+  drawer.querySelector(pane === "files" ? "#library-search" : pane === "viewer" ? "#reader-back" : ".drawer-tab.is-on")?.focus();
+}
+
+function closeDrawer() {
+  const drawer = document.getElementById("drawer");
+  drawer.hidden = true;
+  document.body.classList.remove("drawer-open");
+  syncDrawerButtons();
+}
+
+function toggleDrawer(pane) {
+  const drawer = document.getElementById("drawer");
+  const showing = drawer.hidden ? "" : (drawer.dataset.pane === "viewer" ? "files" : drawer.dataset.pane);
+  if (showing === pane) closeDrawer();
+  else openDrawer(pane);
+}
+
+function syncDrawerButtons() {
+  const drawer = document.getElementById("drawer");
+  const pane = drawer.hidden ? "" : (drawer.dataset.pane === "viewer" ? "files" : drawer.dataset.pane);
+  for (const [id, name] of [["open-activity", "activity"], ["open-files", "files"]]) {
+    const button = document.getElementById(id);
+    button.classList.toggle("is-on", pane === name);
+    button.setAttribute("aria-expanded", pane === name ? "true" : "false");
+  }
+  drawer.querySelectorAll(".drawer-tab").forEach((tab) => {
+    const on = tab.dataset.pane === pane;
+    tab.classList.toggle("is-on", on);
+    tab.setAttribute("aria-pressed", on ? "true" : "false");
   });
 }
 
@@ -211,8 +262,52 @@ function setFolderExpanded(section, expanded) {
   section.querySelector(".folder-content").hidden = !expanded;
 }
 
+const STAGE_TEXT = { idea: "Idea", story: "Script", images: "Images", clips: "Clips" };
+function renderRail() {
+  const list = document.getElementById("production-list");
+  const signature = JSON.stringify(libraryProjects.map((project) => [project.slug, project.summary]));
+  if (list.dataset.signature !== signature) {
+    list.dataset.signature = signature;
+    list.replaceChildren();
+    if (!libraryProjects.length) list.appendChild(make("li", "empty", "No productions yet."));
+    for (const project of libraryProjects) {
+      const summary = project.summary || {};
+      const item = document.createElement("li");
+      const card = make("button", "production-card");
+      card.type = "button";
+      card.dataset.slug = project.slug;
+      const title = summary.title || project.slug;
+      const [done, total] = summary[summary.stage] || [0, 0];
+      const meta = (STAGE_TEXT[summary.stage] || "Idea") + (total ? " " + done + "/" + total : "");
+      card.title = title + " · " + meta + (summary.needs ? " · " + summary.needs + " need you" : "");
+      card.setAttribute("aria-label", "Open " + card.title);
+      if (summary.thumb) {
+        const img = document.createElement("img");
+        img.alt = "";
+        img.loading = "lazy";
+        img.src = "/library-thumb?path=" + encodeURIComponent(summary.thumb);
+        card.appendChild(img);
+      } else {
+        card.appendChild(make("span", "card-initial", title.slice(0, 1).toUpperCase()));
+      }
+      const text = make("span", "card-text");
+      text.append(make("span", "card-title", title), make("span", "card-meta", meta));
+      card.appendChild(text);
+      if (summary.needs) card.appendChild(make("span", "card-needs", String(summary.needs)));
+      card.addEventListener("click", () => openProduction(project.slug));
+      item.appendChild(card);
+      list.appendChild(item);
+    }
+  }
+  markCurrentProduction();
+}
+
 function markCurrentProduction() {
   const slug = productionSlug(deskFolder);
+  document.querySelectorAll("#production-list .production-card").forEach((card) => {
+    if (slug && card.dataset.slug === slug) card.setAttribute("aria-current", "true");
+    else card.removeAttribute("aria-current");
+  });
   document.querySelectorAll("#library .library-folder").forEach((section) => {
     const current = Boolean(slug) && section.dataset.folder === "production:" + slug;
     section.classList.toggle("is-current", current);
@@ -662,8 +757,9 @@ function renderImageTools(frame, image, running) {
     tools.appendChild(edit);
   }
   if ((image.versions || []).length) {
-    const strip = make("div", "image-versions");
-    strip.appendChild(make("p", "field-note", "Earlier versions · switching spends no credits"));
+    // Earlier versions fold away, so a card with history is no taller than its neighbours.
+    const strip = make("details", "image-versions");
+    strip.appendChild(make("summary", "", "Earlier versions (" + image.versions.length + ") · switching spends no credits"));
     for (const version of image.versions) {
       const item = make("div", "image-version");
       const thumb = make("img");
@@ -812,8 +908,9 @@ function openingView(state) {
 // Mark each numbered step once its work is finished, so the tab bar reads as a checklist.
 function syncTabProgress(state) {
   const images = state.images || [];
+  const started = Boolean(state.folder || state.running);
+  document.querySelectorAll('.tab[data-tab]:not(#new-session)').forEach((tab) => { tab.disabled = !started; });
   const finished = {
-    brief: Boolean(state.folder),
     pipeline: (state.done || []).includes("art") || images.length > 0,
     stills: images.length > 0 && images.every((image) => image.state === "done"),
     video: Boolean(state.video && state.video.complete)
@@ -839,23 +936,23 @@ function nextStep(state) {
   const images = state.images || [];
   const video = state.video || {};
   const clips = video.clips || [];
-  if (state.running) return { text: state.note || "The crew is working." };
+  if (state.running) return { tone: "working", text: state.note || "The crew is working." };
   if (state.can_proceed) {
     return state.pages_passed
-      ? { text: "The script editor passed the script. Read it, then approve to write the image prompts.", label: "Review the script", view: "pipeline" }
-      : { text: "The script editor did not pass this draft. Continue with it or abort.", label: "Review the draft", view: "pipeline" };
+      ? { tone: "needs", text: "The script editor passed the script. Read it, then approve to write the image prompts.", label: "Review the script", view: "pipeline" }
+      : { tone: "needs", text: "The script editor did not pass this draft. Continue with it or abort.", label: "Review the draft", view: "pipeline" };
   }
   if (/^The run stopped:/.test(state.note || "") && !state.can_proceed) {
-    return { text: state.note + " Saved files are kept.", label: "Back to Idea", view: "brief" };
+    return { tone: "bad", text: state.note + " Saved files are kept.", label: "New production", view: "brief" };
   }
   const waiting = images.filter((image) => image.state === "review").length;
-  if (waiting) return { text: waiting + (waiting === 1 ? " image needs" : " images need") + " your decision.", label: "Review images", action: openStillsReview };
-  if (stillsPaused(state)) return { text: "Image work is unfinished. Resume it from the Images tab.", label: "Open Images", view: "stills" };
-  if (images.length && !video.saved) return { text: "All images are approved. Next, turn each one into a video clip.", label: "Go to Video clips", view: "video" };
-  if (video.saved && !video.complete) return { text: "Some video clips are unfinished.", label: "Go to Video clips", view: "video" };
-  if (video.complete) return { text: "All " + clips.length + " clips are ready. Download them and combine them in your editor.", label: "Download all clips", href: "/video-zip" };
-  if (!state.folder) return { text: "Describe your film to begin.", label: "Go to Idea", view: "brief" };
-  return { text: "Open the Story tab to follow the crew.", label: "Go to Story", view: "pipeline" };
+  if (waiting) return { tone: "needs", text: waiting + (waiting === 1 ? " image needs" : " images need") + " your decision.", label: "Review images", action: openStillsReview };
+  if (stillsPaused(state)) return { tone: "needs", text: "Image work is unfinished. Resume it from the Images step.", label: "Open Images", view: "stills" };
+  if (images.length && !video.saved) return { tone: "info", text: "All images are approved. Next, turn each one into a video clip.", label: "Go to Video clips", view: "video" };
+  if (video.saved && !video.complete) return { tone: "needs", text: "Some video clips are unfinished.", label: "Go to Video clips", view: "video" };
+  if (video.complete) return { tone: "done", text: "All " + clips.length + " clips are ready. Download them and combine them in your editor.", label: "Download all clips", href: "/video-zip" };
+  if (!state.folder) return { tone: "info", text: "Describe your film to begin.", label: "New production", view: "brief" };
+  return { tone: "info", text: "Open Story to follow the crew.", label: "Go to Story", view: "pipeline" };
 }
 
 let nextStepGoal = null;
@@ -866,7 +963,13 @@ function syncNextStep(state) {
   // No point offering a jump to the tab the user is already on.
   button.hidden = !nextStepGoal.label || nextStepGoal.view === document.body.dataset.view;
   setText(button, nextStepGoal.label || "");
-  document.getElementById("next-step").classList.toggle("is-busy", Boolean(state.running));
+  const bar = document.getElementById("next-step");
+  bar.classList.toggle("is-busy", Boolean(state.running));
+  bar.dataset.tone = nextStepGoal.tone || "info";
+  setText(bar.querySelector(".next-label"),
+    { needs: "Needs you", working: "Working", done: "Done", bad: "Stopped" }[nextStepGoal.tone] || "Next");
+  // While a new film is being described, news about the open production is noise; a running crew is not.
+  bar.hidden = document.body.dataset.view === "brief" && !state.running;
 }
 
 function credits(amount) {
@@ -987,8 +1090,8 @@ function syncImageExtras(state) {
       setText(document.getElementById("image-empty-text"), "The crew is still working. Images appear here as they are generated.");
       setText(action, "Follow progress");
     } else {
-      setText(document.getElementById("image-empty-text"), "Images appear here once a script is approved. Start a production in the Idea tab, or open one from the library.");
-      setText(action, "Go to Idea");
+      setText(document.getElementById("image-empty-text"), "Images appear here once a script is approved. Start a new production, or open one from Productions.");
+      setText(action, "New production");
     }
     action.dataset.view = state.can_proceed || state.running ? "pipeline" : "brief";
   }
@@ -1129,24 +1232,79 @@ function syncExtras(state) {
   syncVideoExtras(state);
 }
 
-function openStillsReview() {
+// Images waiting on a decision are reviewed one at a time in the panel, next to what they should match.
+let reviewFocus = "";
+function reviewQueue(state) {
+  return ((state && state.images) || []).filter((image) => image.state === "review");
+}
+
+function openStillsReview(id) {
+  if (typeof id === "string") reviewFocus = id;
   setView("stills", true);
+  if (last) syncReviewPanel(last);
   requestAnimationFrame(() => {
-    const bay = document.getElementById("image-bay");
-    if (!bay) return;
-    let card = bay.querySelector('.frame[data-state="review"]');
-    if (!card) return;
-    const column = card.closest(".image-group");
-    if (card.hidden || (column && column.hidden)) {
-      stillFilter = "all";
-      document.querySelectorAll("#still-tools .chip").forEach((button) => {
-        button.classList.toggle("is-on", button.dataset.filter === "all");
-      });
-      applyStillFilter();
-      card = bay.querySelector('.frame[data-state="review"]');
-    }
-    if (card) card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    const panel = document.getElementById("review-panel");
+    if (panel && !panel.hidden) panel.scrollIntoView({ block: "start", behavior: "smooth" });
   });
+}
+
+function moveReview(step) {
+  const queue = reviewQueue(last);
+  if (!queue.length) return;
+  const at = Math.max(0, queue.findIndex((image) => image.id === reviewFocus));
+  reviewFocus = queue[(at + step + queue.length) % queue.length].id;
+  syncReviewPanel(last);
+}
+
+function renderReviewStub(frame, image) {
+  frame.querySelector(".image-review")?.remove();
+  let stub = frame.querySelector(".review-stub");
+  if (!stub) {
+    stub = make("div", "review-stub");
+    const button = make("button", "go", "Review");
+    button.type = "button";
+    stub.append(make("strong", "", "Needs your review"), make("p", ""), button);
+    frame.appendChild(stub);
+  }
+  const summary = String((image.inspection || {}).summary || "The inspector wants you to look at this image.");
+  setText(stub.querySelector("p"), summary.length > 160 ? summary.slice(0, 157).trimEnd() + "…" : summary);
+  stub.querySelector("button").onclick = () => openStillsReview(image.id);
+}
+
+function syncReviewPanel(state) {
+  const panel = document.getElementById("review-panel");
+  const queue = reviewQueue(state);
+  panel.hidden = !queue.length;
+  if (!queue.length) { reviewFocus = ""; return; }
+  let image = queue.find((item) => item.id === reviewFocus);
+  if (!image) { image = queue[0]; reviewFocus = image.id; }
+  const at = queue.indexOf(image);
+  setText(document.getElementById("review-title"), imageLabel(state, image));
+  setText(document.getElementById("review-count"), (at + 1) + " of " + queue.length);
+  document.getElementById("review-prev").disabled = queue.length < 2;
+  document.getElementById("review-next").disabled = queue.length < 2;
+  const candidate = document.getElementById("review-image");
+  candidate.hidden = !image.src;
+  if (image.src && candidate.getAttribute("src") !== image.src) candidate.src = image.src;
+  candidate.alt = "Image to review: " + imageLabel(state, image);
+  candidate.onclick = () => { showReaderImage(image.id, image.src); setView("reader", true); };
+  const refs = document.getElementById("review-refs");
+  const key = JSON.stringify(image.references || []);
+  if (refs.dataset.key !== key) {
+    refs.dataset.key = key;
+    refs.replaceChildren();
+    for (const ref of image.references || []) {
+      const figure = make("figure", "review-ref");
+      const img = document.createElement("img");
+      img.src = ref.src;
+      img.alt = "Reference: " + ref.label;
+      img.addEventListener("click", () => { showReaderImage(ref.label, ref.src); setView("reader", true); });
+      figure.append(img, make("figcaption", "", ref.label));
+      refs.appendChild(figure);
+    }
+    if (!(image.references || []).length) refs.appendChild(make("p", "field-note", "This image was not given reference images."));
+  }
+  renderInspection(document.getElementById("review-decision"), image, state.running);
 }
 
 function placeCostChoices(besideProceed) {
@@ -1179,14 +1337,17 @@ function syncProceed(state) {
   const resume = document.getElementById("resume-images");
   const jump = document.getElementById("activity-jump");
   if (row) row.hidden = !showProceed;
+  document.getElementById("approval-card").hidden = !showProceed;
+  setText(document.getElementById("approval-title"), state.pages_passed === true
+    ? "The editor passed these pages. Approve them?" : "The editor did not pass this draft. Continue anyway?");
   button.hidden = !showProceed;
   note.hidden = !showProceed;
   button.disabled = !showProceed;
   const approving = state.pages_passed === true;
   setText(button, approving ? "Approve pages" : "Proceed with this draft");
   setText(note, approving
-    ? "The editor passed these pages. Select a step below to read them. Approving starts the image prompts and image generation. Plan images and image inspection beside this button set the cost."
-    : "Sends this script to the image prompts and image generation. The editor's verdict stays on file. Plan images and image inspection beside this button set the cost.");
+    ? "Read the pages in the steps on the left. Approving writes the image prompts and generates the images; the inspection and plan-only choices below set what that costs."
+    : "This sends the draft to the image prompts and image generation anyway. The editor's verdict stays on file. The inspection and plan-only choices below set what that costs.");
   const cost = document.getElementById("proceed-cost");
   const estimate = state.estimate;
   if (cost) {
@@ -1243,10 +1404,12 @@ function syncImages(state) {
     const made = image.model ? " · " + modelTitle(image.model) : "";
     const caption = imageLabel(state, image) + made + (image.error ? " — " + image.error : "");
     setText(frame.querySelector("figcaption"), caption);
+    frame.querySelector("figcaption").title = caption;
     const shown = (image.state || "") + (image.uncertain ? ":uncertain" : "");
     if (frame.dataset.shown !== shown) { applyFrameState(frame, image); frame.dataset.shown = shown; }
     else if (["done", "review", "inspecting"].includes(image.state)) showDone(frame, image);
-    renderInspection(frame, image, state.running);
+    if (image.state === "review") renderReviewStub(frame, image);
+    else { frame.querySelector(".review-stub")?.remove(); renderInspection(frame, image, state.running); }
     renderImageTools(frame, image, state.running);
   }
   bay.querySelectorAll(".image-group").forEach((group) => {
@@ -1258,6 +1421,7 @@ function syncImages(state) {
     group.classList.toggle("is-working", jobs.some((frame) => frame.dataset.state === "running"));
   });
   applyStillFilter();
+  syncReviewPanel(state);
   if ((state.images || []).length > before && document.body.dataset.view !== "stills") {
     document.querySelector('.tab[data-tab="stills"]').classList.add("has-news");
   }
@@ -1353,6 +1517,12 @@ function detailChips(host, items) {
   for (const item of items.filter(Boolean)) row.appendChild(make("span", "detail-chip", item));
   if (row.children.length) host.appendChild(row);
 }
+
+const FILE_NAMES = {
+  "00_development.json": "Development", "01_screenplay.json": "Screenplay (data)", "01_script.fountain": "Screenplay",
+  "02_shots.md": "Shot list", "03_still_plan.json": "Image plan", "jobs.json": "Image jobs", "manifest.json": "Image results",
+  "verdict.json": "Editor's verdict", "greenlight.json": "Approval record",
+};
 
 function modeChip(id, mode) {
   const chip = make("span", "detail-chip" + (mode ? " is-" + mode : ""), id);
@@ -1450,7 +1620,7 @@ const STAGE_OUTPUT = {
       const item = document.createElement("li");
       const head = make("div", "job-head");
       head.append(make("strong", "", job.id), make("span", "detail-chip", job.kind));
-      for (const ref of job.references || []) head.appendChild(modeChip(ref.id, ref.mode));
+      for (const ref of job.references || []) head.appendChild(modeChip(ref.name || ref.id, ref.mode));
       item.appendChild(head);
       const details = document.createElement("details");
       details.dataset.key = "job:" + job.id;
@@ -1472,8 +1642,10 @@ function renderStageOutput(id, data) {
   const filled = STAGE_OUTPUT[id](host, (data && data.data) || {}, last || {});
   if (!filled) host.appendChild(make("p", "detail-empty", STEP_INFO[id].empty));
   host.querySelectorAll("details").forEach((node) => { if (open.has(node.dataset.key)) node.open = true; });
+  if ((data && data.files || []).length) files.appendChild(make("span", "detail-files-label", "Saved files:"));
   for (const file of (data && data.files) || []) {
-    const button = make("button", "ghost", "Open " + file.name);
+    const button = make("button", "linkish", FILE_NAMES[file.name] || file.name);
+    button.title = "Open " + file.name;
     button.type = "button";
     button.addEventListener("click", () => openFile(file.path));
     files.appendChild(button);
@@ -1534,24 +1706,76 @@ function pickStation(id) {
 let videoPromptKey = "";
 // Model, quality and sound come from the Idea tab's settings. The server applies them
 // to the saved production, so this tab only reports what will be used.
+function clock(seconds) {
+  return Math.floor(seconds / 60) + ":" + String(Math.round(seconds % 60)).padStart(2, "0");
+}
+
+let sequence = [];
+// Timing lives in one proportional bar above the clips, so the clip cards themselves can be equal.
+function syncClipTimeline(state) {
+  const video = state.video || {};
+  const bar = document.getElementById("clip-timeline");
+  const shots = video.shots || [];
+  bar.hidden = shots.length < 2;
+  const key = JSON.stringify(shots.map((shot) => [shot.id, shot.duration_seconds, (clipOf(state, shot.id) || {}).state]));
+  if (bar.dataset.key === key) return;
+  bar.dataset.key = key;
+  bar.replaceChildren();
+  let at = 0;
+  for (const shot of shots) {
+    const seconds = shot.duration_seconds || 0;
+    const segment = make("span", "timeline-seg");
+    segment.style.flexGrow = String(seconds || 1);
+    segment.dataset.state = (clipOf(state, shot.id) || {}).state || "pending";
+    segment.title = shotLabel(state, shot.id) + " · " + clock(at) + "–" + clock(at + seconds);
+    segment.append(make("strong", "", shotLabel(state, shot.id).split(" · ")[0]), make("span", "", clock(at) + "–" + clock(at + seconds)));
+    bar.appendChild(segment);
+    at += seconds;
+  }
+}
+
+function syncSequence(state) {
+  const clips = (((state.video || {}).clips) || []).filter((clip) => clip.state === "done" && clip.src);
+  const box = document.getElementById("sequence");
+  box.hidden = clips.length < 2;
+  sequence = clips.map((clip) => ({ id: clip.id, src: clip.src, label: shotLabel(state, clip.id) }));
+}
+
+function playSequence(index) {
+  const player = document.getElementById("sequence-video");
+  const item = sequence[index];
+  if (!item) { setText(document.getElementById("sequence-label"), "Played " + sequence.length + " clips."); return; }
+  player.hidden = false;
+  player.dataset.index = String(index);
+  player.src = item.src;
+  setText(document.getElementById("sequence-label"), item.label + " · " + (index + 1) + " of " + sequence.length);
+  player.play().catch(() => {});
+}
+
 function syncVideo(state) {
   const video = state.video || {};
   const running = Boolean(state.running);
   setText(document.getElementById("video-message"),
     state.active === "video" && running ? state.note : video.message || "Approve the images to continue.");
+  document.getElementById("video-message").hidden = Boolean(video.complete) && !running;
   const names = {auto: "Auto-chosen models", kling: "Kling 3.0", seedance: "Seedance 2.5"};
   const quality = {std: "Standard 720p", pro: "Pro 1080p", "4K": "4K"};
   setText(document.getElementById("video-settings-note"),
     (names[video.selection] || names.auto) + " · " + (quality[video.mode] || quality.pro) + " · " +
     (video.sound === false ? "silent" : "with sound") +
-    (video.saved ? " · locked for this production once clips are generated." : " · change these in Models and quality on the Idea tab."));
+    (video.saved ? " · locked for this production once clips are generated." : " · change these in Models and quality under New production."));
   document.getElementById("plan-video").disabled = running || !video.can_plan;
   const generate = document.getElementById("generate-video");
   // When every clip is ready there is nothing to animate; the status line and Download say so.
   generate.hidden = Boolean(video.complete);
   generate.disabled = running || !video.ready;
   setText(generate, video.saved ? "Animate all remaining clips" : "Animate all clips");
+  syncSequence(state);
+  syncClipTimeline(state);
   const host = document.getElementById("video-clips");
+  // Every card frames its picture in the film's own shape, so all clips line up at the same size.
+  const [w, h] = String(state.aspect_ratio || "16:9").split(":").map(Number);
+  host.style.setProperty("--shot-ratio", w && h ? w + " / " + h : "16 / 9");
   const clips = video.clips || [];
   const ids = new Set(clips.map((clip) => clip.id));
   for (const node of [...host.children]) if (!ids.has(node.dataset.clip)) node.remove();
@@ -1560,7 +1784,9 @@ function syncVideo(state) {
     if (!card) {
       card = make("article", "video-clip");
       card.dataset.clip = clip.id;
-      card.append(make("h3"), make("img", "clip-thumb"), make("div", "clip-meta"), make("p"), make("video"), make("a", "video-download", "Download clip"), make("div", "takes"), make("button", "ghost"));
+      const head = make("div", "clip-head");
+      head.append(make("h3"), make("span", "clip-status"));
+      card.append(head, make("img", "clip-thumb"), make("video"), make("div", "clip-meta"), make("p", "clip-note"), make("a", "video-download", "Download clip"), make("div", "takes"), make("button", "ghost"));
       card.querySelector("button").type = "button";
       card.querySelector("button").addEventListener("click", () => {
         const done = card.dataset.state === "done";
@@ -1573,15 +1799,23 @@ function syncVideo(state) {
       host.appendChild(card);
     }
     const clipStates = { done: "ready", pending: "not started", submitting: "sending", polling: "rendering", downloading: "downloading", failed: "failed", uncertain: "needs checking" };
-    setText(card.querySelector("h3"), shotLabel(state, clip.id) + " · " + modelTitle(clip.model || "Video") + " · " + (clipStates[clip.state] || clip.state));
-    setText(card.querySelector("p"), clip.error || clip.audio_note || "");
+    setText(card.querySelector("h3"), shotLabel(state, clip.id));
+    const status = card.querySelector(".clip-status");
+    setText(status, clipStates[clip.state] || clip.state);
+    status.dataset.state = clip.state;
+    const note = card.querySelector(".clip-note");
+    setText(note, clip.error || clip.audio_note || "");
+    note.hidden = !note.textContent;
     card.dataset.state = clip.state;
     const source = imageOf(state, clip.id);
     const planned = (video.shots || []).find((shot) => shot.id === clip.id) || {};
     const thumb = card.querySelector(".clip-thumb");
     thumb.hidden = Boolean(clip.src) || !(source && source.src);
     if (source && source.src && thumb.getAttribute("src") !== source.src) { thumb.src = source.src; thumb.alt = "First frame of " + clip.id; }
-    setText(card.querySelector(".clip-meta"), [planned.duration_seconds ? planned.duration_seconds + "s" : "", shotOf(state, clip.id) ? shotOf(state, clip.id).action : ""].filter(Boolean).join(" · "));
+    const startsAt = (video.shots || []).slice(0, Math.max(0, (video.shots || []).findIndex((shot) => shot.id === clip.id)))
+      .reduce((sum, shot) => sum + (shot.duration_seconds || 0), 0);
+    const range = planned.duration_seconds ? clock(startsAt) + "–" + clock(startsAt + planned.duration_seconds) : "";
+    setText(card.querySelector(".clip-meta"), [range, modelTitle(clip.model || "Video"), shotOf(state, clip.id) ? shotOf(state, clip.id).action : ""].filter(Boolean).join(" · "));
     card.querySelector("video").poster = source && source.src ? source.src : "";
     const action = card.querySelector("button");
     const price = typeof planned.credits === "number" ? " · about " + Math.round(planned.credits).toLocaleString() + " credits" : " · paid";
@@ -1747,6 +1981,30 @@ document.getElementById("select-remaining").addEventListener("click", () => {
 });
 document.getElementById("clear-selection").addEventListener("click", () => { clipPick.clear(); syncClipPick(last); });
 
+function syncProductionHeader(state) {
+  const production = state.production || {};
+  const composing = document.body.dataset.view === "brief" && !state.running;
+  setText(document.getElementById("production-title"),
+    composing && state.folder ? "New production" : production.title || production.slug || (state.running ? "New production" : "No production open"));
+  const shape = [];
+  if (state.runtime_seconds) shape.push(state.runtime_seconds + "s");
+  if (state.aspect_ratio) shape.push(state.aspect_ratio);
+  if ((state.shots || []).length) shape.push(state.shots.length + (state.shots.length === 1 ? " shot" : " shots"));
+  const folder = document.getElementById("folder");
+  setText(folder, composing && state.folder ? "Starts a new film. " + (production.title || production.slug) + " stays in Productions." : shape.join(" · "));
+  folder.hidden = !folder.textContent;
+  const meter = document.getElementById("credit-meter");
+  const spent = production.spent;
+  const ahead = ((state.images_estimate || {}).credits || 0) + (((state.video || {}).estimate || {}).remaining || 0);
+  meter.hidden = composing || !spent;
+  if (spent) {
+    setText(meter, "≈ " + Math.round(spent.credits).toLocaleString() + " credits used" +
+      (ahead ? " · ≈ " + Math.round(ahead).toLocaleString() + " to go" : ""));
+    meter.title = "About $" + spent.usd.toFixed(2) + " so far at today's KIE list prices: every image version and clip on file. " +
+      "Chat calls are billed per token and are not included." + (ahead ? " Unfinished images and clips: about " + credits(ahead) + "." : "");
+  }
+}
+
 function paint(state, prev) {
   const stage = document.getElementById("stage");
   const note = document.getElementById("note");
@@ -1757,9 +2015,7 @@ function paint(state, prev) {
     setText(note, noteText(state.note));
     note.classList.toggle("is-bad", /not set|failed|stopped|cancelled|error/i.test(state.note || ""));
   }
-  const folder = document.getElementById("folder");
-  setText(folder, state.folder || "");
-  folder.hidden = !state.folder;
+  syncProductionHeader(state);
   if ((state.folder || "") !== deskFolder) {
     deskFolder = state.folder || "";
     renderReferences();
@@ -2037,117 +2293,195 @@ function referencePayload() {
   });
 }
 
+// The instruction the image model receives for a reference. Mirrors reference_direction in references.py.
+function referenceDirection(ref) {
+  let text;
+  if (ref.mode === "character") {
+    const face = ref.face !== false ? "Keep the face and identifying appearance." : "Do not copy the face or identity.";
+    const wardrobe = ref.wardrobe !== false ? "Keep the wardrobe." : "Use the scripted wardrobe; do not copy the reference clothing.";
+    text = "Character: " + face + " " + wardrobe + " Do not copy the background or composition. " +
+      "Where the prompt describes a change (clothing removed or added, dirt, injuries), follow the prompt.";
+  } else {
+    text = {
+      style: "Style: match colour grade, light, texture and mood only. Do not copy people, wardrobe, places, objects or composition.",
+      location: "Location: keep the setting, architecture and spatial details. Do not copy people, wardrobe or camera framing.",
+      object: "Object / Product: keep the object's shape, materials and identifying details. Do not copy people, background or composition.",
+      composition: "Composition: follow framing, camera angle and subject placement only. Use the scripted people, wardrobe, objects and location.",
+      lock: "Lock: keep the depicted faces, costumes and places only where the story shows them.",
+    }[ref.mode] || "";
+  }
+  const extra = String(ref.instruction || "").trim();
+  return extra ? text + " Additional direction within this role: " + extra : text;
+}
+
+// What "automatic" means for each role, in the words of this reference.
+function automaticScope(ref) {
+  const name = String(ref.name || "").trim();
+  if (ref.mode === "style") return "All shots";
+  if (ref.mode === "character") return name ? "Shots with " + name : "Shots with this character";
+  if (ref.mode === "location") return name ? "Shots set in " + name : "Shots set here";
+  return "Shots the art director picks";
+}
+
+const DIRECTION_EXAMPLES = {
+  style: "e.g. only the colour grade, not the grain",
+  character: "e.g. her hair is cut short now",
+  location: "e.g. keep the burning skyscrapers",
+  object: "e.g. the logo faces the camera",
+  composition: "e.g. low angle, subject on the left third",
+};
+
+// Shot numbers exist only once the new film's script is written, so they are checked against the shot limit now
+// and against the script before any image is paid for.
+function shotWarning(ref) {
+  if (ref.scope !== "shots") return "";
+  const text = String(ref.shotsText || "").trim();
+  if (!text) return "Enter shot numbers, for example 1, 3-5.";
+  const limit = Number(document.getElementById("max-shots").value) || 0;
+  const numbers = text.split(",").flatMap((part) => {
+    const match = part.trim().match(/^(\d{1,3})(?:\s*-\s*(\d{1,3}))?$/);
+    return match ? [Number(match[2] || match[1])] : [NaN];
+  });
+  if (numbers.some(Number.isNaN)) return "Use numbers or ranges, for example 1, 3-5.";
+  if (limit && Math.max(...numbers) > limit) return "Shot " + Math.max(...numbers) + " is past the limit of " + limit + " shots.";
+  return "The script is not written yet. If it has fewer shots, image generation stops and asks you before spending.";
+}
+
 function renderReferenceTray() {
   const tray = document.getElementById("reference-selected");
   const signature = referenceSignature();
   if (signature === referenceTraySignature) return;
-  const expanded = new Set([...tray.querySelectorAll("details[open]")].map((node) => node.dataset.path));
   referenceTraySignature = signature;
+  const focused = document.activeElement && tray.contains(document.activeElement)
+    ? [document.activeElement.closest(".ref-chosen")?.dataset.path, document.activeElement.dataset.control] : null;
   tray.replaceChildren();
   for (const [path, ref] of selectedRefs) {
-    const info = refInfo.get(path) || { name: path, src: "/library-media?path=" + encodeURIComponent(path) };
+    const info = refInfo.get(path) || { name: path, src: "/library-thumb?path=" + encodeURIComponent(path) };
     const card = make("div", "ref-chosen");
     card.dataset.path = path;
+    // Updating the signature while typing keeps library polling from replacing focused controls.
+    const changed = () => { referenceTraySignature = referenceSignature(); };
+    const control = (element, key) => { element.dataset.control = key; return element; };
+
+    const thumb = make("button", "ref-chosen-thumb");
+    thumb.type = "button";
+    thumb.setAttribute("aria-label", "View " + (ref.name || info.name) + " full size");
     const img = document.createElement("img");
     img.alt = "";
     img.src = info.src;
-    const body = make("div", "ref-chosen-body");
-    const name = make("span", "ref-chosen-name", info.label || info.name);
-    name.title = info.name;
-    const choices = (key, label, options) => {
-      const group = make("div", "segmented ref-options");
-      group.setAttribute("role", "group");
-      group.setAttribute("aria-label", label);
-      for (const [value, text] of options) {
-        const button = make("button", ref[key] === value ? "is-on" : "", text);
-        button.type = "button";
-        button.dataset.setting = key;
-        button.dataset.value = value;
-        button.setAttribute("aria-pressed", String(ref[key] === value));
-        button.addEventListener("click", () => {
-          ref[key] = value;
-          markReferenceSelection();
-          const updated = [...tray.children].find((item) => item.dataset.path === path);
-          const selected = [...updated.querySelectorAll("button[data-setting]")]
-            .find((item) => item.dataset.setting === key && item.dataset.value === value);
-          selected?.focus();
-        });
-        group.appendChild(button);
-      }
-      return group;
+    thumb.appendChild(img);
+    const full = String(info.src || "").replace("/library-thumb?", "/library-media?");
+    thumb.addEventListener("click", () => { showReaderImage(ref.name || info.name, full); setView("reader", true); });
+
+    const head = make("div", "ref-chosen-head");
+    const title = make("strong", "ref-chosen-title", ref.name || info.label || info.name);
+    const source = make("span", "ref-chosen-source", path.startsWith(".references/") ? "Uploaded image" : path.split("/")[0]);
+    source.title = info.name;
+    head.append(title, source);
+
+    const grid = make("div", "ref-chosen-fields");
+    const field = (label, element, wide) => {
+      const wrap = make("label", "ref-field" + (wide ? " is-wide" : ""));
+      wrap.append(make("span", "ref-field-label", label), element);
+      grid.appendChild(wrap);
+      return wrap;
     };
-    const role = choices("mode", "Role for " + info.name, REFERENCE_ROLES);
-    const settings = document.createElement("details");
-    settings.className = "ref-settings";
-    settings.dataset.path = path;
-    settings.open = expanded.has(path);
-    settings.appendChild(make("summary", "", "Reference settings"));
-    const fields = make("div", "ref-settings-fields");
-    settings.appendChild(fields);
-    // Updating the signature while typing keeps library polling from replacing focused controls.
-    const changed = () => { referenceTraySignature = referenceSignature(); };
-    const field = (title, control) => {
-      const label = make(control.tagName === "DIV" ? "div" : "label", "ref-setting", title);
-      label.appendChild(control);
-      fields.appendChild(label);
-    };
-    const named = document.createElement("input");
-    named.type = "text"; named.maxLength = 120; named.value = ref.name;
-    named.placeholder = { character: "e.g. Maya", location: "e.g. station hall", object: "e.g. red watch" }[ref.mode]
-      || "e.g. Maya, station hall, red watch";
+    const role = control(document.createElement("select"), "mode");
+    for (const [value, text] of REFERENCE_ROLES) role.appendChild(new Option(text, value, false, ref.mode === value));
+    role.addEventListener("change", () => { ref.mode = role.value; markReferenceSelection(); });
+    field("Role", role);
+
     const subject = SUBJECT_ROLES.has(ref.mode);
+    const named = control(document.createElement("input"), "name");
+    named.type = "text"; named.maxLength = 120; named.value = ref.name;
+    named.placeholder = { character: "e.g. Maya", location: "e.g. station hall", object: "e.g. red watch" }[ref.mode] || "Optional label";
+    field(subject ? "Name in the script" : "Label", named);
+
     const warning = make("p", "ref-warning", "Name it exactly as the script does, so it is matched to the right shots.");
     warning.hidden = !unnamedReference(ref);
+
+    const scope = make("div", "ref-scope");
+    scope.setAttribute("role", "group");
+    scope.setAttribute("aria-label", "Applies to");
+    const autoButton = make("button", "", automaticScope(ref));
+    for (const [value, button] of [["auto", autoButton], ["shots", make("button", "", "Specific shots")]]) {
+      button.type = "button";
+      control(button, "scope-" + value);
+      button.classList.toggle("is-on", ref.scope === value);
+      button.setAttribute("aria-pressed", String(ref.scope === value));
+      button.addEventListener("click", () => { ref.scope = value; markReferenceSelection(); });
+      scope.appendChild(button);
+    }
+    const scopeField = field("Applies to", scope, true);
+    if (ref.scope === "shots") {
+      const shots = control(document.createElement("input"), "shots");
+      shots.type = "text"; shots.value = ref.shotsText; shots.placeholder = "1, 3-5"; shots.maxLength = 1000;
+      shots.setAttribute("aria-label", "Shot numbers");
+      const note = make("p", "field-note ref-shot-note", shotWarning(ref));
+      shots.addEventListener("input", () => { ref.shotsText = shots.value; changed(); setText(note, shotWarning(ref)); });
+      scopeField.append(shots, note);
+    }
+
+    let wardrobeNote = null;
+    if (ref.mode === "character") {
+      const keep = make("div", "ref-keep");
+      keep.setAttribute("role", "group");
+      keep.setAttribute("aria-label", "Keep from the picture");
+      wardrobeNote = make("p", "field-note ref-wardrobe-note",
+        "Wardrobe on: the picture's clothes are kept unless the script changes them, for example gloves taken off or wet clothes.");
+      for (const [key, label] of [["face", "Face"], ["wardrobe", "Wardrobe"]]) {
+        const wrapper = make("label", "ref-check");
+        const input = control(document.createElement("input"), key);
+        input.type = "checkbox"; input.checked = ref[key];
+        input.addEventListener("change", () => {
+          ref[key] = input.checked;
+          changed();
+          wardrobeNote.hidden = !ref.wardrobe;
+          setText(preview, referenceDirection(ref));
+          markReferenceSelection();
+        });
+        wrapper.append(input, document.createTextNode(label));
+        keep.appendChild(wrapper);
+      }
+      wardrobeNote.hidden = !ref.wardrobe;
+      field("Keep from the picture", keep, true).appendChild(wardrobeNote);
+    }
+
+    const instruction = control(document.createElement("textarea"), "instruction");
+    instruction.rows = 1; instruction.maxLength = 1000; instruction.value = ref.instruction;
+    instruction.placeholder = DIRECTION_EXAMPLES[ref.mode] || "Optional";
+    field("Extra direction (optional)", instruction, true);
+
+    const told = make("details", "ref-told");
+    told.appendChild(make("summary", "", "What the image model is told"));
+    const preview = make("p", "ref-told-text", referenceDirection(ref));
+    told.appendChild(preview);
+
     named.addEventListener("input", () => {
       ref.name = named.value;
       changed();
       warning.hidden = !unnamedReference(ref);
+      setText(title, ref.name || info.label || info.name);
+      setText(autoButton, automaticScope(ref));
       markReferenceSelection();
     });
-    if (!subject) field("Name / subject", named);
-    const scope = choices("scope", "Applies to", [
-      ["auto", ref.mode === "style" ? "All shots" : "Relevant shots"], ["shots", "Specific shots"]
-    ]);
-    field("Applies to", scope);
-    if (ref.scope === "shots") {
-      const shots = document.createElement("input");
-      shots.type = "text"; shots.value = ref.shotsText; shots.placeholder = "1, 3-5"; shots.maxLength = 1000;
-      shots.addEventListener("input", () => { ref.shotsText = shots.value; changed(); });
-      field("Shot numbers", shots);
-      fields.appendChild(make("p", "field-note", "Use the final script’s shot numbers, for example 1, 3–5."));
-    }
-    if (ref.mode === "character") {
-      const checks = make("div", "ref-character-options");
-      for (const [key, label] of [["face", "Face"], ["wardrobe", "Wardrobe"]]) {
-        const wrapper = make("label", "");
-        const input = document.createElement("input");
-        input.type = "checkbox"; input.checked = ref[key];
-        input.addEventListener("change", () => { ref[key] = input.checked; changed(); });
-        wrapper.append(input, document.createTextNode(label));
-        checks.appendChild(wrapper);
-      }
-      fields.appendChild(checks);
-    }
-    const instruction = document.createElement("textarea");
-    instruction.rows = 2; instruction.maxLength = 1000; instruction.value = ref.instruction;
-    instruction.className = "ref-instruction";
-    instruction.placeholder = "e.g. Keep the coat, use the scripted hairstyle";
-    instruction.addEventListener("input", () => { ref.instruction = instruction.value; changed(); });
-    field("Additional instruction (optional)", instruction);
-    body.append(name, role);
-    if (subject) {
-      const inline = make("label", "ref-name-inline", "Name in the script");
-      inline.appendChild(named);
-      body.append(inline, warning);
-    }
+    instruction.addEventListener("input", () => { ref.instruction = instruction.value; changed(); setText(preview, referenceDirection(ref)); });
+
     const remove = make("button", "ref-remove", "×");
     remove.type = "button";
-    remove.setAttribute("aria-label", "Remove " + info.name);
+    remove.setAttribute("aria-label", "Remove " + (ref.name || info.name));
     remove.addEventListener("click", () => { selectedRefs.delete(path); markReferenceSelection(); });
-    card.append(img, body, remove, settings);
+    const body = make("div", "ref-chosen-body");
+    body.append(head, grid, warning, told);
+    card.append(thumb, body, remove);
     tray.appendChild(card);
   }
   tray.hidden = !selectedRefs.size;
+  // A change that redraws the cards keeps the keyboard where it was.
+  if (focused && focused[0]) {
+    const card = [...tray.children].find((item) => item.dataset.path === focused[0]);
+    card?.querySelector('[data-control="' + focused[1] + '"]')?.focus();
+  }
 }
 
 function markReferenceSelection() {
@@ -2157,6 +2491,8 @@ function markReferenceSelection() {
     button.dataset.badge = ref ? REFERENCE_ROLES.find(([mode]) => mode === ref.mode)[1] : "";
     button.setAttribute("aria-pressed", ref ? "true" : "false");
   });
+  setText(document.getElementById("reference-dialog-count"), referenceSummary());
+  setText(document.getElementById("reference-add"), selectedRefs.size ? "＋ Add or change reference images" : "＋ Add reference images");
   const count = document.getElementById("reference-count");
   count.textContent = referenceSummary();
   count.classList.toggle("is-warning", [...selectedRefs.values()].some(unnamedReference));
@@ -2177,7 +2513,7 @@ function referenceThumb(item) {
   button.classList.toggle("is-earlier", Boolean(item.earlier));
   const img = document.createElement("img");
   img.alt = "";
-  img.src = item.src || ("/library-media?path=" + encodeURIComponent(item.path));
+  img.src = item.src || ("/library-thumb?path=" + encodeURIComponent(item.path));
   refInfo.set(item.path, { name: item.name || item.path, label: item.label || "", src: img.src });
   const caption = document.createElement("span");
   caption.textContent = item.label || item.name || item.path;
@@ -2232,7 +2568,7 @@ function renderReferences() {
     // A file deleted since the selection was saved cannot be sent.
     for (const path of [...selectedRefs.keys()]) if (!known.has(path)) selectedRefs.delete(path);
   }
-  setText(document.querySelector("#reference-browser > summary"), "Browse images (" + (mine.length + others.length) + ")");
+  document.getElementById("reference-add").title = (mine.length + others.length) + " images in your productions";
   const toggle = document.getElementById("reference-earlier");
   toggle.hidden = !earlier;
   toggle.textContent = showEarlierRefs ? "Hide earlier versions" : "Show " + earlier + " earlier " + (earlier === 1 ? "version" : "versions");
@@ -2295,7 +2631,14 @@ function gateChoice() {
   return picked ? picked.value : "approve";
 }
 
+function syncGateNote() {
+  const picked = document.querySelector('input[name="gate"]:checked');
+  const small = picked && picked.closest(".choice").querySelector("small");
+  setText(document.getElementById("gate-note"), small ? small.textContent : "");
+}
+
 function briefSummary() {
+  syncGateNote();
   const out = document.getElementById("brief-summary");
   if (!out) return;
   const gate = { approve: "Waits for your approval", auto: "Continues to images automatically", pages: "Stops after the script" }[gateChoice()];
@@ -2444,6 +2787,7 @@ async function pollLibrary() {
     libraryProjects = data.projects || [];
     libraryLoaded = true;
     renderReferences();
+    renderRail();
     const nav = document.getElementById("library");
     nav.replaceChildren();
     if (!data.projects || !data.projects.length) {
@@ -2775,7 +3119,12 @@ function syncReaderEmpty() {
 function setLibraryHidden(hidden) {
   document.body.classList.toggle("library-hidden", hidden);
   const toggle = document.getElementById("toggle-library");
-  if (toggle) toggle.textContent = hidden ? "Show library" : "Hide library";
+  if (toggle) {
+    toggle.textContent = hidden ? "›" : "‹";
+    toggle.setAttribute("aria-label", hidden ? "Expand productions" : "Collapse productions");
+    toggle.setAttribute("aria-expanded", hidden ? "false" : "true");
+  }
+  try { localStorage.setItem("studio.rail.collapsed", hidden ? "1" : ""); } catch (_) { /* Remembered for this page only. */ }
   syncReaderEmpty();
 }
 
@@ -2908,14 +3257,41 @@ for (const name of ["idea", "film", "gate", "images", "models", "references", "v
     button.setAttribute("aria-expanded", copy.hidden ? "false" : "true");
   });
 }
-document.querySelectorAll(".tab").forEach((tab) => {
+document.querySelectorAll(".tab[data-tab]:not(#new-session)").forEach((tab) => {
   tab.addEventListener("click", () => setView(tab.dataset.tab, true));
 });
 document.getElementById("follow").addEventListener("click", () => {
   follow = !follow;
-  document.getElementById("follow").classList.toggle("is-on", follow);
+  syncFollow();
   if (follow && last) setView(viewFor(last));
-  toast(follow ? "Following the crew" : "Tabs stay where you put them");
+  toast(follow ? "Following the crew" : "Steps stay where you put them");
+});
+document.getElementById("open-activity").addEventListener("click", () => toggleDrawer("activity"));
+document.getElementById("open-files").addEventListener("click", () => toggleDrawer("files"));
+document.getElementById("drawer-close").addEventListener("click", closeDrawer);
+document.querySelectorAll(".drawer-tab").forEach((tab) => tab.addEventListener("click", () => openDrawer(tab.dataset.pane)));
+document.getElementById("reader-back").addEventListener("click", () => openDrawer("files"));
+document.getElementById("review-prev").addEventListener("click", () => moveReview(-1));
+document.getElementById("review-next").addEventListener("click", () => moveReview(1));
+document.getElementById("sequence-play").addEventListener("click", () => playSequence(0));
+document.getElementById("sequence-video").addEventListener("ended", (event) => playSequence(Number(event.currentTarget.dataset.index || 0) + 1));
+const referenceDialog = document.getElementById("reference-dialog");
+document.getElementById("reference-add").addEventListener("click", () => {
+  referenceDialog.showModal();
+  document.getElementById("reference-search").focus();
+});
+for (const id of ["reference-dialog-close", "reference-dialog-done"]) {
+  document.getElementById(id).addEventListener("click", () => referenceDialog.close());
+}
+document.getElementById("reference-search").addEventListener("input", (event) => {
+  const query = event.currentTarget.value.trim().toLowerCase();
+  referenceDialog.querySelectorAll(".ref-thumb").forEach((thumb) => {
+    thumb.hidden = Boolean(query) && !String(thumb.title || "").toLowerCase().includes(query);
+  });
+});
+// The dialog sits inside the brief form: Enter in its search must not start a production.
+document.getElementById("reference-search").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") event.preventDefault();
 });
 document.getElementById("toggle-library").addEventListener("click", toggleLibrary);
 document.getElementById("suggest").addEventListener("click", suggestBrief);
@@ -2949,7 +3325,7 @@ document.getElementById("still-tools").addEventListener("click", (event) => {
   applyStillFilter();
 });
 bindLibrarySearch();
-document.querySelector("aside").addEventListener("click", (event) => {
+document.getElementById("drawer").addEventListener("click", (event) => {
   if (event.target.closest("[data-close-folder]")) {
     localFiles.clear();
     document.getElementById("opened-folder").replaceChildren();
@@ -3010,6 +3386,11 @@ document.getElementById("clear-log").addEventListener("click", async () => {
   }
 });
 document.getElementById("new-session").addEventListener("click", async () => {
+  if (!last || (!last.folder && !last.running)) {
+    setView("brief", true);
+    return;
+  }
+  if (document.body.dataset.view === "brief") return;
   const question = last && last.running
     ? "A run is in progress. Starting a new production stops it now (tasks already sent to KIE are still billed). Saved files stay on disk. Continue?"
     : "Start a new production from a blank idea? The current production's files stay on disk and can be opened again from the library.";
@@ -3045,9 +3426,16 @@ document.addEventListener("keydown", (event) => {
   if (event.metaKey || event.ctrlKey || event.altKey) return;
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName);
   if (typing) return;
-  const views = ["brief", "pipeline", "stills", "video", "activity", "reader"];
-  const index = "123456".indexOf(event.key);
-  if (index >= 0) setView(views[index], true);
+  // Shortcuts stay off while a dialog (the reference picker) is open.
+  if (document.querySelector("dialog[open]")) return;
+  if (event.key === "Escape" && !document.getElementById("drawer").hidden) { closeDrawer(); return; }
+  const key = event.key.toLowerCase();
+  if (key === "n") { document.getElementById("new-session").click(); return; }
+  if (key === "a") { toggleDrawer("activity"); return; }
+  if (key === "f") { toggleDrawer("files"); return; }
+  const index = "123".indexOf(event.key);
+  const step = document.querySelectorAll(".tab[data-tab]:not(#new-session)")[index];
+  if (index >= 0 && step && !step.disabled) setView(step.dataset.tab, true);
 });
 window.addEventListener("resize", () => {
   moveGlider();
@@ -3056,6 +3444,7 @@ window.addEventListener("resize", () => {
   moveToken(last.station || "brief", false);
 });
 
+try { if (localStorage.getItem("studio.rail.collapsed")) setLibraryHidden(true); } catch (_) { /* Start expanded. */ }
 loadReferences();
 suggestLabel();
 renderReferences();
@@ -3157,16 +3546,19 @@ async function abortDraft() {
 // ---- Idea tab: image, video, and writing models ------------------------------------
 
 let settingsLabelSequence = 0;
-function settingsRow(label, help, control) {
-  const row = make("div", "settings-row");
-  const text = make("label", "settings-label");
-  text.id = "settings-label-" + (++settingsLabelSequence);
+// One setting: its name, the control, and one line with the fact that matters (usually the price).
+function modelField(label, help, control, meta) {
+  const field = make("div", "model-field");
+  const name = make("label", "model-label", label);
+  name.id = "model-label-" + (++settingsLabelSequence);
+  if (help) name.title = help;
   const fields = control.matches && control.matches("select, input") ? [control] : [...control.querySelectorAll("select, input")];
-  for (const field of fields) if (!field.getAttribute("aria-label")) field.setAttribute("aria-labelledby", text.id);
-  text.append(make("span", "settings-name", label));
-  if (help) text.append(make("small", "", help));
-  row.append(text, control);
-  return row;
+  for (const item of fields) if (!item.getAttribute("aria-label")) item.setAttribute("aria-labelledby", name.id);
+  if (fields[0] && !fields[0].id) { fields[0].id = name.id + "-control"; name.htmlFor = fields[0].id; }
+  if (help && fields[0]) fields[0].setAttribute("aria-description", help);
+  field.append(name, control);
+  if (meta) field.appendChild(make("p", "model-meta", meta));
+  return field;
 }
 
 function settingsSelect(options, value, onChange) {
@@ -3184,28 +3576,13 @@ function settingsSelect(options, value, onChange) {
   return select;
 }
 
-function modelNote(text, sources) {
-  const note = make("p", "field-note", text);
-  for (const [index, source] of (sources || []).entries()) {
-    let host = "docs";
-    try { host = new URL(source).hostname.replace(/^(www|docs)\./, ""); } catch (_) { /* The link text falls back to "docs". */ }
-    const link = make("a", "", " · " + host + (sources.length > 1 ? "" : ""));
-    link.title = "Source " + (index + 1);
-    link.href = safeUrl(source);
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    note.append(link);
-  }
-  return note;
-}
-
 function rolesIn(group) {
   return settingsSchema.chat.roles.filter((role) => (role.group || "story") === group);
 }
 
 function fillRoles(host, roles, values, save) {
   for (const role of roles) {
-    const controls = make("div", "settings-pair");
+    const controls = make("div", "model-pair");
     controls.append(settingsSelect(settingsSchema.chat.models, values.chat[role.id], (value) => {
       values.chat[role.id] = value;
       save();
@@ -3220,10 +3597,44 @@ function fillRoles(host, roles, values, save) {
       effort.setAttribute("aria-label", role.label + " reasoning effort");
       controls.append(effort);
     }
-    host.appendChild(settingsRow(role.label, role.help, controls));
-    const chosen = settingsSchema.chat.models.find((model) => model.id === values.chat[role.id]);
-    if (chosen) host.appendChild(modelNote(chosen.note, chosen.sources));
+    host.appendChild(modelField(role.label, role.help, controls, role.help));
   }
+}
+
+const shortNote = (text) => String(text || "").split(/(?<=\.)\s|\s·\s/)[0].replace(/\.$/, "");
+const perSecond = (name, mode, sound) => (((settingsSchema.pricing || {}).video || {})[name] || {})[mode + "/" + (sound ? "sound" : "silent")];
+
+// Every model in use, once, with what it is and where its documentation lives.
+function renderModelDetails(values) {
+  const host = document.getElementById("models-details-list");
+  if (!host) return;
+  host.replaceChildren();
+  const seen = new Set();
+  const add = (kind, option) => {
+    if (!option || seen.has(option.id)) return;
+    seen.add(option.id);
+    const item = make("li", "");
+    item.append(make("strong", "", option.name), make("span", "model-detail-kind", kind), make("p", "", String(option.note || "").replace(/ · /g, ". ")));
+    const links = make("p", "model-detail-links");
+    for (const source of option.sources || []) {
+      let host = "documentation";
+      try { host = new URL(source).hostname.replace(/^(www|docs)\./, ""); } catch (_) { /* keep the generic label */ }
+      const link = make("a", "", host);
+      link.href = safeUrl(source);
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      links.appendChild(link);
+    }
+    if (links.children.length) item.appendChild(links);
+    host.appendChild(item);
+  };
+  for (const group of settingsSchema.images.groups) add("Images", group.options.find((option) => option.id === values.images[group.id]));
+  const models = settingsSchema.video.models;
+  if (values.video.selection === "auto") models.filter((model) => model.id !== "auto").forEach((model) => add("Video, chosen per shot", model));
+  else add("Video", models.find((model) => model.id === values.video.selection));
+  for (const role of settingsSchema.chat.roles) add("Crew", settingsSchema.chat.models.find((model) => model.id === values.chat[role.id]));
+  const pricing = settingsSchema.pricing;
+  if (pricing) host.appendChild(make("li", "model-detail-source", "Prices from " + pricing.source + ", checked " + pricing.checked + ". KIE bills what its page says on the day."));
 }
 
 // The closed Models and quality panel shows the choices that shape cost and look.
@@ -3262,43 +3673,60 @@ function renderSettings() {
   images.replaceChildren();
   video.replaceChildren();
   writing.replaceChildren();
+  const resolution = values.images.resolution === "auto" ? "1K" : values.images.resolution;
 
   for (const item of settingsSchema.images.groups) {
-    images.appendChild(settingsRow(item.label, item.help, settingsSelect(item.options, values.images[item.id], (value) => { values.images[item.id] = value; save(); })));
     const chosen = item.options.find((option) => option.id === values.images[item.id]) || item.options[0];
-    const detail = chosen.resolutions.length ? chosen.resolutions.join(" / ") : "fixed quality";
-    images.appendChild(modelNote(chosen.note + " " + (chosen.max_references ? "Up to " + chosen.max_references + " reference images" : "No reference images") + " · resolution " + detail + ".", chosen.sources));
+    const price = imagePrice(chosen.id, resolution);
+    const meta = [price != null ? price + " credits per image at " + (chosen.resolutions.includes(resolution) ? resolution : "its fixed size") : "",
+      chosen.max_references ? "up to " + chosen.max_references + " references" : "no references"].filter(Boolean).join(" · ");
+    images.appendChild(modelField(item.label, item.help,
+      settingsSelect(item.options, values.images[item.id], (value) => { values.images[item.id] = value; save(); }), meta));
   }
   const resolutions = settingsSchema.images.resolutions.map((id) => ({ id, name: id === "auto" ? "Auto · the image prompts decide (1K)" : id }));
-  images.appendChild(settingsRow("Image resolution", "Higher resolution costs more. A model that cannot do a size falls back to Nano Banana.", settingsSelect(resolutions, values.images.resolution, (value) => { values.images.resolution = value; save(); })));
+  images.appendChild(modelField("Image resolution", "Higher resolution costs more. A model that cannot do a size falls back to Nano Banana.",
+    settingsSelect(resolutions, values.images.resolution, (value) => { values.images.resolution = value; save(); }), "Higher costs more"));
   const imageParallel = (settingsSchema.images.parallel || [1, 2, 3, 4]).map((count) => ({ id: String(count), name: count + (count === 1 ? " image" : " images") + " at a time" }));
-  images.appendChild(settingsRow("Images generated at once", "More is faster. A shot image still waits for the character and location images it uses.", settingsSelect(imageParallel, String(values.images.parallel || 3), (value) => { values.images.parallel = Number(value); save(); })));
-  fillRoles(images, rolesIn("images"), values, save);
+  images.appendChild(modelField("Images generated at once", "More is faster. A shot image still waits for the character and location images it uses.",
+    settingsSelect(imageParallel, String(values.images.parallel || 3), (value) => { values.images.parallel = Number(value); save(); })));
 
   const models = settingsSchema.video.models;
   const selected = models.find((model) => model.id === values.video.selection) || models[0];
-  video.appendChild(settingsRow("Video model", "Auto chooses per shot from timing, speech, subjects and camera.", settingsSelect(models, values.video.selection, (value) => {
+  const names = selected.id === "auto" ? ["kling", "seedance"] : [selected.id];
+  const rates = names.map((name) => [name, perSecond(name, values.video.mode, values.video.sound)]).filter(([, rate]) => typeof rate === "number");
+  const quality = String(settingsSchema.video.modes[values.video.mode] || values.video.mode);
+  const videoMeta = rates.length ? rates.map(([name, rate]) => (rates.length > 1 ? (settingsSchema.pricing.video_names[name] || name) + " " : "") + rate).join(" · ") +
+    " credits per second at " + quality : shortNote(selected.note);
+  video.appendChild(modelField("Video model", "Auto chooses per shot from timing, speech, subjects and camera.", settingsSelect(models, values.video.selection, (value) => {
     values.video.selection = value;
     const allowed = models.find((model) => model.id === value).modes;
     if (!allowed.includes(values.video.mode)) values.video.mode = allowed.includes("pro") ? "pro" : allowed[0];
     save();
-  })));
-  if (selected.id !== "auto") video.appendChild(modelNote(selected.note, selected.sources));
+  }), videoMeta));
   const modes = selected.modes.map((id) => ({ id, name: settingsSchema.video.modes[id] }));
-  video.appendChild(settingsRow("Video quality", values.video.selection === "seedance" ? "Seedance offers up to 1080p on this endpoint." : "4K is only produced by Kling; Auto routes 4K shots to it.", settingsSelect(modes, values.video.mode, (value) => { values.video.mode = value; save(); })));
-  const parallel = settingsSchema.video.parallel.map((count) => ({ id: String(count), name: count + (count === 1 ? " clip" : " clips") + " at a time" }));
-  video.appendChild(settingsRow("Clips generated at once", "More is faster; each running clip is billed as usual.", settingsSelect(parallel, String(values.video.parallel), (value) => { values.video.parallel = Number(value); save(); })));
+  video.appendChild(modelField("Video quality", values.video.selection === "seedance" ? "Seedance offers up to 1080p on this endpoint." : "4K is only produced by Kling; Auto routes 4K shots to it.",
+    settingsSelect(modes, values.video.mode, (value) => { values.video.mode = value; save(); }),
+    values.video.selection === "seedance" ? "Up to 1080p on Seedance" : "4K only on Kling"));
   const sound = document.createElement("input");
   sound.type = "checkbox";
+  sound.className = "switch";
   sound.checked = values.video.sound;
   sound.addEventListener("change", () => { values.video.sound = sound.checked; save(); });
-  const soundLabel = make("label", "check settings-check");
-  soundLabel.append(sound, document.createTextNode(" Generate dialogue and sound from the shot notes"));
-  video.appendChild(soundLabel);
+  const kling = [perSecond("kling", values.video.mode, true), perSecond("kling", values.video.mode, false)];
+  const soundMeta = typeof kling[0] === "number" && kling[0] !== kling[1]
+    ? "Kling " + kling[0] + " vs " + kling[1] + " credits per second; describe audible sounds in the shots" : "Describe audible sounds in the shots";
+  const soundRow = make("label", "model-switch");
+  soundRow.append(sound, make("span", "", "Dialogue and sound from the shot notes"));
+  const parallel = settingsSchema.video.parallel.map((count) => ({ id: String(count), name: count + (count === 1 ? " clip" : " clips") + " at a time" }));
+  video.appendChild(modelField("Clips generated at once", "More is faster; each running clip is billed as usual.",
+    settingsSelect(parallel, String(values.video.parallel), (value) => { values.video.parallel = Number(value); save(); })));
+  video.appendChild(modelField("Sound", "Generates dialogue and sound effects with each clip.", soundRow, soundMeta));
   fillRoles(video, rolesIn("video"), values, save);
 
+  // Every chat model sits together: the writers, the image prompt writer and the inspector.
   fillRoles(writing, rolesIn("story"), values, save);
-  writing.appendChild(make("p", "field-note", "Astra is the strongest. Luna is the faster GPT-6. Sol is the lighter choice for the script editor."));
+  fillRoles(writing, rolesIn("images"), values, save);
+  renderModelDetails(values);
   setText(document.getElementById("models-summary"), modelsSummary(values));
   syncEffort(values);
   briefEstimate();

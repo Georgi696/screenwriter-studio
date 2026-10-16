@@ -106,11 +106,11 @@ class DeskPageTest(unittest.TestCase):
         self.assertEqual(page.count('aria-label="What is this?"'), 8)
         self.assertEqual(page.count(">?</button>"), 8)
         # Saved model choices sit in one closed panel, apart from this film's choices.
-        panel = page[page.index('id="models-panel"'):page.index("</details>", page.index('id="models-panel"'))]
+        panel = page[page.index('id="models-panel"'):page.index("      </details>\n    </div>", page.index('id="models-panel"'))]
         self.assertNotIn('id="models-panel" open', page)
         for part in ('id="settings-images"', 'id="settings-video"', 'id="settings-writing"', 'id="settings-reset"', 'id="show-effort"'):
             self.assertIn(part, panel)
-        self.assertIn('<details id="reference-browser">', page)
+        self.assertIn('<dialog id="reference-dialog"', page)
         actions = page[page.index('class="brief-actions"'):]
         self.assertLess(actions.index('id="idea-cost"'), actions.index('id="run"'))
         self.assertNotIn(">What is this?</button>", page)
@@ -516,6 +516,27 @@ class ReferencePickerTest(unittest.TestCase):
         self.assertEqual(result["reloaded"], [list(restored), [".references/up.png"]])
 
 
+class ReferenceCardTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed to run the desk script")
+    def test_card_preview_matches_what_the_image_model_is_told(self):
+        from screenwriter_studio.references import reference_direction
+        script = (STATIC / "desk.js").read_text(encoding="utf-8")
+        helpers = script[script.index("function referenceDirection("):script.index("const DIRECTION_EXAMPLES")]
+        cases = [{"mode": mode} for mode in ("style", "location", "object", "composition", "lock")] + [
+            {"mode": "character", "face": True, "wardrobe": True},
+            {"mode": "character", "face": True, "wardrobe": False, "instruction": "  Her hair is short now. "},
+            {"mode": "location", "name": "the avenue", "instruction": "keep the burning skyscrapers"},
+        ]
+        driver = helpers + "process.stdout.write(JSON.stringify({ told: CASES.map(referenceDirection), scope: CASES.map(automaticScope) }));"
+        driver = "const CASES = " + json.dumps(cases) + ";\n" + driver
+        result = json.loads(subprocess.run(["node", "-"], input=driver, text=True, capture_output=True, check=True).stdout)
+        expected = [reference_direction({**case, "instruction": case.get("instruction", "").strip()}) for case in cases]
+        self.assertEqual(result["told"], expected)
+        self.assertEqual(result["scope"][0], "All shots")
+        self.assertEqual(result["scope"][-1], "Shots set in the avenue")
+        self.assertEqual(result["scope"][5], "Shots with this character")
+
+
 class LibraryHintsTest(unittest.TestCase):
     def test_library_knows_roles_names_and_earlier_versions(self):
         from screenwriter_studio.web import server
@@ -566,7 +587,7 @@ class DesignSystemTest(unittest.TestCase):
         self.assertNotRegex(self.css, r"background:\s*var\(--accent\);\s*color:\s*#fff")
 
     def test_form_controls_have_a_visible_border(self):
-        for selector in (r"input\.limit", r"\.settings-row select", r"\.ref-setting input, \.ref-setting textarea"):
+        for selector in (r"input\.limit", r"\.model-field select", r'\.ref-field select, \.ref-field input\[type="text"\], \.ref-field textarea'):
             rule = re.search(r"(?m)^\s*" + selector + r"\s*\{([^}]*)\}", self.css)
             self.assertIsNotNone(rule, selector)
             self.assertIn("var(--control-line)", rule.group(1))
@@ -602,6 +623,126 @@ class DesignSystemTest(unittest.TestCase):
         self.assertEqual(result["groups"], ["cast", "cast", "shots", "shots", "other", "other"])
         self.assertEqual(result["status"], ["needs", "needs", "done", "progress", "progress", "progress", "progress"])
         self.assertEqual(result["labels"], ["Shot 3", "lena · character"])
+
+
+class AppShellTest(unittest.TestCase):
+    """Phase 2: a productions rail, steps for the open production, and a drawer for activity and files."""
+
+    page = (STATIC / "desk.html").read_text(encoding="utf-8")
+    script = (STATIC / "desk.js").read_text(encoding="utf-8")
+
+    def section(self, element_id):
+        start = self.page.index('id="' + element_id + '"')
+        return self.page[start:self.page.index("</section>\n</section>", start) if element_id == "drawer" else None]
+
+    def test_steps_are_navigation_not_tabs(self):
+        self.assertNotIn('role="tab"', self.page)
+        self.assertIn('<nav class="tablist" aria-label="Production">', self.page)
+        self.assertIn('id="new-session" data-tab="brief" aria-current="page"', self.page)
+        self.assertIn('setAttribute("aria-current", "page")', self.script)
+
+    def test_log_files_and_viewer_live_in_the_drawer(self):
+        drawer = self.section("drawer")
+        for part in ('id="activity-pane"', 'id="files-pane"', 'id="library"', 'id="open-folder"', 'id="reader-pane"', 'id="clear-log"'):
+            self.assertIn(part, drawer)
+        rail = self.page[self.page.index('id="rail"'):self.page.index("</aside>")]
+        self.assertIn('id="production-list"', rail)
+        self.assertNotIn('id="library"', rail)
+        self.assertIn('if (name === "activity" || name === "reader") {', self.script)
+
+    def test_spent_estimate_counts_every_version_and_take(self):
+        from screenwriter_studio.pricing import image_rate, spent_estimate, video_rate
+        spec = {"resolution": "2K"}
+        manifest = {"images": [
+            {"id": "s01", "model": "nano-banana-2-1", "state": "done", "history": [{"url": "https://host/a.png"}]},
+            {"id": "s02", "model": "nano-banana-2-1", "state": "review"},
+            {"id": "s03", "model": "nano-banana-2-1", "state": "running"},
+            {"id": "s04", "model": "nano-banana-2-1", "state": "done", "dry_run": True}]}
+        plan = {"mode": "pro", "sound": True, "model": "kling-3.0/video", "shots": [{"id": "s01", "duration_seconds": 4}]}
+        clips = [{"id": "s01", "state": "done", "history": [{"file": "s01_v1.mp4"}]}]
+        expected = 3 * image_rate("nano-banana-2-1", "2K") + 2 * 4 * video_rate("kling-3.0/video", "pro", True)
+        self.assertEqual(spent_estimate(spec, manifest, plan, clips)["credits"], expected)
+        self.assertEqual(spent_estimate(spec, {"images": []})["credits"], 0)
+
+    def test_rail_summary_says_how_far_and_what_waits(self):
+        from screenwriter_studio.web import server
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            film = root / "water"
+            (film / "images").mkdir(parents=True)
+            (film / "videos").mkdir()
+            (film / "images/s01.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+            (film / "00_development.json").write_text(json.dumps({"title": "What the Water Takes"}))
+            (film / "01_screenplay.json").write_text("{}")
+            (film / "images/manifest.json").write_text(json.dumps({"images": [
+                {"id": "lena", "state": "done", "path": str(film / "images/missing.png")},
+                {"id": "s01", "state": "review", "path": str(film / "images/s01.png")}]}))
+            (film / "videos/manifest.json").write_text(json.dumps({"clips": [{"id": "s01", "state": "done"}, {"id": "s02"}]}))
+            summary = server._project_summary(film, root)
+            view = server.production_view(film)
+        self.assertEqual(summary, {"title": "What the Water Takes", "stage": "clips", "needs": 1,
+                                   "images": [1, 2], "clips": [1, 2], "thumb": "water/images/s01.png"})
+        self.assertEqual((view["title"], view["slug"], view["spent"]), ("What the Water Takes", "water", None))
+
+
+class WorkflowLayoutTest(unittest.TestCase):
+    """Phase 3: approval as one card, one review panel, clips as a strip, references in a dialog."""
+
+    page = (STATIC / "desk.html").read_text(encoding="utf-8")
+    script = (STATIC / "desk.js").read_text(encoding="utf-8")
+
+    def between(self, start, end):
+        at = self.page.index(start)
+        return self.page[at:self.page.index(end, at)]
+
+    def test_approval_controls_live_in_one_card_beside_the_steps(self):
+        card = self.between('id="approval-card"', "</section>")
+        for part in ('id="proceed"', 'id="abort-draft"', 'id="cost-choices"', 'id="proceed-cost"', 'id="proceed-note"'):
+            self.assertIn(part, card)
+        self.assertNotIn('id="proceed"', self.between('id="hud"', 'id="pips"'))
+        layout = self.between('id="story-layout"', 'id="shot-board"')
+        self.assertLess(layout.index('id="track"'), layout.index('id="stage-detail"'))
+
+    def test_review_waits_in_one_panel_and_cards_point_to_it(self):
+        panel = self.between('id="review-panel"', "</section>")
+        for part in ('id="review-image"', 'id="review-refs"', 'id="review-decision"', 'id="review-prev"', 'id="review-next"'):
+            self.assertIn(part, panel)
+        self.assertIn('if (image.state === "review") renderReviewStub(frame, image);', self.script)
+        self.assertIn('renderInspection(document.getElementById("review-decision"), image, state.running);', self.script)
+
+    def test_reference_dialog_holds_the_browser_and_enter_cannot_start_a_run(self):
+        dialog = self.between('<dialog id="reference-dialog"', "</dialog>")
+        for part in ('id="reference-current"', 'id="reference-other"', 'id="reference-upload"', 'id="reference-search"'):
+            self.assertIn(part, dialog)
+        self.assertNotIn('type="submit"', dialog)
+        self.assertIn('if (event.key === "Enter") event.preventDefault();', self.script)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed to run the desk script")
+    def test_clip_times_and_review_queue(self):
+        clock = self.script[self.script.index("function clock("):self.script.index("let sequence = [];")]
+        queue = self.script[self.script.index("function reviewQueue("):self.script.index("function openStillsReview(")]
+        driver = clock + queue + (
+            "process.stdout.write(JSON.stringify({ times: [0, 4, 65, 600].map(clock),\n"
+            "  queue: reviewQueue({ images: [{ id: 'a', state: 'done' }, { id: 'b', state: 'review' }, { id: 'c', state: 'failed' }] }).map((i) => i.id),\n"
+            "  empty: reviewQueue(null).length }));\n")
+        result = json.loads(subprocess.run(["node", "-"], input=driver, text=True, capture_output=True, check=True).stdout)
+        self.assertEqual(result, {"times": ["0:00", "0:04", "1:05", "10:00"], "queue": ["b"], "empty": 0})
+
+    def test_each_image_lists_the_references_it_should_match(self):
+        from screenwriter_studio.web import server
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            ref = root / "water/references/character-01.png"
+            ref.parent.mkdir(parents=True)
+            ref.write_bytes(b"\x89PNG\r\n\x1a\n")
+            spec = {"locked_references": [{"id": "character-01", "mode": "character", "name": "Lena", "path": str(ref)}],
+                    "jobs": [{"id": "lake", "kind": "location"},
+                             {"id": "s01", "kind": "keyframe", "references": ["character-01", "lake", "https://elsewhere/x.png"]}]}
+            with mock.patch.object(server, "PRODUCTIONS", root):
+                found = server.image_references(spec)
+        self.assertEqual(found, {"s01": [
+            {"label": "Lena · character", "role": "character", "src": "/library-media?path=water%2Freferences%2Fcharacter-01.png"},
+            {"label": "lake · location", "role": "location", "src": "/media?id=lake"}]})
 
 
 class MarkdownPreviewTest(unittest.TestCase):

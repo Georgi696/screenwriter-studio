@@ -66,6 +66,14 @@ class FitImageTest(unittest.TestCase):
             self.assertLess(result.width, 2048)
             self.assertAlmostEqual(result.width / result.height, 2048 / 1152, places=2)
 
+    def test_thumbnail_is_a_small_jpeg_with_the_same_shape(self):
+        from screenwriter_studio.images.upload import thumbnail
+        data = thumbnail(encode(noise((1376, 768))))
+        self.assertTrue(data.startswith(b"\xff\xd8\xff"))
+        with Image.open(io.BytesIO(data)) as result:
+            self.assertEqual(max(result.size), 320)
+            self.assertAlmostEqual(result.width / result.height, 1376 / 768, places=1)
+
     def test_unknown_bytes_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "PNG, JPEG, or WebP"):
             fit_image(b"not an image" * 10, 5)

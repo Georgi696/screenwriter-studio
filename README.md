@@ -21,11 +21,24 @@ image generation starts. A failed draft stays failed; the studio never deletes
 shots to manufacture an approval.
 
 A shot is one video clip: every shot gets one image, and every image is animated into
-that shot's clip. The desk is organised as numbered steps: **1 Idea** (brief and options),
-**2 Story** (development, screenwriter, script editor, your approval, image prompts),
-**3 Images** (generation, inspection, approval) and **4 Video clips** (one animated clip per image). **Log** and **Viewer** sit beside them
-for the activity history and for reading saved files. Keys `1`–`6` switch tabs, and a tick
-appears on a step once it is finished.
+that shot's clip. The left rail lists your **Productions** with a picture, how far each got,
+and how many images wait for you; it collapses to pictures only. The app bar names the open
+production, its length and format, and an estimate of the image and clip credits it has used.
+**＋ New production** describes a new film (the brief and options). The open production has
+three numbered steps: **1 Story** (development, screenwriter, script editor, your approval,
+image prompts), **2 Images** (generation, inspection, approval) and **3 Video clips** (one
+animated clip per image); a tick appears on a step once it is finished. **Activity** and
+**Files** open a drawer beside the work with the log, the saved files, and a viewer for any
+of them. One status bar under the steps says what happens next, in amber when it needs you.
+Keys: `N` new production, `1`–`3` steps, `A` activity, `F` files, `Esc` closes the drawer.
+
+In **Story**, the steps run down the left and the selected step's output sits on the right;
+when the pages wait for you, an approval card above it shows what approving makes and costs.
+In **Images**, everything that needs a decision is reviewed one at a time in a panel that puts
+the image beside the reference pictures it should match, with **‹ Prev / Next ›** between them.
+In **Video clips**, the clips form a strip whose card widths follow the shot lengths, and
+**▶ Play in order** previews the cut without merging any files. On **New production**,
+**＋ Add reference images** opens a picker with search.
 
 The local browser desk provides a brief editor, live crew progress, still and
 video viewers, an activity log, and a library of saved production documents and media.
@@ -80,20 +93,24 @@ beside **Start production**.
 - **Images:** how many images to generate, inspection, prompt-only planning, and reference
   images.
 - **Models and quality** (saved, closed by default):
-  - *Images:* the image models, resolution, images made at once, and the models that write
-    and inspect image prompts. Shot, character and location images need reference-image
-    support. Nano Banana 2.1 and Nano Banana Pro are the choices there.
+  - *Images:* the image models, resolution, and images made at once. Shot, character and
+    location images need reference-image support. Nano Banana 2.1 and Nano Banana Pro are the
+    choices there.
   - *Video:* Auto, Kling 3.0 or Seedance 2.5; quality (the list follows the chosen model,
     and 4K is Kling only); sound; and how many clips are generated at once (1–4).
-  - *Writing:* the chat model for development, the screenwriter, and the script editor.
-    GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna. All four accept images and strict JSON.
+  - *Crew:* the chat model for development, the screenwriter, the script editor, the image
+    prompts and the image inspector. GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna. All
+    four accept images and strict JSON.
+
+  Each setting shows one line with its price at the current choices. **Model details and
+  sources** lists every model in use once, with its notes and documentation links.
 
 An image the studio already knows (a character or location sheet, or a saved reference)
 starts in that role with its name; anything else starts as **Style** (colour, light, texture
 and mood). Change the role to **Character**, **Location**, **Object / Product**, or
 **Composition** on each selected image. Character, location and object references show their
-name on the card and are flagged until named. Open **Reference settings** to add an
-instruction or choose specific shot numbers such as `1, 3-5`. Earlier versions of an image are
+name on the card and are flagged until named. Each card also sets where the reference applies (automatically, or specific shot numbers
+such as `1, 3-5`), an extra direction, and shows **What the image model is told**. Earlier versions of an image are
 hidden behind **Show earlier versions**, the selection survives a reload, and **Use the
 references from …** restores the open production's saved choices. Character references have separate **Face** and **Wardrobe** switches.
 Use the script's exact character or location name for automatic matching; other subjects and
@@ -354,7 +371,7 @@ not automatically resubmit an uncertain submission. See
 
 ## Open an earlier production
 
-Every production in the library has an **Open** button. It puts that production back on
+Select a production in the **Productions** rail (or **Open** in Files). It puts that production back on
 the desk with its steps, images and clips, so you can approve its script, review or resume
 images, or render and redo clips. The activity log of the original run is not kept.
 Opening is refused while a run is in progress.

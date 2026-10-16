@@ -93,6 +93,28 @@ def plan_estimate(plan: dict, clips: list[dict] | None = None) -> dict:
     return {"credits": total, "usd": usd(total), "remaining": remaining, "remaining_usd": usd(remaining), "shots": shots}
 
 
+def spent_estimate(spec: dict, manifest: dict, plan: dict | None = None, clips: list[dict] | None = None) -> dict:
+    """Image and clip credits a production has used so far, from what it has on file.
+
+    Counts every image version KIE returned (originals, repairs, takes) and every finished clip
+    and kept take, at today's list price. Chat calls are billed per token and are not included.
+    """
+    resolution = str(spec.get("resolution") or "1K")
+    total = 0.0
+    for record in manifest.get("images") or []:
+        if not isinstance(record, dict) or record.get("dry_run"):
+            continue
+        made = (1 if record.get("state") in {"done", "review", "inspecting"} else 0) + sum(
+            1 for entry in record.get("history") or [] if isinstance(entry, dict) and entry.get("url"))
+        total += made * (image_rate(str(record.get("model") or ""), resolution) or 0)
+    if plan:
+        prices = plan_estimate(plan)["shots"]
+        for clip in clips or []:
+            made = (1 if clip.get("state") == "done" else 0) + len(clip.get("history") or [])
+            total += made * prices.get(clip.get("id"), 0)
+    return {"credits": total, "usd": usd(total)}
+
+
 def image_estimate(development, screenplay, *, values: dict, image_count: int | None = None, locked_count: int = 0) -> dict:
     """Before the art director runs: one image per shot plus a sheet per character and location."""
     count = len(screenplay.shots) + max(0, len(development.characters) + len(development.locations) - locked_count)
