@@ -103,8 +103,8 @@ class DeskPageTest(unittest.TestCase):
         self.assertIn('class="stop"', page)
         self.assertIn(">Stop</button>", page)
         self.assertNotIn('id="stop" class="ghost"', page)
-        self.assertEqual(page.count('aria-label="What is this?"'), 10)
-        self.assertEqual(page.count(">?</button>"), 10)
+        self.assertEqual(page.count('aria-label="What is this?"'), 8)
+        self.assertEqual(page.count(">?</button>"), 8)
         # Saved model choices sit in one closed panel, apart from this film's choices.
         panel = page[page.index('id="models-panel"'):page.index("</details>", page.index('id="models-panel"'))]
         self.assertNotIn('id="models-panel" open', page)
@@ -551,6 +551,59 @@ class LibraryHintsTest(unittest.TestCase):
                                                       "name": "the lake", "instruction": "", "scope": "auto", "shots": []}])
 
 
+class DesignSystemTest(unittest.TestCase):
+    """Phase 1 design rules: one type scale, text-safe colours, visible controls, calm motion, one status voice."""
+
+    css = (STATIC / "desk.css").read_text(encoding="utf-8")
+    page = (STATIC / "desk.html").read_text(encoding="utf-8")
+
+    def test_type_uses_the_six_step_scale(self):
+        sizes = {float(size) for size in re.findall(r"font-size:\s*([0-9.]+)px", self.css)}
+        self.assertLessEqual(sizes, {12, 13, 14, 16, 20, 28})
+
+    def test_orange_text_and_badges_use_the_text_safe_shade(self):
+        self.assertNotRegex(self.css, r"(?<![-\w])color:\s*var\(--accent\)")
+        self.assertNotRegex(self.css, r"background:\s*var\(--accent\);\s*color:\s*#fff")
+
+    def test_form_controls_have_a_visible_border(self):
+        for selector in (r"input\.limit", r"\.settings-row select", r"\.ref-setting input, \.ref-setting textarea"):
+            rule = re.search(r"(?m)^\s*" + selector + r"\s*\{([^}]*)\}", self.css)
+            self.assertIsNotNone(rule, selector)
+            self.assertIn("var(--control-line)", rule.group(1))
+
+    def test_nothing_lifts_under_the_pointer(self):
+        for match in re.finditer(r"([^{}]+):hover[^{]*\{([^}]*)\}", self.css):
+            self.assertNotRegex(match.group(2), r"translateY\(-", match.group(1).strip())
+
+    def test_hidden_always_hides_and_status_text_stays_on_story(self):
+        self.assertRegex(self.css, r"\[hidden\]\s*\{\s*display:\s*none\s*!important;\s*\}")
+        for part in ("#hud .kicker", "#note", "#plaque"):
+            self.assertIn('body:not([data-view="pipeline"]) ' + part, self.css)
+
+    def test_one_region_announces_progress(self):
+        live = re.findall(r'id="([^"]+)"[^>]*aria-live="polite"', self.page)
+        self.assertEqual(sorted(live), ["library-search-status", "next-step", "toast"])
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed to run the desk script")
+    def test_images_group_by_role_and_filter_by_what_needs_you(self):
+        script = (STATIC / "desk.js").read_text(encoding="utf-8")
+        status = script[script.index("function imageStatus("):script.index("function applyStillFilter(")]
+        groups = script[script.index("const IMAGE_GROUPS = ["):script.index("function ensureGroup(")]
+        label = script[script.index("function imageLabel("):script.index("function syncImages(")]
+        driver = (
+            "const shotLabel = (state, id) => 'Shot ' + Number(id.slice(1));\n" + status + groups + label +
+            "process.stdout.write(JSON.stringify({\n"
+            "  groups: ['character', 'Location', 'keyframe', 'scene', 'poster', undefined].map(imageGroup),\n"
+            "  status: ['review', 'failed', 'done', 'running', 'blocked', 'planned', ''].map(imageStatus),\n"
+            "  labels: [imageLabel({}, { id: 's03', kind: 'keyframe' }), imageLabel({}, { id: 'lena', kind: 'character' })]\n"
+            "}));\n"
+        )
+        result = json.loads(subprocess.run(["node", "-"], input=driver, text=True, capture_output=True, check=True).stdout)
+        self.assertEqual(result["groups"], ["cast", "cast", "shots", "shots", "other", "other"])
+        self.assertEqual(result["status"], ["needs", "needs", "done", "progress", "progress", "progress", "progress"])
+        self.assertEqual(result["labels"], ["Shot 3", "lena · character"])
+
+
 class MarkdownPreviewTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "Node.js is needed to run the desk script")
     def test_shot_sheet_table_renders_and_suffix_case_is_markdown(self):
@@ -651,8 +704,6 @@ class ReviewCardAbortTest(unittest.TestCase):
         script = (STATIC / "desk.js").read_text(encoding="utf-8")
         css = (STATIC / "desk.css").read_text(encoding="utf-8")
         self.assertNotIn("Keep this image", script)
-        self.assertNotRegex(css, r"\.model-col\.has-jobs \.ghost\s*\{")
-        self.assertRegex(css, r"\.model-col\.has-jobs \.frame\.ghost\s*\{[^}]*display:\s*none")
         self.assertRegex(css, r"\.image-review \.review-actions \{[^}]*display:\s*flex;")
         actions_rule = re.search(r"\.image-review \.review-actions button \{([^}]*)\}", css)
         self.assertIsNotNone(actions_rule)

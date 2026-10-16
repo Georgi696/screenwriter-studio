@@ -166,26 +166,35 @@ function viewFor(state) {
   return "brief";
 }
 
+// Review and failed images need a decision; done is approved; everything else is still being made.
+function imageStatus(state) {
+  if (state === "review" || state === "failed") return "needs";
+  return state === "done" ? "done" : "progress";
+}
+
 function applyStillFilter() {
   const bay = document.getElementById("image-bay");
-  let shownCols = 0;
-  bay.querySelectorAll(".model-col").forEach((col) => {
+  let shownGroups = 0;
+  const counts = { all: 0, needs: 0, progress: 0, done: 0 };
+  bay.querySelectorAll(".image-group").forEach((group) => {
     let visible = 0;
-    col.querySelectorAll(".frame").forEach((frame) => {
-      const ghost = frame.classList.contains("ghost");
-      const kind = (frame.dataset.kind || "").toLowerCase();
-      const state = frame.dataset.state || "";
-      const waitingSlot = ghost && !col.classList.contains("has-jobs");
-      let show = !ghost;
-      if (stillFilter === "waiting") show = waitingSlot || ["running", "review", "blocked", "inspecting"].includes(state);
-      else if (stillFilter !== "all") show = !ghost && kind.includes(stillFilter);
+    group.querySelectorAll(".frame[data-job]").forEach((frame) => {
+      const status = imageStatus(frame.dataset.state || "");
+      counts.all += 1;
+      counts[status] += 1;
+      const show = stillFilter === "all" || stillFilter === status;
       frame.hidden = !show;
       if (show) visible += 1;
     });
-    col.hidden = visible === 0;
-    if (!col.hidden) shownCols += 1;
+    group.hidden = visible === 0;
+    if (!group.hidden) shownGroups += 1;
   });
-  bay.dataset.filterEmpty = bay.children.length && shownCols === 0 ? "1" : "";
+  document.querySelectorAll("#still-tools .chip").forEach((chip) => {
+    const count = counts[chip.dataset.filter] || 0;
+    setText(chip.querySelector(".chip-count"), String(count));
+    chip.classList.toggle("is-alert", chip.dataset.filter === "needs" && count > 0);
+  });
+  bay.dataset.filterEmpty = bay.children.length && shownGroups === 0 ? "1" : "";
 }
 
 const folderPreferences = new Map();
@@ -200,6 +209,17 @@ let folderSequence = 0;
 function setFolderExpanded(section, expanded) {
   section.querySelector(".folder-toggle").setAttribute("aria-expanded", String(expanded));
   section.querySelector(".folder-content").hidden = !expanded;
+}
+
+function markCurrentProduction() {
+  const slug = productionSlug(deskFolder);
+  document.querySelectorAll("#library .library-folder").forEach((section) => {
+    const current = Boolean(slug) && section.dataset.folder === "production:" + slug;
+    section.classList.toggle("is-current", current);
+    const toggle = section.querySelector(".folder-toggle");
+    if (current) toggle.setAttribute("aria-current", "true");
+    else toggle.removeAttribute("aria-current");
+  });
 }
 
 function libraryFolder(group, source) {
@@ -484,37 +504,35 @@ function paintProgress(state) {
   rail.classList.toggle("is-returning", !!state.returning);
 }
 
-function columnFor(bay, model) {
-  for (const col of bay.querySelectorAll(".model-col")) {
-    if (col.dataset.model === model) return col;
-  }
-  return null;
+const IMAGE_GROUPS = [
+  ["cast", "Cast and locations", ["character", "location"]],
+  ["shots", "Shots", ["keyframe", "scene"]],
+  ["other", "Other images", []],
+];
+
+function imageGroup(kind) {
+  const found = IMAGE_GROUPS.find(([, , kinds]) => kinds.includes(String(kind || "").toLowerCase()));
+  return found ? found[0] : "other";
 }
 
-function ensureColumn(bay, model, kinds) {
-  let col = columnFor(bay, model);
-  if (col) {
-    if (kinds) setText(col.querySelector(".kinds"), kinds);
-    return col;
-  }
-  col = document.createElement("section");
-  col.className = "model-col";
-  col.dataset.model = model;
-  const title = document.createElement("h3");
-  title.textContent = modelTitle(model);
-  title.title = model;
-  const kindEl = document.createElement("p");
-  kindEl.className = "kinds";
-  kindEl.textContent = kinds || "";
+function ensureGroup(bay, key) {
+  const found = bay.querySelector('.image-group[data-group="' + key + '"]');
+  if (found) return found;
+  const [, label] = IMAGE_GROUPS.find(([id]) => id === key);
+  const group = document.createElement("section");
+  group.className = "image-group";
+  group.dataset.group = key;
+  const head = document.createElement("div");
+  head.className = "group-head";
+  head.append(make("h3", "", label), make("p", "kinds", ""));
   const slots = document.createElement("div");
   slots.className = "slots";
-  const ghost = document.createElement("div");
-  ghost.className = "frame ghost";
-  ghost.textContent = "Waiting";
-  slots.appendChild(ghost);
-  col.append(title, kindEl, slots);
-  bay.appendChild(col);
-  return col;
+  group.append(head, slots);
+  // Keep the planned order however the images arrive.
+  const order = IMAGE_GROUPS.map(([id]) => id);
+  const next = [...bay.querySelectorAll(".image-group")].find((item) => order.indexOf(item.dataset.group) > order.indexOf(key));
+  bay.insertBefore(group, next || null);
+  return group;
 }
 
 function ensureFrame(col, id) {
@@ -691,21 +709,32 @@ function renderInspection(frame, image, running) {
     view.addEventListener("click", () => { showReaderImage(image.id, image.src); setView("reader", true); });
     panel.appendChild(view);
   }
-  const line = (text) => { const p = document.createElement("p"); p.textContent = text; panel.appendChild(p); };
+  const line = (text, host = panel) => { const p = document.createElement("p"); p.textContent = text; host.appendChild(p); };
   const rawFailure = /traceback|errors\.pydantic\.dev|pydantic|validation error/i;
   const summary = String(image.inspection.summary || "");
   const uncertainty = String(image.inspection.uncertainty || "");
   const unreadable = rawFailure.test(summary) || rawFailure.test(uncertainty);
   if (unreadable) line("Inspection could not read this image. You can keep it or inspect it again.");
   else line(summary);
+  // A decision still open needs every note in view; once decided, the notes are reference material.
+  let notes = panel;
+  if (image.state !== "review") {
+    notes = document.createElement("details");
+    notes.className = "review-notes";
+    const count = ["findings", "changes", "preserve"].reduce((sum, key) => sum + (image.inspection[key] || []).length, 0);
+    const title = document.createElement("summary");
+    title.textContent = "Inspection notes" + (count ? " (" + count + ")" : "");
+    notes.appendChild(title);
+    panel.appendChild(notes);
+  }
   for (const [label, items] of [["Finding", image.inspection.findings], ["Proposed change", image.inspection.changes], ["Preserve", image.inspection.preserve]]) {
     for (const text of items || []) {
       if (unreadable && rawFailure.test(String(text))) continue;
-      line(label + ": " + text);
+      line(label + ": " + text, notes);
     }
   }
-  if (!unreadable && image.inspection.uncertainty) line("Uncertain: " + image.inspection.uncertainty);
-  line("Repairs used: " + (image.repairs || 0) + " / 2. Previous versions remain in the production folder.");
+  if (!unreadable && image.inspection.uncertainty) line("Uncertain: " + image.inspection.uncertainty, notes);
+  line("Repairs used: " + (image.repairs || 0) + " / 2. Previous versions remain in the production folder.", notes);
   if (image.repair_prompt && image.state === "review") {
     const details = document.createElement("details");
     const title = document.createElement("summary"); title.textContent = "Exact repair instructions";
@@ -1010,7 +1039,8 @@ function syncClipPick(state) {
   const button = document.getElementById("animate-selected");
   setText(button, chosen.length
     ? "Animate selected (" + chosen.length + ")" + (total ? " · about " + Math.round(total).toLocaleString() + " credits" : "")
-    : "Tick the clips to animate");
+    : "Animate selected");
+  button.title = chosen.length ? "" : "Tick shots in the list above to animate only those.";
   button.disabled = running || !chosen.length;
   document.getElementById("select-remaining").disabled = running || pickable.every((shot) => clipPick.has(shot.id));
   document.getElementById("clear-selection").disabled = running || !chosen.length;
@@ -1106,7 +1136,7 @@ function openStillsReview() {
     if (!bay) return;
     let card = bay.querySelector('.frame[data-state="review"]');
     if (!card) return;
-    const column = card.closest(".model-col");
+    const column = card.closest(".image-group");
     if (card.hidden || (column && column.hidden)) {
       stillFilter = "all";
       document.querySelectorAll("#still-tools .chip").forEach((button) => {
@@ -1192,19 +1222,26 @@ function syncProceed(state) {
   if (jump) jump.hidden = !reviewWaiting(state);
 }
 
+function imageLabel(state, image) {
+  const kind = String(image.kind || "").toLowerCase();
+  if (kind === "keyframe" || kind === "scene") return shotLabel(state, image.id);
+  return image.id + " · " + (image.kind || "image");
+}
+
 function syncImages(state) {
   const bay = document.getElementById("image-bay");
   const before = bay.querySelectorAll(".frame[data-job]").length;
-  for (const agent of state.image_agents || []) ensureColumn(bay, agent.model, agent.kinds);
   const live = new Set((state.images || []).map((image) => image.id));
   bay.querySelectorAll(".frame[data-job]").forEach((frame) => {
     if (!live.has(frame.dataset.job)) frame.remove();
   });
   for (const image of state.images || []) {
-    const col = ensureColumn(bay, image.model || "still", image.kind || "");
+    const col = ensureGroup(bay, imageGroup(image.kind));
     const frame = ensureFrame(col, image.id);
     frame.dataset.kind = image.kind || "";
-    const caption = image.error ? image.id + " · " + image.kind + " — " + image.error : image.id + " · " + image.kind;
+    // The model that made an image is a detail of the card, not how the page is organised.
+    const made = image.model ? " · " + modelTitle(image.model) : "";
+    const caption = imageLabel(state, image) + made + (image.error ? " — " + image.error : "");
     setText(frame.querySelector("figcaption"), caption);
     const shown = (image.state || "") + (image.uncertain ? ":uncertain" : "");
     if (frame.dataset.shown !== shown) { applyFrameState(frame, image); frame.dataset.shown = shown; }
@@ -1212,10 +1249,13 @@ function syncImages(state) {
     renderInspection(frame, image, state.running);
     renderImageTools(frame, image, state.running);
   }
-  bay.querySelectorAll(".model-col").forEach((col) => {
-    const jobs = col.querySelectorAll(".frame[data-job]");
-    col.classList.toggle("has-jobs", jobs.length > 0);
-    col.classList.toggle("is-working", [...jobs].some((frame) => frame.dataset.state === "running"));
+  bay.querySelectorAll(".image-group").forEach((group) => {
+    const jobs = [...group.querySelectorAll(".frame[data-job]")];
+    if (!jobs.length) { group.remove(); return; }
+    const needs = jobs.filter((frame) => imageStatus(frame.dataset.state || "") === "needs").length;
+    setText(group.querySelector(".kinds"), jobs.length + (jobs.length === 1 ? " image" : " images") +
+      (needs ? " · " + needs + " " + (needs === 1 ? "needs" : "need") + " you" : ""));
+    group.classList.toggle("is-working", jobs.some((frame) => frame.dataset.state === "running"));
   });
   applyStillFilter();
   if ((state.images || []).length > before && document.body.dataset.view !== "stills") {
@@ -1504,11 +1544,13 @@ function syncVideo(state) {
   setText(document.getElementById("video-settings-note"),
     (names[video.selection] || names.auto) + " · " + (quality[video.mode] || quality.pro) + " · " +
     (video.sound === false ? "silent" : "with sound") +
-    (video.saved ? " · locked for this production once clips are generated." : " · change these in Video on the Idea tab."));
+    (video.saved ? " · locked for this production once clips are generated." : " · change these in Models and quality on the Idea tab."));
   document.getElementById("plan-video").disabled = running || !video.can_plan;
   const generate = document.getElementById("generate-video");
-  generate.disabled = running || !video.ready || Boolean(video.complete);
-  setText(generate, video.complete ? "All clips ready" : video.saved ? "Animate all remaining clips" : "Animate all clips");
+  // When every clip is ready there is nothing to animate; the status line and Download say so.
+  generate.hidden = Boolean(video.complete);
+  generate.disabled = running || !video.ready;
+  setText(generate, video.saved ? "Animate all remaining clips" : "Animate all clips");
   const host = document.getElementById("video-clips");
   const clips = video.clips || [];
   const ids = new Set(clips.map((clip) => clip.id));
@@ -1721,6 +1763,7 @@ function paint(state, prev) {
   if ((state.folder || "") !== deskFolder) {
     deskFolder = state.folder || "";
     renderReferences();
+    markCurrentProduction();
   }
   const plaque = document.getElementById("plaque");
   setText(plaque, state.brief || "");
@@ -1759,11 +1802,6 @@ function paint(state, prev) {
   label.classList.toggle("is-live", !!state.returning);
   if (state.returning && !(prev && prev.returning)) {
     playReturn(first);
-    if (!first) {
-      stage.classList.remove("shake");
-      void stage.offsetWidth;
-      stage.classList.add("shake");
-    }
   } else if (!state.returning) {
     parkReturn();
   }
@@ -1816,8 +1854,6 @@ function forgetProduction() {
   if (list) { delete list.dataset.key; }
   document.getElementById("video-clips").replaceChildren();
 }
-
-function startDust() {}
 
 function ideaCount() {
   const idea = document.getElementById("idea").value;
@@ -2307,6 +2343,8 @@ function briefEstimate() {
   const high = runtime ? Math.min(240, Math.max(1, Math.floor(runtime / bounds.min))) : 0;
   if (!problem && runtime && maxShots && (maxShots < low || maxShots > high)) problem = "For " + runtime + " seconds, maximum shots must be between " + low + " and " + high + ".";
   note.dataset.bad = problem ? "1" : "";
+  // The note is the fields' description, so an invalid field is announced with its reason on focus.
+  for (const id of ["runtime", "max-shots"]) document.getElementById(id).setAttribute("aria-invalid", problem ? "true" : "false");
   run.disabled = Boolean(problem) || Boolean(last && last.running);
   const range = bounds.min + "–" + bounds.max;
   if (problem) { setText(note, problem); return; }
@@ -2446,6 +2484,7 @@ async function pollLibrary() {
       }
       nav.appendChild(section);
     }
+    markCurrentProduction();
     filterLibrary();
   } catch (error) {
     /* the board still shows the log */
@@ -2861,7 +2900,7 @@ document.getElementById("track").addEventListener("click", (event) => {
   if (station) pickStation(station.dataset.station);
 });
 document.getElementById("detail-follow").addEventListener("click", () => pickStation(""));
-for (const name of ["idea", "film", "gate", "images", "inspection", "models", "references", "video", "writing", "dry"]) {
+for (const name of ["idea", "film", "gate", "images", "models", "references", "video", "writing"]) {
   document.getElementById("help-" + name).addEventListener("click", () => {
     const copy = document.getElementById("help-" + name + "-copy");
     const button = document.getElementById("help-" + name);
@@ -3010,9 +3049,6 @@ document.addEventListener("keydown", (event) => {
   const index = "123456".indexOf(event.key);
   if (index >= 0) setView(views[index], true);
 });
-document.getElementById("stage").addEventListener("animationend", (event) => {
-  if (event.animationName === "shake") event.currentTarget.classList.remove("shake");
-});
 window.addEventListener("resize", () => {
   moveGlider();
   if (!last) return;
@@ -3025,7 +3061,6 @@ suggestLabel();
 renderReferences();
 briefSummary();
 syncReaderEmpty();
-startDust();
 pollLibrary();
 setInterval(pollLibrary, 3000);
 moveGlider();

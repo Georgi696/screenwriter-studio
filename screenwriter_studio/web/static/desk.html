@@ -26,7 +26,7 @@
     <div>
       <p class="eyebrow">Desk</p>
       <h1>Screenwriter Studio</h1>
-      <p id="folder" hidden aria-live="polite"></p>
+      <p id="folder" hidden></p>
     </div>
   </header>
   <div class="tabs">
@@ -84,7 +84,7 @@
         <div class="limits three">
           <div class="limit-field">
             <label for="runtime">Length (seconds)</label>
-            <input id="runtime" class="limit" type="number" min="6" max="720" step="1" placeholder="From the idea" inputmode="numeric">
+            <input id="runtime" class="limit" type="number" min="6" max="720" step="1" placeholder="From the idea" inputmode="numeric" aria-describedby="format-estimate">
           </div>
           <div class="limit-field">
             <label for="aspect">Format</label>
@@ -97,10 +97,10 @@
           </div>
           <div class="limit-field">
             <label for="max-shots">Maximum shots</label>
-            <input id="max-shots" class="limit" type="number" min="1" max="240" step="1" placeholder="Automatic" inputmode="numeric">
+            <input id="max-shots" class="limit" type="number" min="1" max="240" step="1" placeholder="Automatic" inputmode="numeric" aria-describedby="format-estimate">
           </div>
         </div>
-        <p class="field-note" id="format-estimate" role="status" aria-live="polite">Leave these empty and the idea decides. Shots last 3–30 seconds and together fill the length exactly. A clip longer than 15 seconds uses Seedance 2.5.</p>
+        <p class="field-note" id="format-estimate">Leave these empty and the idea decides. Shots last 3–30 seconds and together fill the length exactly. A clip longer than 15 seconds uses Seedance 2.5.</p>
       </section>
       <section class="brief-section" aria-labelledby="gate-heading">
         <div class="section-head">
@@ -130,22 +130,16 @@
             </div>
             <div id="inspection-home">
               <div id="inspection-field">
-                <div class="label-row">
-                  <label for="inspection-mode">Image inspection</label>
-                  <button class="help" id="help-inspection" type="button" aria-expanded="false" aria-label="What is this?">?</button>
-                </div>
+                <label for="inspection-mode">Image inspection</label>
                 <select id="inspection-mode">
                   <option value="manual">Manual — approve proposed repairs</option>
                   <option value="auto">Auto — up to two repairs per image</option>
                 </select>
-                <p class="help-copy" id="help-inspection-copy" hidden>Every image is checked for accuracy. Manual shows findings before you approve a repair. Inspection and repairs use additional credits.</p>
               </div>
             </div>
             <div id="dry-home">
               <div class="option" id="dry-option">
                 <label class="check"><input id="dry" type="checkbox"> Write image prompts only, don’t generate (chat charges apply)</label>
-                <button class="help" id="help-dry" type="button" aria-expanded="false" aria-label="What is this?">?</button>
-                <p class="help-copy" id="help-dry-copy" hidden>The crew still makes paid chat calls to develop, write, review, and write the prompts for the images. No image credits are spent. This is not a free offline run.</p>
               </div>
             </div>
           </div>
@@ -214,7 +208,7 @@
     </div>
     <div class="brief-actions">
       <div class="brief-status">
-        <p id="brief-summary" aria-live="polite"></p>
+        <p id="brief-summary"></p>
         <p class="cost-line" id="idea-cost" hidden></p>
       </div>
       <div class="actions">
@@ -223,7 +217,6 @@
     </div>
   </form>
   <div id="stage">
-    <canvas id="dust" hidden></canvas>
     <div id="hud">
       <div>
         <p class="kicker">Status</p>
@@ -306,19 +299,18 @@
       <ol id="shot-cards"></ol>
     </section>
     <div id="landing" data-station="images"><span>Images</span></div>
-    <p id="image-summary" role="status" aria-live="polite"></p>
+    <p id="image-summary"></p>
     <div id="image-empty" hidden>
       <h3>No images yet</h3>
       <p id="image-empty-text"></p>
       <button type="button" class="ghost" id="image-empty-action">Go to Story</button>
     </div>
-    <p class="bay-label">Images are grouped by the AI model that made them.</p>
-    <div id="still-tools" class="toolbar">
-      <button class="chip is-on" type="button" data-filter="all">All</button>
-      <button class="chip" type="button" data-filter="character">Characters</button>
-      <button class="chip" type="button" data-filter="location">Locations</button>
-      <button class="chip" type="button" data-filter="keyframe">Shot images</button>
-      <button class="chip" type="button" data-filter="waiting">Waiting</button>
+    <p class="bay-label">Cast and locations first, then the shots in order. Each card names the model that made it.</p>
+    <div id="still-tools" class="toolbar" role="group" aria-label="Show images">
+      <button class="chip is-on" type="button" data-filter="all">All<span class="chip-count">0</span></button>
+      <button class="chip" type="button" data-filter="needs">Needs review<span class="chip-count">0</span></button>
+      <button class="chip" type="button" data-filter="progress">In progress<span class="chip-count">0</span></button>
+      <button class="chip" type="button" data-filter="done">Approved<span class="chip-count">0</span></button>
     </div>
     <div id="image-bay"></div>
     <section id="video-pane" aria-labelledby="video-heading">
@@ -326,12 +318,12 @@
         <h2 id="video-heading">Animate each shot.</h2>
         <p class="lead">Each approved image becomes one video clip, one clip per shot. Download the clips and combine them in your own editor.</p>
       </div>
-      <p id="video-message" role="status" aria-live="polite"></p>
+      <p id="video-message"></p>
       <details id="video-ready" hidden>
         <summary id="video-ready-title">Shots and images</summary>
         <ol id="video-ready-list"></ol>
         <div class="toolbar clip-pick" id="clip-pick" hidden>
-          <button type="button" class="go" id="animate-selected" disabled>Animate selected</button>
+          <button type="button" class="ghost" id="animate-selected" disabled>Animate selected</button>
           <button type="button" class="ghost" id="select-remaining">Select all not animated</button>
           <button type="button" class="ghost" id="clear-selection">Clear</button>
         </div>
